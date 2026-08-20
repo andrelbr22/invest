@@ -16,8 +16,8 @@ def iniciar_estado_filtros():
     valores_padrao = {
         'f_busca': '',
         'f_tv': [],
-        'f_barsi': False,
-        'f_graham': False,
+        'f_barsi': True,
+        'f_graham': True,
         'f_roe': 10.0,       
         'f_mliq': 5.0,       
         'f_mebit': 5.0,      # Padrão: Margem EBIT > 5% (Substituindo a Dívida no filtro)
