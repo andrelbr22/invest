@@ -19,17 +19,17 @@ def aplicar_setup_cnpi_acoes():
     st.session_state.f_tamanho = []; st.session_state.f_apenas_ibov = False
     st.session_state.f_barsi = False; st.session_state.f_graham = False
     
-    st.session_state.f_roe = 12.0           
-    st.session_state.f_mebit = 10.0         
+    st.session_state.f_roe = 8.0           
+    st.session_state.f_mebit = 5.0         
     st.session_state.f_mliq = 0.0 
-    st.session_state.f_cagr = 5.0           
+    st.session_state.f_cagr = 0.0           
     st.session_state.f_evebitda = 0.0 
     st.session_state.f_dy = 0.0
-    st.session_state.f_pvp_min = 0.5        
-    st.session_state.f_pvp_max = 3.0        
-    st.session_state.f_pl_min = 3.0         
-    st.session_state.f_pl_max = 15.0        
-    st.session_state.f_liq = 1.2            
+    st.session_state.f_pvp_min = 0.2        
+    st.session_state.f_pvp_max = 5.0        
+    st.session_state.f_pl_min = 0.1         
+    st.session_state.f_pl_max = 20.0        
+    st.session_state.f_liq = 1.0            
 
 def limpar_filtros_acoes():
     st.session_state.f_busca = ''; st.session_state.f_tv = []
