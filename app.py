@@ -18,18 +18,18 @@ def aplicar_setup_cnpi_acoes():
     st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
     st.session_state.f_tamanho = []; st.session_state.f_apenas_ibov = False
     st.session_state.f_barsi = False; st.session_state.f_graham = False
-    # Filtros de Qualidade CNPI
-    st.session_state.f_roe = 12.0           # ROE sólido
-    st.session_state.f_mebit = 10.0         # Operação lucrativa
+    
+    st.session_state.f_roe = 12.0           
+    st.session_state.f_mebit = 10.0         
     st.session_state.f_mliq = 0.0 
-    st.session_state.f_cagr = 5.0           # Repasse de inflação no mínimo
+    st.session_state.f_cagr = 5.0           
     st.session_state.f_evebitda = 0.0 
     st.session_state.f_dy = 0.0
-    st.session_state.f_pvp_min = 0.5        # Foge de falência iminente
-    st.session_state.f_pvp_max = 3.0        # Margem para empresas de crescimento
-    st.session_state.f_pl_min = 3.0         # Evita lucros não-recorrentes distorcidos
-    st.session_state.f_pl_max = 15.0        # Preço justo (Graham mode)
-    st.session_state.f_liq = 1.2            # Margem de segurança de caixa
+    st.session_state.f_pvp_min = 0.5        
+    st.session_state.f_pvp_max = 3.0        
+    st.session_state.f_pl_min = 3.0         
+    st.session_state.f_pl_max = 15.0        
+    st.session_state.f_liq = 1.2            
 
 def limpar_filtros_acoes():
     st.session_state.f_busca = ''; st.session_state.f_tv = []
@@ -48,12 +48,12 @@ def aplicar_setup_cnpi_fiis():
     st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
     st.session_state.f_fii_segmento = []
     st.session_state.f_fii_barsi = False
-    # Filtros de Qualidade CNPI para FIIs
-    st.session_state.f_fii_pvp_min = 0.70   # Evita fundos em liquidação/calote
-    st.session_state.f_fii_pvp_max = 1.10   # Teto para aceitar leve ágio por qualidade
-    st.session_state.f_fii_dy_min = 8.0     # Provento atrativo
-    st.session_state.f_fii_vacancia_max = 15.0 # Tolera vacância normal de mercado
-    st.session_state.f_fii_liq_min = 1000000.0 # Padrão institucional de liquidez
+    
+    st.session_state.f_fii_pvp_min = 0.70   
+    st.session_state.f_fii_pvp_max = 1.10   
+    st.session_state.f_fii_dy_min = 8.0     
+    st.session_state.f_fii_vacancia_max = 15.0 
+    st.session_state.f_fii_liq_min = 1000000.0 
 
 def limpar_filtros_fiis():
     st.session_state.f_busca = ''
@@ -65,7 +65,6 @@ def limpar_filtros_fiis():
     st.session_state.f_fii_dy_min = 0.0; st.session_state.f_fii_vacancia_max = 100.0
     st.session_state.f_fii_liq_min = 0.0
 
-# Inicializa o estado pela primeira vez se não existir
 if 'iniciado' not in st.session_state:
     aplicar_setup_cnpi_acoes()
     aplicar_setup_cnpi_fiis()
@@ -229,7 +228,6 @@ if tipo_ativo == "Ações":
     if not df_dados.empty:
         st.sidebar.header("🔍 Filtros de Ações")
         
-        # Botões de Controle Rápido (Lado a Lado)
         col1, col2 = st.sidebar.columns(2)
         with col1:
             st.button("🧹 Limpar Tudo", on_click=limpar_filtros_acoes, use_container_width=True)
@@ -240,7 +238,7 @@ if tipo_ativo == "Ações":
         
         with st.sidebar.expander("📈 Rastreador de Tendências", expanded=False):
             opcoes_tv = st.multiselect("Sinal Geral (TradingView)", ["Compra", "Venda", "Manter"], key='f_tv')
-            p_diario = st.selectbox("Período da Média Diária", [20, 50, 200], index=1)
+            p_diario = st.selectbox("Período da Média Diária", [20, 50, 200], index=0)
             t_diario = st.multiselect("Tendência Diária", ["🟢 Alta", "🔴 Baixa"], key='f_tend_d')
             p_semanal = st.selectbox("Período da Média Semanal", [20, 50], index=0)
             t_semanal = st.multiselect("Tendência Semanal", ["🟢 Alta", "🔴 Baixa"], key='f_tend_s')
@@ -268,12 +266,10 @@ if tipo_ativo == "Ações":
             min_liq = st.number_input("Liquidez Corrente Mínima", step=0.1, key='f_liq')
             min_cagr = st.number_input("CAGR Receita Mínimo (%)", step=1.0, key='f_cagr')
 
-        # Calculando tendências
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
         df_dados['Tend. Semanal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_semanal}|1W', 0)), axis=1)
         df_dados['Tend. Mensal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_mensal}|1M', 0)), axis=1)
 
-        # Aplicando filtros
         df_f = df_dados.copy()
         if busca: df_f = df_f[df_f['Ticker'].str.contains(busca)]
         if apenas_ibov: df_f = df_f[df_f['IBOV'] == "Sim"]
@@ -317,7 +313,6 @@ else:
     if not df_dados.empty:
         st.sidebar.header("🏢 Filtros de FIIs")
         
-        # Botões de Controle Rápido
         col1, col2 = st.sidebar.columns(2)
         with col1:
             st.button("🧹 Limpar Tudo", on_click=limpar_filtros_fiis, use_container_width=True)
@@ -329,10 +324,12 @@ else:
         
         with st.sidebar.expander("📈 Rastreador de Tendências", expanded=False):
             opcoes_tv = st.multiselect("Sinal Geral (TradingView)", ["Compra", "Venda", "Manter"], key='f_tv')
-            p_diario = st.selectbox("Período da Média Diária", [20, 50, 200], index=1)
+            p_diario = st.selectbox("Período da Média Diária", [20, 50, 200], index=0)
             t_diario = st.multiselect("Tendência Diária", ["🟢 Alta", "🔴 Baixa"], key='f_tend_d')
             p_semanal = st.selectbox("Período da Média Semanal", [20, 50], index=0)
             t_semanal = st.multiselect("Tendência Semanal", ["🟢 Alta", "🔴 Baixa"], key='f_tend_s')
+            p_mensal = st.selectbox("Período da Média Mensal", [20, 50], index=0)
+            t_mensal = st.multiselect("Tendência Mensal", ["🟢 Alta", "🔴 Baixa"], key='f_tend_m')
 
         st.sidebar.subheader("🎯 Metodologias e Indicadores")
         filtro_barsi = st.sidebar.checkbox("Cotação Abaixo do Preço Teto (Barsi)", key='f_fii_barsi')
@@ -343,18 +340,17 @@ else:
         max_vac = st.sidebar.number_input("Vacância Máxima (%)", step=1.0, key='f_fii_vacancia_max')
         min_liq = st.sidebar.number_input("Liquidez Mínima (R$)", step=100000.0, format="%f", key='f_fii_liq_min')
 
-        # Calculando tendências 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
         df_dados['Tend. Semanal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_semanal}|1W', 0)), axis=1)
-        df_dados['Tend. Mensal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA20|1M', 0)), axis=1)
+        df_dados['Tend. Mensal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_mensal}|1M', 0)), axis=1)
 
-        # Aplicando filtros 
         df_f = df_dados.copy()
         if busca: df_f = df_f[df_f['Ticker'].str.contains(busca)]
         if opcoes_seg: df_f = df_f[df_f['Segmento'].isin(opcoes_seg)]
         if opcoes_tv: df_f = df_f[df_f['Sinal Técnico'].isin(opcoes_tv)]
         if t_diario: df_f = df_f[df_f['Tend. Diária'].isin(t_diario)]
         if t_semanal: df_f = df_f[df_f['Tend. Semanal'].isin(t_semanal)]
+        if t_mensal: df_f = df_f[df_f['Tend. Mensal'].isin(t_mensal)]
         if filtro_barsi: df_f = df_f[df_f['Cotação'] < df_f['Preço Teto (Barsi)']]
         
         if max_pvp > 0: df_f = df_f[(df_f['P/VP'] >= min_pvp) & (df_f['P/VP'] <= max_pvp)]
