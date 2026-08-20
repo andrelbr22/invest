@@ -5,15 +5,13 @@ from bs4 import BeautifulSoup
 import json
 import math
 
-# Configuração da página para ficar com visual profissional
 st.set_page_config(page_title="Screener Avançado de Ações", layout="wide")
 
 st.title("📊 Screener Avançado de Ações")
 st.markdown("Cruzamento fundamentalista (Fundamentus) com tendências técnicas (TradingView) e Metodologias de Valuation.")
 
-@st.cache_data(ttl=3600) # Guarda em cache por 1 hora para o app voar de rápido
+@st.cache_data(ttl=3600)
 def carregar_dados():
-    # 1. Extração Fundamentus
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     try:
         resposta = requests.get('https://www.fundamentus.com.br/resultado.php', headers=headers, timeout=15)
@@ -27,7 +25,6 @@ def carregar_dados():
                 if len(col) >= 21:
                     def limpar(texto):
                         val_str = texto.text.strip().replace('%', '').replace('.', '').replace(',', '.')
-                        # Se estiver vazio ou for um traço, retorna 0.0
                         if not val_str or val_str == '-' or val_str == 'nan':
                             return 0.0
                         try:
@@ -62,7 +59,6 @@ def carregar_dados():
     if df.empty:
         return df
 
-    # 2. Extração TradingView (Indicação de Compra e Volume)
     try:
         payload_tv = {
             "filter": [{"left": "type", "operation": "equal", "right": "stock"}],
@@ -88,21 +84,12 @@ def carregar_dados():
     except Exception as e:
         df["Indicação de Compra (TV)"] = False
 
-    # 3. Engenharia de Valuation e Indicadores
-    # VPA = Cotação / P_VP | LPA = Cotação / P_L
     df['VPA'] = df.apply(lambda r: r['Cotação'] / r['P/VP'] if r['P/VP'] > 0 else 0, axis=1)
     df['LPA'] = df.apply(lambda r: r['Cotação'] / r['P/L'] if r['P/L'] > 0 else 0, axis=1)
     
-    # Preço Justo Graham = sqrt(22.5 * VPA * LPA)
     df['Preço Justo (Graham)'] = df.apply(lambda r: math.sqrt(22.5 * r['VPA'] * r['LPA']) if r['VPA'] > 0 and r['LPA'] > 0 else 0, axis=1)
-    
-    # Preço Teto Barsi = (Cotação * Div_Yield) / 6%
     df['Preço Teto (Barsi)'] = df.apply(lambda r: (r['Cotação'] * (r['Div. Yield (%)'] / 100)) / 0.06, axis=1)
-    
-    # Earnings Yield = (1 / EV_EBIT) * 100
     df['Earnings Yield (%)'] = df.apply(lambda r: (1 / r['EV/EBIT']) * 100 if r['EV/EBIT'] > 0 else 0, axis=1)
-    
-    # Margem de Segurança Graham (%)
     df['Margem Seg. Graham (%)'] = df.apply(lambda r: ((r['Preço Justo (Graham)'] - r['Cotação']) / r['Preço Justo (Graham)']) * 100 if r['Preço Justo (Graham)'] > 0 else 0, axis=1)
     
     return df
@@ -113,12 +100,19 @@ with st.spinner("Atualizando dados da bolsa... Por favor, aguarde."):
 if df_acoes.empty:
     st.warning("Não foi possível carregar os dados no momento.")
 else:
-    # Barra lateral de Filtros
     st.sidebar.header("🔍 Filtros Avançados")
     
     busca = st.sidebar.text_input("Buscar Ticker (ex: PETR4)").upper()
     max_pvp = st.sidebar.slider("P/VP Máximo", 0.0, 10.0, 3.0, 0.1)
     min_dy = st.sidebar.slider("Dividend Yield Mínimo (%)", 0.0, 20.0, 0.0, 0.5)
+    
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🎯 Filtros de Valuation")
+    filtro_barsi = st.sidebar.checkbox("Abaixo do Preço Teto (Barsi)")
+    filtro_graham = st.sidebar.checkbox("Abaixo do Preço Justo (Graham)")
+    filtro_ey = st.sidebar.checkbox("Earnings Yield > 10%")
+    
+    st.sidebar.markdown("---")
     apenas_compra = st.sidebar.checkbox("Apenas com Indicação de Compra (TV)")
     
     # Aplicando os filtros
@@ -128,11 +122,18 @@ else:
     df_filtrado = df_filtrado[df_filtrado['P/VP'] <= max_pvp]
     df_filtrado = df_filtrado[df_filtrado['Div. Yield (%)'] >= min_dy]
     
+    # Filtros das Metodologias (Funcionam combinados se marcados juntos)
+    if filtro_barsi:
+        df_filtrado = df_filtrado[df_filtrado['Cotação'] < df_filtrado['Preço Teto (Barsi)']]
+    if filtro_graham:
+        df_filtrado = df_filtrado[df_filtrado['Cotação'] < df_filtrado['Preço Justo (Graham)']]
+    if filtro_ey:
+        df_filtrado = df_filtrado[df_filtrado['Earnings Yield (%)'] > 10.0]
+        
     if apenas_compra:
         df_filtrado = df_filtrado[df_filtrado['Indicação de Compra (TV)'] == True]
 
     st.subheader(f"Resultados Encontrados: {len(df_filtrado)} ações")
     
-    # Exibindo a tabela formatada
     colunas_exibir = ['Ticker', 'Cotação', 'P/VP', 'Div. Yield (%)', 'Preço Justo (Graham)', 'Preço Teto (Barsi)', 'Margem Seg. Graham (%)', 'Earnings Yield (%)', 'Indicação de Compra (TV)']
     st.dataframe(df_filtrado[colunas_exibir], use_container_width=True)
