@@ -26,7 +26,14 @@ def carregar_dados():
                 col = linha.find_all('td')
                 if len(col) >= 21:
                     def limpar(texto):
-                        return float(texto.text.replace('%', '').replace('.', '').replace(',', '.') or 0)
+                        val_str = texto.text.strip().replace('%', '').replace('.', '').replace(',', '.')
+                        # Se estiver vazio ou for um traço, retorna 0.0
+                        if not val_str or val_str == '-' or val_str == 'nan':
+                            return 0.0
+                        try:
+                            return float(val_str)
+                        except ValueError:
+                            return 0.0
                     
                     ticker = col[0].text.strip()
                     cotacao = limpar(col[1])
