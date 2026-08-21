@@ -46,17 +46,17 @@ def aplicar_setup_padrao_acoes():
 
 def aplicar_setup_cnpi_acoes():
     limpar_filtros_acoes()
-    st.session_state.f_roe = 12.0; st.session_state.f_mliq = 10.0; st.session_state.f_divida = 1.5
-    st.session_state.f_pl_min = 2.0; st.session_state.f_pl_max = 15.0; st.session_state.f_pvp_max = 2.5
-    st.session_state.f_dy = 5.0; st.session_state.f_cagr = 5.0; st.session_state.f_liq = 1.2
-    st.session_state.val_liq_acoes = 2000000.0
+    st.session_state.f_roe = 10.0; st.session_state.f_mliq = 5.0; st.session_state.f_divida = 2.5
+    st.session_state.f_pl_min = 0.1; st.session_state.f_pl_max = 20.0; st.session_state.f_pvp_max = 3.0
+    st.session_state.f_dy = 4.0; st.session_state.f_cagr = 0.0; st.session_state.f_liq = 1.0
+    st.session_state.val_liq_acoes = 1000000.0
 
 def aplicar_setup_alb_acoes():
     limpar_filtros_acoes()
-    st.session_state.f_roe = 15.0; st.session_state.f_mliq = 15.0; st.session_state.f_divida = 0.5
-    st.session_state.f_pl_min = 3.0; st.session_state.f_pl_max = 10.0; st.session_state.f_pvp_max = 1.5
-    st.session_state.f_dy = 6.0; st.session_state.f_cagr = 10.0; st.session_state.f_liq = 1.5
-    st.session_state.f_graham = True; st.session_state.val_liq_acoes = 5000000.0
+    st.session_state.f_roe = 15.0; st.session_state.f_mliq = 10.0; st.session_state.f_divida = 1.5
+    st.session_state.f_pl_min = 0.1; st.session_state.f_pl_max = 12.0; st.session_state.f_pvp_max = 2.0
+    st.session_state.f_dy = 6.0; st.session_state.f_cagr = 5.0; st.session_state.f_liq = 1.2
+    st.session_state.f_graham = True; st.session_state.val_liq_acoes = 2000000.0
 
 # ==========================================
 # 2. CONFIGURAÇÃO DE ESTADO E SETUP DOS FILTROS (FIIs)
@@ -310,14 +310,13 @@ if tipo_ativo == "Ações":
     if not df_dados.empty:
         st.sidebar.header("FILTROS INTELIGENTES")
         
-        # Botões organizados em grade (2x2)
         c1, c2 = st.sidebar.columns(2)
         with c1: st.button("🧹 Limpar", on_click=limpar_filtros_acoes, use_container_width=True)
         with c2: st.button("🎯 Padrão", on_click=aplicar_setup_padrao_acoes, help="Filtro básico de segurança.", use_container_width=True)
         
         c3, c4 = st.sidebar.columns(2)
-        with c3: st.button("🎓 CNPI", on_click=aplicar_setup_cnpi_acoes, type="primary", help="Filtro rigoroso: Top 20% do mercado em rentabilidade e segurança.", use_container_width=True)
-        with c4: st.button("👑 ALB", on_click=aplicar_setup_alb_acoes, type="primary", help="A Nata do Mercado: Top 5%. Empresas baratas, eficientes e sem dívidas.", use_container_width=True)
+        with c3: st.button("🎓 CNPI", on_click=aplicar_setup_cnpi_acoes, type="primary", help="Top 20% da B3: Empresas lucrativas e com dívida controlada.", use_container_width=True)
+        with c4: st.button("👑 ALB", on_click=aplicar_setup_alb_acoes, type="primary", help="A Nata do Mercado: Top 5%. Excelentes margens, desconto e bons dividendos.", use_container_width=True)
             
         busca = st.sidebar.text_input("Buscar Ticker (ex: BBAS3)", key='f_busca').upper()
         
