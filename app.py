@@ -10,7 +10,7 @@ st.title("📊 Screener Avançado de Investimentos")
 st.markdown("Cruzamento Fundamentalista, Rastreador de Tendências e Indicadores de Valuation.")
 
 # ==========================================
-# 1. CONFIGURAÇÃO DE ESTADO E SETUP CNPI FLEXÍVEL (~30%)
+# 1. CONFIGURAÇÃO DE ESTADO E SETUP CNPI FLEXÍVEL
 # ==========================================
 def aplicar_setup_cnpi_acoes():
     st.session_state.f_busca = ''
@@ -62,16 +62,16 @@ def limpar_filtros_fiis():
     st.session_state.f_fii_ffo_min = 0.0
     st.session_state.f_fii_vacancia_max = 100.0
 
-# Inicialização global com valores padrão garantidos
+# Inicialização Global e Trava de Memória
 if 'iniciado' not in st.session_state:
     aplicar_setup_cnpi_acoes()
     aplicar_setup_cnpi_fiis()
     st.session_state.tipo_ativo = 'Ações'
-    st.session_state.f_liq_global = 1000000.0       # Ações: R$ 1 Milhão
-    st.session_state.f_liq_global_fii = 500000.0    # FIIs: R$ 500 Mil
     st.session_state.iniciado = True
 
-# Garantia para instâncias onde o state já existia mas a variável de FIIs ficou nula
+# Trava Anti-Bug do Streamlit (Impede que a liquidez zere ao trocar de aba)
+if 'f_liq_global' not in st.session_state:
+    st.session_state.f_liq_global = 1000000.0
 if 'f_liq_global_fii' not in st.session_state:
     st.session_state.f_liq_global_fii = 500000.0
 
@@ -215,7 +215,7 @@ def carregar_dados_fiis():
         df['Liq. Diária TV'] = 0.0
         for col in TV_COLS[4:]: df[col] = None
 
-    # Prioridade para o Fundamentus para evitar que o TradingView zere a liquidez dos FIIs
+    # Prioridade Categórica: Usa Fundamentus se houver valor, ignora TradingView nulo/zerado
     df['Liq. Diária'] = df.apply(lambda r: r['Liq. Diária Fundamentus'] if pd.notna(r['Liq. Diária Fundamentus']) and r['Liq. Diária Fundamentus'] > 0 else r.get('Liq. Diária TV', 0.0), axis=1)
 
     df['Sinal Técnico'] = df['Score TV'].apply(classificar_sinal)
@@ -308,7 +308,7 @@ if tipo_ativo == "Ações":
         st.sidebar.subheader("LIQUIDEZ MÍNIMA")
         filtro_liq_permanente = st.sidebar.number_input(
             "Volume Diário Mín. (R$)", 
-            min_value=0.0, step=500000.0, format="%.0f", key='f_liq_global',
+            min_value=0.0, step=100000.0, format="%.0f", key='f_liq_global',
             help="Filtro de segurança permanente. Padrão R$ 1.000.000."
         )
 
@@ -319,7 +319,7 @@ if tipo_ativo == "Ações":
         df_f = df_dados.copy()
         
         if filtro_liq_permanente > 0: df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
-        if busca: df_f = df_f[df_f['Ticker'].str.contains(busca)]
+        if busca: df_f = df_f[df_f['Ticker'].astype(str).str.contains(busca)]
         if apenas_ibov: df_f = df_f[df_f['IBOV'] == "Sim"]
         if opcoes_tamanho: df_f = df_f[df_f['Categoria'].isin(opcoes_tamanho)]
         if opcoes_setor: df_f = df_f[df_f['Setor'].isin(opcoes_setor)]
@@ -341,8 +341,15 @@ if tipo_ativo == "Ações":
 
         df_f = df_f.sort_values(by='Margem Graham (%)', ascending=False)
 
-        st.subheader(f"🏢 Ações Encontradas: {len(df_f)}")
-        
+        # Dashboard de Métricas Rápidas
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🏢 Ações Encontradas", len(df_f))
+        if not df_f.empty:
+            c2.metric("Média P/VP", f"{df_f['P/VP'].mean():.2f}")
+            c3.metric("Média DY Anual", f"{df_f['Div. Yield (%)'].mean():.2f}%")
+            c4.metric("Mediana Liq. Diária", f"R$ {df_f['Liq. Diária'].median()/1e6:.1f} Milhões")
+        st.markdown("---")
+
         chaves_reais_ordenadas = [k for k, v in colunas_disponiveis.items() if v in colunas_escolhidas]
 
         if chaves_reais_ordenadas:
@@ -370,7 +377,7 @@ if tipo_ativo == "Ações":
                 height=600,
                 column_config={
                     "DY": st.column_config.NumberColumn("DY", help="Dividendos (12m) / Preço. Quanto maior, melhor."),
-                    "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos). Quanto maior, melhor."),
+                    "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos)."),
                     "M. Graham": st.column_config.NumberColumn("M. Graham", help="Distância % entre o Preço Justo e a Cotação. Positivo = Desconto."),
                     "M. Barsi": st.column_config.NumberColumn("M. Barsi", help="Distância % entre o Preço Teto e a Cotação. Positivo = Desconto."),
                     "P/L": st.column_config.NumberColumn("P/L", help="Preço / Lucro. Quanto menor (acima de zero), mais barata."),
@@ -455,7 +462,7 @@ else:
         df_f = df_dados.copy()
         
         if filtro_liq_permanente > 0: df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
-        if busca: df_f = df_f[df_f['Ticker'].str.contains(busca)]
+        if busca: df_f = df_f[df_f['Ticker'].astype(str).str.contains(busca)]
         if opcoes_seg: df_f = df_f[df_f['Segmento'].isin(opcoes_seg)]
         if opcoes_tv: df_f = df_f[df_f['Sinal Técnico'].isin(opcoes_tv)]
         if t_diario: df_f = df_f[df_f['Tend. Diária'].isin(t_diario)]
@@ -469,7 +476,14 @@ else:
 
         df_f = df_f.sort_values(by='Margem Barsi (%)', ascending=False)
 
-        st.subheader(f"🏢 FIIs Encontrados: {len(df_f)}")
+        # Dashboard de Métricas Rápidas
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🏢 FIIs Encontrados", len(df_f))
+        if not df_f.empty:
+            c2.metric("Média P/VP", f"{df_f['P/VP'].mean():.2f}")
+            c3.metric("Média DY Anual", f"{df_f['Div. Yield (%)'].mean():.2f}%")
+            c4.metric("Mediana Vacância", f"{df_f['Vacância Média (%)'].median():.1f}%")
+        st.markdown("---")
         
         chaves_reais_fii_ordenadas = [k for k, v in colunas_disponiveis_fii.items() if v in colunas_escolhidas_fii]
 
@@ -497,7 +511,7 @@ else:
                 height=600,
                 column_config={
                     "DY": st.column_config.NumberColumn("DY", help="Dividendos (12m) / Preço. Quanto maior, melhor."),
-                    "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos). Quanto maior, melhor."),
+                    "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos)."),
                     "M. Barsi": st.column_config.NumberColumn("M. Barsi", help="Distância % entre o Preço Teto calculado e a Cotação atual do FII. Positivo indica que está abaixo do teto."),
                     "P/VP": st.column_config.NumberColumn("P/VP", help="Preço / Valor Patrimonial. Abaixo de 1.0 = Fundo com desconto."),
                     "Vacância": st.column_config.NumberColumn("Vacância", help="Percentual do portfólio físico desocupado. Quanto menor, melhor."),
