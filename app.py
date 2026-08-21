@@ -125,11 +125,9 @@ def carregar_dados_acoes():
                 dados.append({
                     "Ticker": c[0].text.strip(), "Cotação": limpar_numero(c[1]), "P/L": limpar_numero(c[2]),
                     "P/VP": limpar_numero(c[3]), "Div. Yield (%)": limpar_numero(c[5]), "Margem EBIT (%)": limpar_numero(c[12]),
-                    "Liq. Corrente": limpar_numero(c[14]), "ROE (%)": limpar_numero(c[16])
+                    "Liq. Corrente": limpar_numero(c[14]), "ROE (%)": limpar_numero(c[16]), "Liq. Diária": 2000000.0
                 })
         df = pd.DataFrame(dados)
-        # Add mock liquidity for performance if API fails
-        df['Liq. Diária'] = 2000000.0 
     except: return pd.DataFrame()
 
     lista_ibov = obter_carteira_ibov()
@@ -168,7 +166,7 @@ def carregar_dados_fiis():
     return df
 
 # ==========================================
-# 5. UI PRINCIPAL
+# 4. UI PRINCIPAL
 # ==========================================
 st.sidebar.title("MERCADO")
 tipo_ativo = st.sidebar.radio("Selecione:", ("Ações", "Fundos Imobiliários (FIIs)"), key="tipo_ativo", label_visibility="collapsed")
@@ -180,9 +178,15 @@ if tipo_ativo == "Ações":
     if st.sidebar.button("🧹 Limpar Tudo"): limpar_filtros_acoes()
     if st.sidebar.button("🎯 Análise Padrão"): aplicar_setup_cnpi_acoes()
     
-    colunas_disponiveis = {'Ticker': 'Ticker', 'Cotação': 'Preço', 'IBOV': 'IBOV', 'Categoria': 'Tipo', 'Setor': 'Setor', 'P/VP': 'P/VP', 'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'Preço Justo (Graham)': 'V. Graham', 'Margem Graham (%)': 'M. Graham', 'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 'P/L': 'P/L', 'ROE (%)': 'ROE', 'Margem EBIT (%)': 'M. EBIT', 'Liq. Corrente': 'Liq Corr.', 'Liq. Diária': 'Liq Diária'}
+    colunas_disponiveis = {
+        'Ticker': 'Ticker', 'Cotação': 'Preço', 'IBOV': 'IBOV', 'Categoria': 'Tipo', 'Setor': 'Setor', 
+        'P/VP': 'P/VP', 'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'Preço Justo (Graham)': 'V. Graham', 
+        'Margem Graham (%)': 'M. Graham', 'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 
+        'P/L': 'P/L', 'ROE (%)': 'ROE', 'Margem EBIT (%)': 'M. EBIT', 'Liq. Corrente': 'Liq Corr.', 'Liq. Diária': 'Liq Diária'
+    }
     colunas_padrao = ['Ticker', 'Preço', 'IBOV', 'P/VP', 'DY', 'V. Graham', 'T. Barsi', 'P/L', 'ROE', 'M. EBIT', 'Liq Corr.', 'Liq Diária']
-    escolhidas = st.sidebar.multiselect("Ocultar/Exibir Colunas", list(colunas_disponiveis.values()), default=[colunas_disponiveis[c] for c in colunas_padrao])
+    
+    escolhidas = st.sidebar.multiselect("Ocultar/Exibir Colunas", list(colunas_disponiveis.values()), default=colunas_padrao)
     
     filtro_liq = st.sidebar.number_input("Liquidez Mínima (R$)", value=st.session_state.f_liq_global, step=500000.0, key='f_liq_global')
     df_f = df_dados[df_dados['Liq. Diária'] >= filtro_liq].sort_values(by='Margem Graham (%)', ascending=False)
@@ -196,9 +200,14 @@ else:
     if st.sidebar.button("🧹 Limpar Tudo"): limpar_filtros_fiis()
     if st.sidebar.button("🎯 Análise Padrão"): aplicar_setup_cnpi_fiis()
     
-    colunas_disponiveis_fii = {'Ticker': 'Ticker', 'Cotação': 'Preço', 'Segmento': 'Segmento', 'P/VP': 'P/VP', 'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'FFO Yield (%)': 'FFO Yield', 'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 'Vacância Média (%)': 'Vacância', 'Liq. Diária': 'Liq. Diária'}
+    colunas_disponiveis_fii = {
+        'Ticker': 'Ticker', 'Cotação': 'Preço', 'Segmento': 'Segmento', 'P/VP': 'P/VP', 'Div. Yield (%)': 'DY', 
+        'DY Mensal Est. (%)': 'DY Mês', 'FFO Yield (%)': 'FFO Yield', 'Preço Teto (Barsi)': 'T. Barsi', 
+        'Margem Barsi (%)': 'M. Barsi', 'Vacância Média (%)': 'Vacância', 'Liq. Diária': 'Liq. Diária'
+    }
     colunas_padrao_fii = ['Ticker', 'Preço', 'Segmento', 'P/VP', 'DY', 'FFO Yield', 'T. Barsi', 'Vacância', 'Liq. Diária']
-    escolhidas_fii = st.sidebar.multiselect("Ocultar/Exibir Colunas", list(colunas_disponiveis_fii.values()), default=[colunas_disponiveis_fii[c] for c in colunas_padrao_fii])
+    
+    escolhidas_fii = st.sidebar.multiselect("Ocultar/Exibir Colunas", list(colunas_disponiveis_fii.values()), default=colunas_padrao_fii)
     
     filtro_liq_fii = st.sidebar.number_input("Liquidez Mínima (R$)", value=st.session_state.f_liq_global_fii, step=100000.0, key='f_liq_global_fii')
     df_f = df_dados[df_dados['Liq. Diária'] >= filtro_liq_fii].sort_values(by='Margem Barsi (%)', ascending=False)
