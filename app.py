@@ -18,7 +18,6 @@ def aplicar_setup_cnpi_acoes():
     st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
     st.session_state.f_tamanho = []; st.session_state.f_setor = []; st.session_state.f_apenas_ibov = False
     st.session_state.f_barsi = False; st.session_state.f_graham = False
-    
     st.session_state.f_roe = 8.0           
     st.session_state.f_mebit = 5.0         
     st.session_state.f_mliq = 0.0 
@@ -47,7 +46,6 @@ def aplicar_setup_cnpi_fiis():
     st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
     st.session_state.f_fii_segmento = []
     st.session_state.f_fii_barsi = False
-    
     st.session_state.f_fii_pvp_max = 1.10   
     st.session_state.f_fii_dy_min = 8.0     
     st.session_state.f_fii_ffo_min = 7.0     
@@ -72,7 +70,7 @@ if 'iniciado' not in st.session_state:
     st.session_state.iniciado = True
 
 # ==========================================
-# 2. FUNÇÕES AUXILIARES
+# 2. FUNÇÕES AUXILIARES E GLOSSÁRIO
 # ==========================================
 def classificar_sinal(score):
     if pd.isna(score): return "Sem Dados"
@@ -80,11 +78,9 @@ def classificar_sinal(score):
 
 def calc_tendencia(cotacao, sma):
     try:
-        cot_val = float(cotacao)
-        sma_val = float(sma)
-        if pd.isna(sma_val) or sma_val == 0 or pd.isna(cot_val) or cot_val == 0: 
+        if pd.isna(float(sma)) or float(sma) == 0 or pd.isna(float(cotacao)) or float(cotacao) == 0: 
             return "Sem Dados"
-        return "🟢 Alta" if cot_val > sma_val else "🔴 Baixa"
+        return "🟢 Alta" if float(cotacao) > float(sma) else "🔴 Baixa"
     except:
         return "Sem Dados"
 
@@ -102,7 +98,6 @@ def obter_carteira_ibov():
     except: 
         return ['ABEV3', 'B3SA3', 'BBAS3', 'BBDC4', 'ITUB4', 'PETR4', 'VALE3', 'WEGE3']
 
-# Colunas adicionando 'sector' para extração de Setor via TradingView
 TV_COLS = ["name", "Recommend.All", "market_cap_basic", "Value.Traded", "sector", "SMA20", "SMA50", "SMA200", "SMA20|1W", "SMA50|1W", "SMA20|1M", "SMA50|1M"]
 
 # ==========================================
@@ -128,28 +123,20 @@ def carregar_dados_acoes():
                     })
         df = pd.DataFrame(dados)
     except: return pd.DataFrame()
-
     if df.empty: return df
 
     try:
         payload = {"filter": [{"left": "type", "operation": "equal", "right": "stock"}], "options": {"lang": "pt"}, "symbols": {"query": {"types": []}, "tickers": []}, "columns": TV_COLS}
         resp = requests.post("https://scanner.tradingview.com/brazil/scan", json=payload, timeout=15).json()
-        
-        tv_dict = {}
-        for item in resp.get('data', []):
-            d = item['d']
-            tv_dict[d[0].split(":")[-1]] = {
-                'Score TV': d[1], 'Market Cap': d[2], 'Liq. Diária': d[3] if d[3] is not None else 0.0,
-                'Setor': d[4] if d[4] is not None and d[4] != "" else "Outros",
-                'SMA20': d[5], 'SMA50': d[6], 'SMA200': d[7],
-                'SMA20|1W': d[8], 'SMA50|1W': d[9], 'SMA20|1M': d[10], 'SMA50|1M': d[11]
-            }
-        df_tv = pd.DataFrame.from_dict(tv_dict, orient='index').reset_index().rename(columns={'index': 'Ticker'})
-        df = pd.merge(df, df_tv, on='Ticker', how='left')
+        tv_dict = {item['d'][0].split(":")[-1]: {
+            'Score TV': item['d'][1], 'Market Cap': item['d'][2], 'Liq. Diária': item['d'][3] if item['d'][3] is not None else 0.0,
+            'Setor': item['d'][4] if item['d'][4] else "Outros", 'SMA20': item['d'][5], 'SMA50': item['d'][6], 'SMA200': item['d'][7],
+            'SMA20|1W': item['d'][8], 'SMA50|1W': item['d'][9], 'SMA20|1M': item['d'][10], 'SMA50|1M': item['d'][11]
+        } for item in resp.get('data', [])}
+        df = pd.merge(df, pd.DataFrame.from_dict(tv_dict, orient='index').reset_index().rename(columns={'index': 'Ticker'}), on='Ticker', how='left')
     except:
-        df['Liq. Diária'] = 0.0
-        df['Setor'] = 'Outros'
-        for col in TV_COLS[4:]: df[col] = None
+        df['Liq. Diária'] = 0.0; df['Setor'] = 'Outros'; 
+        for col in TV_COLS[5:]: df[col] = None
 
     lista_ibov = obter_carteira_ibov()
     df['Sinal Técnico'] = df['Score TV'].apply(classificar_sinal)
@@ -161,7 +148,6 @@ def carregar_dados_acoes():
     
     df['Preço Justo (Graham)'] = df.apply(lambda r: math.sqrt(22.5 * r['VPA'] * r['LPA']) if r['VPA'] > 0 and r['LPA'] > 0 else 0, axis=1)
     df['Preço Teto (Barsi)'] = df.apply(lambda r: (r['Cotação'] * (r['Div. Yield (%)'] / 100)) / 0.06, axis=1)
-    
     df['Margem Graham (%)'] = df.apply(lambda r: ((r['Preço Justo (Graham)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Justo (Graham)'] > 0 else 0, axis=1)
     df['Margem Barsi (%)'] = df.apply(lambda r: ((r['Preço Teto (Barsi)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Teto (Barsi)'] > 0 else 0, axis=1)
     df['DY Mensal Est. (%)'] = df.apply(lambda r: (math.pow(1 + (r['Div. Yield (%)'] / 100), 1/12) - 1) * 100 if r['Div. Yield (%)'] > 0 else 0, axis=1)
@@ -177,7 +163,6 @@ def carregar_dados_fiis():
         resposta = requests.get('https://www.fundamentus.com.br/fii_resultado.php', headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
         soup = BeautifulSoup(resposta.text, 'html.parser')
         tabela = soup.find('table', id='tabelaResultado') or soup.find('table')
-        
         dados = []
         if tabela:
             for l in tabela.find_all('tr')[1:]:
@@ -190,26 +175,20 @@ def carregar_dados_fiis():
                     })
         df = pd.DataFrame(dados)
     except: return pd.DataFrame()
-
     if df.empty: return df
 
     try:
         payload = {"filter": [{"left": "type", "operation": "equal", "right": "fund"}], "options": {"lang": "pt"}, "symbols": {"query": {"types": []}, "tickers": []}, "columns": TV_COLS}
         resp = requests.post("https://scanner.tradingview.com/brazil/scan", json=payload, timeout=15).json()
-        
-        tv_dict = {}
-        for item in resp.get('data', []):
-            d = item['d']
-            tv_dict[d[0].split(":")[-1]] = {
-                'Score TV': d[1], 'Liq. Diária': d[3] if d[3] is not None else 0.0,
-                'Setor': d[4], 'SMA20': d[5], 'SMA50': d[6], 'SMA200': d[7],
-                'SMA20|1W': d[8], 'SMA50|1W': d[9], 'SMA20|1M': d[10], 'SMA50|1M': d[11]
-            }
-        df_tv = pd.DataFrame.from_dict(tv_dict, orient='index').reset_index().rename(columns={'index': 'Ticker'})
-        df = pd.merge(df, df_tv, on='Ticker', how='left')
+        tv_dict = {item['d'][0].split(":")[-1]: {
+            'Score TV': item['d'][1], 'Liq. Diária': item['d'][3] if item['d'][3] is not None else 0.0,
+            'Setor': item['d'][4], 'SMA20': item['d'][5], 'SMA50': item['d'][6], 'SMA200': item['d'][7],
+            'SMA20|1W': item['d'][8], 'SMA50|1W': item['d'][9], 'SMA20|1M': item['d'][10], 'SMA50|1M': item['d'][11]
+        } for item in resp.get('data', [])}
+        df = pd.merge(df, pd.DataFrame.from_dict(tv_dict, orient='index').reset_index().rename(columns={'index': 'Ticker'}), on='Ticker', how='left')
     except:
         df['Liq. Diária'] = df.get('Liquidez Diária (R$)', 0.0)
-        for col in TV_COLS[3:]: df[col] = None
+        for col in TV_COLS[4:]: df[col] = None
 
     df['Sinal Técnico'] = df['Score TV'].apply(classificar_sinal)
     df['Preço Teto (Barsi)'] = df.apply(lambda r: (r['Cotação'] * (r['Div. Yield (%)'] / 100)) / 0.06, axis=1)
@@ -239,30 +218,33 @@ if tipo_ativo == "Ações":
         with col1:
             st.button("🧹 Limpar Tudo", on_click=limpar_filtros_acoes, use_container_width=True)
         with col2:
-            st.button("🎯 Padrão", on_click=aplicar_setup_cnpi_acoes, type="primary", use_container_width=True)
+            st.button("🎯 Análise Padrão", on_click=aplicar_setup_cnpi_acoes, type="primary", use_container_width=True)
             
         busca = st.sidebar.text_input("Buscar Ticker (ex: BBAS3)", key='f_busca').upper()
         
-        # Ocultar/Exibir Colunas (respeitando a ordem de seleção do usuário)
+        # Dicionário com a ORDEM EXATA solicitada para Ações
         colunas_disponiveis = {
-            'Ticker': 'Ticker', 'IBOV': 'IBOV', 'Setor': 'Setor', 'Tend. Mensal': 'T. Mês', 
-            'Tend. Semanal': 'T. Sem', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal', 
-            'Cotação': 'Preço', 'Preço Justo (Graham)': 'V. Graham', 'Margem Graham (%)': 'M. Graham', 
-            'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 'Div. Yield (%)': 'DY', 
-            'DY Mensal Est. (%)': 'DY Mês', 'P/L': 'P/L', 'P/VP': 'P/VP', 'ROE (%)': 'ROE', 
-            'Margem EBIT (%)': 'M. EBIT', 'Liq. Corrente': 'Liq. Corr', 'Liq. Diária': 'Liq. Diária'
+            'Ticker': 'Ticker', 'Cotação': 'Preço', 'IBOV': 'IBOV', 'Categoria': 'Tipo', 
+            'Setor': 'Setor', 'P/VP': 'P/VP', 'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 
+            'Preço Justo (Graham)': 'V. Graham', 'Margem Graham (%)': 'M. Graham', 'Preço Teto (Barsi)': 'T. Barsi', 
+            'Margem Barsi (%)': 'M. Barsi', 'P/L': 'P/L', 'ROE (%)': 'ROE', 'Margem EBIT (%)': 'M. EBIT', 
+            'Liq. Corrente': 'Liq Corr.', 'Liq. Diária': 'Liq Diária', 'Tend. Mensal': 'T. Mês', 
+            'Tend. Semanal': 'T. Sem.', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal'
         }
+        
+        colunas_padrao_visiveis = [
+            'Ticker', 'Preço', 'IBOV', 'P/VP', 'DY', 'V. Graham', 'T. Barsi', 
+            'P/L', 'ROE', 'M. EBIT', 'Liq Corr.', 'Liq Diária', 'T. Mês', 'T. Sem.', 'T. Dia', 'Sinal'
+        ]
         
         colunas_escolhidas = st.sidebar.multiselect(
             "Ocultar/Exibir Colunas", 
             options=list(colunas_disponiveis.values()), 
-            default=list(colunas_disponiveis.values())
+            default=colunas_padrao_visiveis
         )
         
-        st.sidebar.markdown("---")
         st.sidebar.subheader("RASTREADOR DE TENDÊNCIAS")
         with st.sidebar.expander("Configurar Médias Móveis"):
-            opcoes_tv = st.multiselect("Sinal Geral (TradingView)", ["Compra", "Venda", "Manter"], key='f_tv')
             p_diario = st.selectbox("Período da Média Diária", [20, 50, 200], index=0)
             t_diario = st.multiselect("Tendência Diária", ["🟢 Alta", "🔴 Baixa"], key='f_tend_d')
             p_semanal = st.selectbox("Período da Média Semanal", [20, 50], index=0)
@@ -277,8 +259,8 @@ if tipo_ativo == "Ações":
         setores_disp = sorted(df_dados['Setor'].dropna().unique().tolist())
         opcoes_setor = st.sidebar.multiselect("Filtrar Setor", setores_disp, key='f_setor')
         
-        opcoes_sinal_val = st.sidebar.multiselect("Filtrar Sinal", ["Compra", "Venda", "Manter", "Sem Dados"], key='f_sinal_filtro') if 'f_sinal_filtro' in st.session_state else st.sidebar.multiselect("Filtrar Sinal", ["Compra", "Venda", "Manter", "Sem Dados"], key='f_sinal_filtro')
-
+        opcoes_tv = st.sidebar.multiselect("Filtrar Sinal", ["Compra", "Venda", "Manter", "Sem Dados"], key='f_tv')
+        
         filtro_barsi = st.sidebar.checkbox("Cotação Abaixo do Preço Teto (Barsi)", key='f_barsi')
         filtro_graham = st.sidebar.checkbox("Cotação Abaixo do Preço Justo (Graham)", key='f_graham')
         
@@ -299,11 +281,8 @@ if tipo_ativo == "Ações":
         st.sidebar.subheader("LIQUIDEZ MÍNIMA")
         filtro_liq_permanente = st.sidebar.number_input(
             "Volume Diário Mín. (R$)", 
-            min_value=0.0, 
-            step=500000.0, 
-            format="%.0f",
-            key='f_liq_global',
-            help="Filtro permanente de segurança institucional baseado na média recente. Não é resetado pelo botão 'Limpar Tudo'."
+            min_value=0.0, step=500000.0, format="%.0f", key='f_liq_global',
+            help="Filtro de segurança institucional. Não é resetado pelo botão 'Limpar Tudo'."
         )
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
@@ -312,21 +291,17 @@ if tipo_ativo == "Ações":
 
         df_f = df_dados.copy()
         
-        if filtro_liq_permanente > 0:
-            df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
-            
+        if filtro_liq_permanente > 0: df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
         if busca: df_f = df_f[df_f['Ticker'].str.contains(busca)]
         if apenas_ibov: df_f = df_f[df_f['IBOV'] == "Sim"]
         if opcoes_tamanho: df_f = df_f[df_f['Categoria'].isin(opcoes_tamanho)]
         if opcoes_setor: df_f = df_f[df_f['Setor'].isin(opcoes_setor)]
         if opcoes_tv: df_f = df_f[df_f['Sinal Técnico'].isin(opcoes_tv)]
-        if opcoes_sinal_val: df_f = df_f[df_f['Sinal Técnico'].isin(opcoes_sinal_val)]
         if t_diario: df_f = df_f[df_f['Tend. Diária'].isin(t_diario)]
         if t_semanal: df_f = df_f[df_f['Tend. Semanal'].isin(t_semanal)]
         if t_mensal: df_f = df_f[df_f['Tend. Mensal'].isin(t_mensal)]
         if filtro_barsi: df_f = df_f[df_f['Cotação'] < df_f['Preço Teto (Barsi)']]
         if filtro_graham: df_f = df_f[df_f['Cotação'] < df_f['Preço Justo (Graham)']]
-        
         if max_pvp > 0: df_f = df_f[df_f['P/VP'] <= max_pvp]
         if max_pl > 0: df_f = df_f[(df_f['P/L'] >= min_pl) & (df_f['P/L'] <= max_pl)]
         if min_dy > 0: df_f = df_f[df_f['Div. Yield (%)'] >= min_dy]
@@ -339,19 +314,35 @@ if tipo_ativo == "Ações":
 
         st.subheader(f"🏢 Ações Encontradas: {len(df_f)}")
         
-        # Ordena as colunas reais conforme o usuário selecionou e ordenou no multiselect
-        chaves_reais = [k for k, v in colunas_disponiveis.items() if v in colunas_escolhidas]
-        # Garante a ordem exata escolhida pelo usuário no multiselect
-        chaves_reais_ordenadas = sorted(chaves_reais, key=lambda x: colunas_escolhidas.index(colunas_disponiveis[x]))
+        # Mantém a ordem rigorosa do dicionário original 'colunas_disponiveis' para exibição
+        chaves_reais_ordenadas = [k for k, v in colunas_disponiveis.items() if v in colunas_escolhidas]
 
         if chaves_reais_ordenadas:
             st.dataframe(df_f[chaves_reais_ordenadas].rename(columns=colunas_disponiveis).style.format({
                 "Preço": "R$ {:.2f}", "V. Graham": "R$ {:.2f}", "M. Graham": "{:+.1f}%",
                 "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%", "DY": "{:.1f}%", 
                 "DY Mês": "{:.2f}%", "ROE": "{:.1f}%", "M. EBIT": "{:.1f}%", 
-                "P/L": "{:.2f}", "P/VP": "{:.2f}", "Liq. Corr": "{:.2f}",
-                "Liq. Diária": "R$ {:,.0f}"
-            }), use_container_width=True, height=600)
+                "P/L": "{:.2f}", "P/VP": "{:.2f}", "Liq Corr.": "{:.2f}",
+                "Liq Diária": "R$ {:,.0f}"
+            }), 
+            hide_index=True, # Remove os índices 0, 1, 2, 3...
+            use_container_width=False, # Ajusta à menor largura necessária baseada no conteúdo
+            height=600,
+            column_config={
+                "DY": st.column_config.NumberColumn("DY", help="Dividendos (12m) / Preço. Quanto maior, melhor."),
+                "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos). Quanto maior, melhor."),
+                "M. Graham": st.column_config.NumberColumn("M. Graham", help="Distância % entre o Preço Justo e a Cotação. Positivo = Desconto."),
+                "M. Barsi": st.column_config.NumberColumn("M. Barsi", help="Distância % entre o Preço Teto e a Cotação. Positivo = Desconto."),
+                "P/L": st.column_config.NumberColumn("P/L", help="Preço / Lucro. Quanto menor (acima de zero), mais barata."),
+                "P/VP": st.column_config.NumberColumn("P/VP", help="Preço / Valor Patrimonial. Menor que 1 indica desconto patrimonial."),
+                "ROE": st.column_config.NumberColumn("ROE", help="Retorno sobre o Patrimônio Líquido. Capacidade de gerar lucro com capital próprio."),
+                "M. EBIT": st.column_config.NumberColumn("M. EBIT", help="Margem Operacional. Eficiência do negócio principal."),
+                "V. Graham": st.column_config.NumberColumn("V. Graham", help="Preço Justo calculado por Benjamin Graham."),
+                "T. Barsi": st.column_config.NumberColumn("T. Barsi", help="Preço Teto calculado pela metodologia de Décio Barsi."),
+                "Tipo": st.column_config.TextColumn("Tipo", help="Tamanho da empresa por valor de mercado na bolsa."),
+                "Setor": st.column_config.TextColumn("Setor", help="Setor de atuação da empresa segundo o TradingView."),
+                "Liq Corr.": st.column_config.NumberColumn("Liq Corr.", help="Liquidez Corrente: Caixa para pagar dívidas de curto prazo (>1.0 é bom).")
+            })
         else:
             st.warning("Selecione ao menos uma coluna para exibir na tabela.")
 
@@ -369,15 +360,14 @@ else:
         with col1:
             st.button("🧹 Limpar Tudo", on_click=limpar_filtros_fiis, use_container_width=True)
         with col2:
-            st.button("🎯 Padrão", on_click=aplicar_setup_cnpi_fiis, type="primary", use_container_width=True)
+            st.button("🎯 Análise Padrão", on_click=aplicar_setup_cnpi_fiis, type="primary", use_container_width=True)
         
         busca = st.sidebar.text_input("Buscar FII pelo código (ex: MXRF11)", key='f_busca').upper()
-        
         opcoes_seg = st.sidebar.multiselect("Filtrar por Segmento", sorted(df_dados['Segmento'].unique().tolist()), key='f_fii_segmento')
         
         st.sidebar.subheader("RASTREADOR DE TENDENCIAS")
         with st.sidebar.expander("Configurar Médias Móveis"):
-            opcoes_tv = st.multiselect("Sinal Geral (TradingView)", ["Compra", "Venda", "Manter"], key='f_tv')
+            opcoes_tv = st.multiselect("Filtrar Sinal (TradingView)", ["Compra", "Venda", "Manter", "Sem Dados"], key='f_tv')
             p_diario = st.selectbox("Período da Média Diária", [20, 50, 200], index=0)
             t_diario = st.multiselect("Tendência Diária", ["🟢 Alta", "🔴 Baixa"], key='f_tend_d')
             p_semanal = st.selectbox("Período da Média Semanal", [20, 50], index=0)
@@ -386,17 +376,22 @@ else:
             t_mensal = st.multiselect("Tendência Mensal", ["🟢 Alta", "🔴 Baixa"], key='f_tend_m')
 
         colunas_disponiveis_fii = {
-            'Ticker': 'Ticker', 'Segmento': 'Segmento', 'Tend. Mensal': 'T. Mês', 
-            'Tend. Semanal': 'T. Sem', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal', 
-            'Cotação': 'Preço', 'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 
-            'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'FFO Yield (%)': 'FFO Yield', 'P/VP': 'P/VP', 
-            'Vacância Média (%)': 'Vacância', 'Liq. Diária': 'Liq. Diária'
+            'Ticker': 'Ticker', 'Segmento': 'Segmento', 'Cotação': 'Preço', 'P/VP': 'P/VP', 
+            'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'FFO Yield (%)': 'FFO Yield', 
+            'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 'Vacância Média (%)': 'Vacância', 
+            'Liq. Diária': 'Liq. Diária', 'Tend. Mensal': 'T. Mês', 'Tend. Semanal': 'T. Sem.', 
+            'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal'
         }
+        
+        colunas_padrao_fii_visiveis = [
+            'Ticker', 'Preço', 'Segmento', 'P/VP', 'DY', 'FFO Yield', 'T. Barsi', 
+            'Vacância', 'Liq. Diária', 'T. Mês', 'T. Sem.', 'T. Dia', 'Sinal'
+        ]
         
         colunas_escolhidas_fii = st.sidebar.multiselect(
             "Ocultar/Exibir Colunas", 
             options=list(colunas_disponiveis_fii.values()), 
-            default=list(colunas_disponiveis_fii.values())
+            default=colunas_padrao_fii_visiveis
         )
 
         st.sidebar.subheader("METODOLOGIAS E INDICADORES")
@@ -409,11 +404,8 @@ else:
         st.sidebar.subheader("LIQUIDEZ MÍNIMA")
         filtro_liq_permanente = st.sidebar.number_input(
             "Volume Diário Mín. (R$)", 
-            min_value=0.0, 
-            step=500000.0, 
-            format="%.0f",
-            key='f_liq_global',
-            help="Filtro permanente de segurança institucional. Não é resetado pelo botão 'Limpar Tudo'."
+            min_value=0.0, step=500000.0, format="%.0f", key='f_liq_global_fii',
+            help="Filtro permanente de segurança institucional."
         )
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
@@ -422,9 +414,7 @@ else:
 
         df_f = df_dados.copy()
         
-        if filtro_liq_permanente > 0:
-            df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
-            
+        if filtro_liq_permanente > 0: df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
         if busca: df_f = df_f[df_f['Ticker'].str.contains(busca)]
         if opcoes_seg: df_f = df_f[df_f['Segmento'].isin(opcoes_seg)]
         if opcoes_tv: df_f = df_f[df_f['Sinal Técnico'].isin(opcoes_tv)]
@@ -432,7 +422,6 @@ else:
         if t_semanal: df_f = df_f[df_f['Tend. Semanal'].isin(t_semanal)]
         if t_mensal: df_f = df_f[df_f['Tend. Mensal'].isin(t_mensal)]
         if filtro_barsi: df_f = df_f[df_f['Cotação'] < df_f['Preço Teto (Barsi)']]
-        
         if max_pvp > 0: df_f = df_f[df_f['P/VP'] <= max_pvp]
         if min_dy > 0: df_f = df_f[df_f['Div. Yield (%)'] >= min_dy]
         if min_ffo > 0: df_f = df_f[df_f['FFO Yield (%)'] >= min_ffo]
@@ -440,14 +429,25 @@ else:
 
         st.subheader(f"🏢 FIIs Encontrados: {len(df_f)}")
         
+        # Mantém a ordem rigorosa do dicionário original para exibição
         chaves_reais_fii = [k for k, v in colunas_disponiveis_fii.items() if v in colunas_escolhidas_fii]
-        chaves_reais_fii_ordenadas = sorted(chaves_reais_fii, key=lambda x: colunas_escolhidas_fii.index(colunas_disponiveis_fii[x]))
 
-        if chaves_reais_fii_ordenadas:
-            st.dataframe(df_f[chaves_reais_fii_ordenadas].rename(columns=colunas_disponiveis_fii).style.format({
+        if chaves_reais_fii:
+            st.dataframe(df_f[chaves_reais_fii].rename(columns=colunas_disponiveis_fii).style.format({
                 "Preço": "R$ {:.2f}", "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%",
                 "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "FFO Yield": "{:.1f}%", "P/VP": "{:.2f}", 
                 "Vacância": "{:.1f}%", "Liq. Diária": "R$ {:,.0f}"
-            }), use_container_width=True, height=600)
+            }), 
+            hide_index=True,
+            use_container_width=False, 
+            height=600,
+            column_config={
+                "DY": st.column_config.NumberColumn("DY", help="Dividendos (12m) / Preço. Quanto maior, melhor."),
+                "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos). Quanto maior, melhor."),
+                "M. Barsi": st.column_config.NumberColumn("M. Barsi", help="Distância % entre o Preço Teto e a Cotação. Positivo = Desconto."),
+                "P/VP": st.column_config.NumberColumn("P/VP", help="Preço / Valor Patrimonial. Abaixo de 1.0 = Fundo com desconto."),
+                "Vacância": st.column_config.NumberColumn("Vacância", help="Percentual do portfólio físico desocupado. Quanto menor, melhor."),
+                "FFO Yield": st.column_config.NumberColumn("FFO Yield", help="Caixa gerado pelas operações do fundo sobre o preço. Mostra o potencial de distribuição.")
+            })
         else:
             st.warning("Selecione ao menos uma coluna para exibir na tabela.")
