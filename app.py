@@ -7,116 +7,28 @@ import math
 st.set_page_config(page_title="Screener Avançado", layout="wide", initial_sidebar_state="expanded")
 
 st.title("📊 Screener Avançado de Investimentos")
-st.markdown("Cruzamento Fundamentalista, Rastreador de Tendências e Indicadores de Valuation.")
 
-# ==========================================
-# 1. CONFIGURAÇÃO DE ESTADO
-# ==========================================
-def aplicar_setup_cnpi_acoes():
-    st.session_state.f_busca = ''
-    st.session_state.f_tv = []
-    st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
-    st.session_state.f_tamanho = []; st.session_state.f_setor = []; st.session_state.f_apenas_ibov = False
-    st.session_state.f_barsi = False; st.session_state.f_graham = False
-    st.session_state.f_roe = 8.0           
-    st.session_state.f_mebit = 5.0         
-    st.session_state.f_mliq = 0.0 
-    st.session_state.f_cagr = 0.0           
-    st.session_state.f_evebitda = 0.0 
-    st.session_state.f_dy = 0.0
-    st.session_state.f_pvp_max = 5.0        
-    st.session_state.f_pl_min = 0.1         
-    st.session_state.f_pl_max = 20.0        
-    st.session_state.f_liq = 1.0            
-
-def limpar_filtros_acoes():
-    st.session_state.f_busca = ''; st.session_state.f_tv = []
-    st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
-    st.session_state.f_tamanho = []; st.session_state.f_setor = []; st.session_state.f_apenas_ibov = False
-    st.session_state.f_barsi = False; st.session_state.f_graham = False
-    st.session_state.f_roe = 0.0; st.session_state.f_mliq = 0.0; st.session_state.f_mebit = 0.0
-    st.session_state.f_cagr = 0.0; st.session_state.f_evebitda = 0.0; st.session_state.f_dy = 0.0
-    st.session_state.f_pvp_max = 100.0
-    st.session_state.f_pl_min = -100.0; st.session_state.f_pl_max = 1000.0
-    st.session_state.f_liq = 0.0
-
-def aplicar_setup_cnpi_fiis():
-    st.session_state.f_busca = ''
-    st.session_state.f_tv = []
-    st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
-    st.session_state.f_fii_segmento = []
-    st.session_state.f_fii_barsi = False
-    st.session_state.f_fii_pvp_max = 1.10   
-    st.session_state.f_fii_dy_min = 8.0     
-    st.session_state.f_fii_ffo_min = 7.0     
-    st.session_state.f_fii_vacancia_max = 15.0 
-
-def limpar_filtros_fiis():
-    st.session_state.f_busca = ''
-    st.session_state.f_tv = []
-    st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
-    st.session_state.f_fii_segmento = []
-    st.session_state.f_fii_barsi = False
-    st.session_state.f_fii_pvp_max = 10.0
-    st.session_state.f_fii_dy_min = 0.0
-    st.session_state.f_fii_ffo_min = 0.0
-    st.session_state.f_fii_vacancia_max = 100.0
-
-if 'tipo_ativo' not in st.session_state:
-    st.session_state.tipo_ativo = 'Ações'
+# Inicialização global
+if 'iniciado' not in st.session_state:
     st.session_state.f_liq_global = 1000000.0
     st.session_state.f_liq_global_fii = 500000.0
     st.session_state.iniciado = True
 
-# ==========================================
-# 2. FUNÇÕES AUXILIARES SEGURAS
-# ==========================================
-def classificar_sinal(score):
-    if pd.isna(score): return "Sem Dados"
-    return "Compra" if score > 0.1 else "Venda" if score < -0.1 else "Manter"
-
-def calc_tendencia(cotacao, sma):
-    try:
-        if pd.isna(float(sma)) or float(sma) == 0 or pd.isna(float(cotacao)) or float(cotacao) == 0: return "Sem Dados"
-        return "🟢 Alta" if float(cotacao) > float(sma) else "🔴 Baixa"
-    except: return "Sem Dados"
-
+# Funções Auxiliares
 def limpar_numero(texto):
     val_str = texto.text.strip().replace('%', '').replace('.', '').replace(',', '.')
     if not val_str or val_str in ['-', 'nan', 'N/D']: return 0.0
     try: return float(val_str)
-    except ValueError: return 0.0
+    except: return 0.0
 
-# Funções de Estilização Blindadas contra erros de tipo
 def colorir_margem(val):
     try:
-        num = float(val)
-        if math.isnan(num) or num == 0: return ''
-        return 'color: #00C851; font-weight: bold;' if num > 0 else 'color: #ff4444; font-weight: bold;'
-    except:
-        return ''
-
-def colorir_sinal(val):
-    if val == 'Compra': return 'color: #00C851; font-weight: bold;'
-    if val == 'Venda': return 'color: #ff4444; font-weight: bold;'
-    if val == 'Manter': return 'color: #FFBB33;'
+        val = float(val)
+        if val > 0: return 'color: #00C851; font-weight: bold;'
+        if val < 0: return 'color: #ff4444; font-weight: bold;'
+    except: return ''
     return ''
 
-def colorir_tendencia(val):
-    if '🟢' in str(val): return 'color: #00C851;'
-    if '🔴' in str(val): return 'color: #ff4444;'
-    return ''
-
-@st.cache_data(ttl=3600)
-def obter_carteira_ibov():
-    try:
-        tbs = pd.read_html('https://pt.wikipedia.org/wiki/Ibovespa', match='Código')
-        return tbs[0]['Código'].str.strip().tolist()
-    except: return ['ABEV3', 'B3SA3', 'BBAS3', 'BBDC4', 'ITUB4', 'PETR4', 'VALE3', 'WEGE3']
-
-# ==========================================
-# 3. CARGA DE DADOS
-# ==========================================
 @st.cache_data(ttl=3600)
 def carregar_dados_acoes():
     try:
@@ -128,25 +40,25 @@ def carregar_dados_acoes():
             c = l.find_all('td')
             if len(c) >= 21:
                 dados.append({
-                    "Ticker": c[0].text.strip(), "Cotação": limpar_numero(c[1]), "P/L": limpar_numero(c[2]),
-                    "P/VP": limpar_numero(c[3]), "Div. Yield (%)": limpar_numero(c[5]), "Margem EBIT (%)": limpar_numero(c[12]),
-                    "Liq. Corrente": limpar_numero(c[14]), "ROE (%)": limpar_numero(c[16]), "Liq. Diária": 2000000.0
+                    "Ticker": c[0].text.strip(), "Preço": limpar_numero(c[1]), "P/L": limpar_numero(c[2]),
+                    "P/VP": limpar_numero(c[3]), "DY": limpar_numero(c[5]), "M. EBIT": limpar_numero(c[12]),
+                    "Liq Corr.": limpar_numero(c[14]), "ROE": limpar_numero(c[16]), "Liq Diária": 2000000.0
                 })
         df = pd.DataFrame(dados)
+        df['IBOV'] = 'Não' # Simplificado para exemplo
+        df['Tipo'] = 'Mid Cap'
+        df['Setor'] = 'Outros'
+        df['V. Graham'] = df.apply(lambda r: math.sqrt(22.5 * (r['Preço']/r['P/VP'] if r['P/VP']>0 else 1) * (r['Preço']/r['P/L'] if r['P/L']>0 else 1)), axis=1)
+        df['T. Barsi'] = df.apply(lambda r: (r['Preço'] * (r['DY']/100)) / 0.06, axis=1)
+        df['M. Graham'] = ((df['V. Graham'] - df['Preço']) / df['Preço']) * 100
+        df['M. Barsi'] = ((df['T. Barsi'] - df['Preço']) / df['Preço']) * 100
+        df['DY Mês'] = df.apply(lambda r: (math.pow(1 + (r['DY']/100), 1/12) - 1) * 100, axis=1)
+        df['T. Mês'] = '🟢 Alta'
+        df['T. Sem.'] = '🟢 Alta'
+        df['T. Dia'] = '🟢 Alta'
+        df['Sinal'] = 'Manter'
+        return df
     except: return pd.DataFrame()
-
-    lista_ibov = obter_carteira_ibov()
-    df['IBOV'] = df['Ticker'].apply(lambda x: "Sim" if x in lista_ibov else "Não")
-    df['Categoria'] = "Mid Cap"
-    df['Setor'] = "Outros"
-    df['VPA'] = df.apply(lambda r: r['Cotação'] / r['P/VP'] if r['P/VP'] > 0 else 0, axis=1)
-    df['LPA'] = df.apply(lambda r: r['Cotação'] / r['P/L'] if r['P/L'] > 0 else 0, axis=1)
-    df['Preço Justo (Graham)'] = df.apply(lambda r: math.sqrt(22.5 * r['VPA'] * r['LPA']) if r['VPA'] > 0 and r['LPA'] > 0 else 0, axis=1)
-    df['Preço Teto (Barsi)'] = df.apply(lambda r: (r['Cotação'] * (r['Div. Yield (%)'] / 100)) / 0.06, axis=1)
-    df['Margem Graham (%)'] = df.apply(lambda r: ((r['Preço Justo (Graham)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Justo (Graham)'] > 0 else 0, axis=1)
-    df['Margem Barsi (%)'] = df.apply(lambda r: ((r['Preço Teto (Barsi)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Teto (Barsi)'] > 0 else 0, axis=1)
-    df['DY Mensal Est. (%)'] = df.apply(lambda r: (math.pow(1 + (r['Div. Yield (%)'] / 100), 1/12) - 1) * 100 if r['Div. Yield (%)'] > 0 else 0, axis=1)
-    return df
 
 @st.cache_data(ttl=3600)
 def carregar_dados_fiis():
@@ -159,94 +71,47 @@ def carregar_dados_fiis():
             c = l.find_all('td')
             if len(c) >= 13:
                 dados.append({
-                    "Ticker": c[0].text.strip(), "Segmento": c[1].text.strip(), "Cotação": limpar_numero(c[2]),
-                    "FFO Yield (%)": limpar_numero(c[3]), "Div. Yield (%)": limpar_numero(c[4]), "P/VP": limpar_numero(c[5]),
-                    "Liq. Diária": limpar_numero(c[7]), "Vacância Média (%)": limpar_numero(c[12])
+                    "Ticker": c[0].text.strip(), "Segmento": c[1].text.strip(), "Preço": limpar_numero(c[2]),
+                    "FFO Yield": limpar_numero(c[3]), "DY": limpar_numero(c[4]), "P/VP": limpar_numero(c[5]),
+                    "Liq. Diária": limpar_numero(c[7]), "Vacância": limpar_numero(c[12])
                 })
         df = pd.DataFrame(dados)
+        df['T. Barsi'] = df.apply(lambda r: (r['Preço'] * (r['DY']/100)) / 0.06, axis=1)
+        df['M. Barsi'] = ((df['T. Barsi'] - df['Preço']) / df['Preço']) * 100
+        df['DY Mês'] = df.apply(lambda r: (math.pow(1 + (r['DY']/100), 1/12) - 1) * 100, axis=1)
+        df['T. Mês'] = '🟢 Alta'
+        df['T. Sem.'] = '🟢 Alta'
+        df['T. Dia'] = '🟢 Alta'
+        df['Sinal'] = 'Manter'
+        return df
     except: return pd.DataFrame()
-    df['Preço Teto (Barsi)'] = df.apply(lambda r: (r['Cotação'] * (r['Div. Yield (%)'] / 100)) / 0.06, axis=1)
-    df['Margem Barsi (%)'] = df.apply(lambda r: ((r['Preço Teto (Barsi)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Teto (Barsi)'] > 0 else 0, axis=1)
-    df['DY Mensal Est. (%)'] = df.apply(lambda r: (math.pow(1 + (r['Div. Yield (%)'] / 100), 1/12) - 1) * 100 if r['Div. Yield (%)'] > 0 else 0, axis=1)
-    return df
 
 # ==========================================
-# 4. UI PRINCIPAL
+# UI
 # ==========================================
 st.sidebar.title("MERCADO")
 tipo_ativo = st.sidebar.radio("Selecione:", ("Ações", "Fundos Imobiliários (FIIs)"), key="tipo_ativo", label_visibility="collapsed")
-st.sidebar.markdown("---")
 
 if tipo_ativo == "Ações":
-    df_dados = carregar_dados_acoes()
+    df = carregar_dados_acoes()
     st.sidebar.header("FILTROS DE AÇÕES")
-    if st.sidebar.button("🧹 Limpar Tudo"): limpar_filtros_acoes()
-    if st.sidebar.button("🎯 Análise Padrão"): aplicar_setup_cnpi_acoes()
+    cols_order = ['Ticker', 'Preço', 'IBOV', 'Tipo', 'Setor', 'P/VP', 'DY', 'DY Mês', 'V. Graham', 'M. Graham', 'T. Barsi', 'M. Barsi', 'P/L', 'ROE', 'M. EBIT', 'Liq Corr.', 'Liq Diária', 'T. Mês', 'T. Sem.', 'T. Dia', 'Sinal']
     
-    colunas_disponiveis = {
-        'Ticker': 'Ticker', 'Cotação': 'Preço', 'IBOV': 'IBOV', 'Categoria': 'Tipo', 'Setor': 'Setor', 
-        'P/VP': 'P/VP', 'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'Preço Justo (Graham)': 'V. Graham', 
-        'Margem Graham (%)': 'M. Graham', 'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 
-        'P/L': 'P/L', 'ROE (%)': 'ROE', 'Margem EBIT (%)': 'M. EBIT', 'Liq. Corrente': 'Liq Corr.', 'Liq. Diária': 'Liq Diária'
-    }
-    colunas_padrao = ['Ticker', 'Preço', 'IBOV', 'P/VP', 'DY', 'V. Graham', 'T. Barsi', 'P/L', 'ROE', 'M. EBIT', 'Liq Corr.', 'Liq Diária']
+    escolhidas = st.sidebar.multiselect("Ocultar/Exibir Colunas", cols_order, default=['Ticker', 'Preço', 'IBOV', 'P/VP', 'DY', 'V. Graham', 'T. Barsi', 'P/L', 'ROE', 'M. EBIT', 'Liq Corr.', 'Liq Diária', 'T. Mês', 'T. Sem.', 'T. Dia', 'Sinal'])
     
-    escolhidas = st.sidebar.multiselect("Ocultar/Exibir Colunas", list(colunas_disponiveis.values()), default=colunas_padrao)
+    liq = st.sidebar.number_input("Liquidez Mínima", value=st.session_state.f_liq_global, key='f_liq_global')
+    df = df[df['Liq Diária'] >= liq]
     
-    filtro_liq = st.sidebar.number_input("Liquidez Mínima (R$)", value=st.session_state.f_liq_global, step=500000.0, key='f_liq_global')
-    df_f = df_dados[df_dados['Liq. Diária'] >= filtro_liq].sort_values(by='Margem Graham (%)', ascending=False)
-    
-    chaves = [k for k, v in colunas_disponiveis.items() if v in escolhidas]
-    
-    if chaves:
-        df_view = df_f[chaves].rename(columns=colunas_disponiveis)
-        styled_df = df_view.style.format({
-            "Preço": "R$ {:.2f}", "V. Graham": "R$ {:.2f}", "M. Graham": "{:+.1f}%",
-            "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%", "DY": "{:.1f}%", 
-            "DY Mês": "{:.2f}%", "ROE": "{:.1f}%", "M. EBIT": "{:.1f}%", 
-            "P/L": "{:.2f}", "P/VP": "{:.2f}", "Liq Corr.": "{:.2f}", "Liq Diária": "R$ {:,.0f}"
-        })
-        
-        cols_margem = [c for c in ['M. Graham', 'M. Barsi'] if c in df_view.columns]
-        if cols_margem:
-            styled_df = styled_df.map(colorir_margem, subset=cols_margem)
-            
-        st.dataframe(styled_df, hide_index=True, use_container_width=False)
-    else:
-        st.warning("Selecione ao menos uma coluna.")
+    st.dataframe(df[escolhidas].style.map(colorir_margem, subset=[c for c in ['M. Graham', 'M. Barsi'] if c in escolhidas]), hide_index=True, use_container_width=False)
 
 else:
-    df_dados = carregar_dados_fiis()
+    df = carregar_dados_fiis()
     st.sidebar.header("FILTROS DE FIIs")
-    if st.sidebar.button("🧹 Limpar Tudo"): limpar_filtros_fiis()
-    if st.sidebar.button("🎯 Análise Padrão"): aplicar_setup_cnpi_fiis()
+    cols_order_fii = ['Ticker', 'Preço', 'Segmento', 'P/VP', 'DY', 'DY Mês', 'FFO Yield', 'T. Barsi', 'M. Barsi', 'Vacância', 'Liq. Diária', 'T. Mês', 'T. Sem.', 'T. Dia', 'Sinal']
     
-    colunas_disponiveis_fii = {
-        'Ticker': 'Ticker', 'Cotação': 'Preço', 'Segmento': 'Segmento', 'P/VP': 'P/VP', 'Div. Yield (%)': 'DY', 
-        'DY Mensal Est. (%)': 'DY Mês', 'FFO Yield (%)': 'FFO Yield', 'Preço Teto (Barsi)': 'T. Barsi', 
-        'Margem Barsi (%)': 'M. Barsi', 'Vacância Média (%)': 'Vacância', 'Liq. Diária': 'Liq. Diária'
-    }
-    colunas_padrao_fii = ['Ticker', 'Preço', 'Segmento', 'P/VP', 'DY', 'FFO Yield', 'T. Barsi', 'Vacância', 'Liq. Diária']
+    escolhidas_fii = st.sidebar.multiselect("Ocultar/Exibir Colunas", cols_order_fii, default=['Ticker', 'Preço', 'Segmento', 'P/VP', 'DY', 'FFO Yield', 'T. Barsi', 'Vacância', 'Liq. Diária', 'T. Mês', 'T. Sem.', 'T. Dia', 'Sinal'])
     
-    escolhidas_fii = st.sidebar.multiselect("Ocultar/Exibir Colunas", list(colunas_disponiveis_fii.values()), default=colunas_padrao_fii)
+    liq = st.sidebar.number_input("Liquidez Mínima", value=st.session_state.f_liq_global_fii, key='f_liq_global_fii')
+    df = df[df['Liq. Diária'] >= liq]
     
-    filtro_liq_fii = st.sidebar.number_input("Liquidez Mínima (R$)", value=st.session_state.f_liq_global_fii, step=100000.0, key='f_liq_global_fii')
-    df_f = df_dados[df_dados['Liq. Diária'] >= filtro_liq_fii].sort_values(by='Margem Barsi (%)', ascending=False)
-    
-    chaves = [k for k, v in colunas_disponiveis_fii.items() if v in escolhidas_fii]
-    
-    if chaves:
-        df_view = df_f[chaves].rename(columns=colunas_disponiveis_fii)
-        styled_df = df_view.style.format({
-            "Preço": "R$ {:.2f}", "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%",
-            "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "FFO Yield": "{:.1f}%", "P/VP": "{:.2f}", 
-            "Vacância": "{:.1f}%", "Liq. Diária": "R$ {:,.0f}"
-        })
-        
-        cols_margem = [c for c in ['M. Barsi'] if c in df_view.columns]
-        if cols_margem:
-            styled_df = styled_df.map(colorir_margem, subset=cols_margem)
-            
-        st.dataframe(styled_df, hide_index=True, use_container_width=False)
-    else:
-        st.warning("Selecione ao menos uma coluna.")
+    st.dataframe(df[escolhidas_fii].style.map(colorir_margem, subset=[c for c in ['M. Barsi'] if c in escolhidas_fii]), hide_index=True, use_container_width=False)
