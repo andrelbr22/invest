@@ -28,9 +28,11 @@ def aplicar_setup_cnpi_acoes():
     st.session_state.f_pl_min = 0.1         
     st.session_state.f_pl_max = 20.0        
     st.session_state.f_liq = 1.0            
+    st.session_state.val_liq_acoes = 1000000.0
 
 def limpar_filtros_acoes():
-    st.session_state.f_busca = ''; st.session_state.f_tv = []
+    st.session_state.f_busca = ''
+    st.session_state.f_tv = []
     st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
     st.session_state.f_tamanho = []; st.session_state.f_setor = []; st.session_state.f_apenas_ibov = False
     st.session_state.f_barsi = False; st.session_state.f_graham = False
@@ -39,6 +41,7 @@ def limpar_filtros_acoes():
     st.session_state.f_pvp_max = 100.0
     st.session_state.f_pl_min = -100.0; st.session_state.f_pl_max = 1000.0
     st.session_state.f_liq = 0.0
+    st.session_state.val_liq_acoes = 1000000.0
 
 def aplicar_setup_cnpi_fiis():
     st.session_state.f_busca = ''
@@ -50,6 +53,7 @@ def aplicar_setup_cnpi_fiis():
     st.session_state.f_fii_dy_min = 8.0     
     st.session_state.f_fii_ffo_min = 7.0     
     st.session_state.f_fii_vacancia_max = 15.0 
+    st.session_state.val_liq_fiis = 500000.0
 
 def limpar_filtros_fiis():
     st.session_state.f_busca = ''
@@ -61,19 +65,19 @@ def limpar_filtros_fiis():
     st.session_state.f_fii_dy_min = 0.0
     st.session_state.f_fii_ffo_min = 0.0
     st.session_state.f_fii_vacancia_max = 100.0
+    st.session_state.val_liq_fiis = 500000.0
 
-# Inicialização Global e Trava de Memória
+# Shadow State (Variáveis de Sombra) - Impede que o Streamlit perca o valor ao trocar de tela
+if 'val_liq_acoes' not in st.session_state:
+    st.session_state.val_liq_acoes = 1000000.0
+if 'val_liq_fiis' not in st.session_state:
+    st.session_state.val_liq_fiis = 500000.0
+
 if 'iniciado' not in st.session_state:
     aplicar_setup_cnpi_acoes()
     aplicar_setup_cnpi_fiis()
     st.session_state.tipo_ativo = 'Ações'
     st.session_state.iniciado = True
-
-# Trava Anti-Bug do Streamlit (Impede que a liquidez zere ao trocar de aba)
-if 'f_liq_global' not in st.session_state:
-    st.session_state.f_liq_global = 1000000.0
-if 'f_liq_global_fii' not in st.session_state:
-    st.session_state.f_liq_global_fii = 500000.0
 
 # ==========================================
 # 2. FUNÇÕES AUXILIARES DE CORES E DADOS
@@ -306,11 +310,14 @@ if tipo_ativo == "Ações":
             min_cagr = st.number_input("CAGR Receita Mínimo (%)", step=1.0, key='f_cagr')
 
         st.sidebar.subheader("LIQUIDEZ MÍNIMA")
+        # Implementação do Shadow State desacoplado
         filtro_liq_permanente = st.sidebar.number_input(
             "Volume Diário Mín. (R$)", 
-            min_value=0.0, step=100000.0, format="%.0f", key='f_liq_global',
+            min_value=0.0, step=500000.0, format="%.0f", 
+            value=st.session_state.val_liq_acoes,
             help="Filtro de segurança permanente. Padrão R$ 1.000.000."
         )
+        st.session_state.val_liq_acoes = filtro_liq_permanente # Salva a nova digitação na memória
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
         df_dados['Tend. Semanal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_semanal}|1W', 0)), axis=1)
@@ -449,11 +456,14 @@ else:
         max_vac = st.sidebar.number_input("Vacância Máxima (%)", step=1.0, key='f_fii_vacancia_max')
 
         st.sidebar.subheader("LIQUIDEZ MÍNIMA")
+        # Implementação do Shadow State desacoplado
         filtro_liq_permanente = st.sidebar.number_input(
             "Volume Diário Mín. (R$)", 
-            min_value=0.0, step=100000.0, format="%.0f", key='f_liq_global_fii',
+            min_value=0.0, step=100000.0, format="%.0f", 
+            value=st.session_state.val_liq_fiis,
             help="Filtro de segurança permanente. Padrão FIIs: R$ 500.000."
         )
+        st.session_state.val_liq_fiis = filtro_liq_permanente # Salva a nova digitação na memória
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
         df_dados['Tend. Semanal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_semanal}|1W', 0)), axis=1)
