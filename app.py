@@ -16,7 +16,7 @@ def aplicar_setup_cnpi_acoes():
     st.session_state.f_busca = ''
     st.session_state.f_tv = []
     st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
-    st.session_state.f_tamanho = []; st.session_state.f_apenas_ibov = False
+    st.session_state.f_tamanho = []; st.session_state.f_setor = []; st.session_state.f_apenas_ibov = False
     st.session_state.f_barsi = False; st.session_state.f_graham = False
     
     st.session_state.f_roe = 8.0           
@@ -25,7 +25,6 @@ def aplicar_setup_cnpi_acoes():
     st.session_state.f_cagr = 0.0           
     st.session_state.f_evebitda = 0.0 
     st.session_state.f_dy = 0.0
-    st.session_state.f_pvp_min = 0.2        
     st.session_state.f_pvp_max = 5.0        
     st.session_state.f_pl_min = 0.1         
     st.session_state.f_pl_max = 20.0        
@@ -34,14 +33,13 @@ def aplicar_setup_cnpi_acoes():
 def limpar_filtros_acoes():
     st.session_state.f_busca = ''; st.session_state.f_tv = []
     st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
-    st.session_state.f_tamanho = []; st.session_state.f_apenas_ibov = False
+    st.session_state.f_tamanho = []; st.session_state.f_setor = []; st.session_state.f_apenas_ibov = False
     st.session_state.f_barsi = False; st.session_state.f_graham = False
     st.session_state.f_roe = 0.0; st.session_state.f_mliq = 0.0; st.session_state.f_mebit = 0.0
     st.session_state.f_cagr = 0.0; st.session_state.f_evebitda = 0.0; st.session_state.f_dy = 0.0
-    st.session_state.f_pvp_min = 0.0; st.session_state.f_pvp_max = 100.0
+    st.session_state.f_pvp_max = 100.0
     st.session_state.f_pl_min = -100.0; st.session_state.f_pl_max = 1000.0
     st.session_state.f_liq = 0.0
-    # Nota: f_liq_global (liquidez financeira permanente) NÃO é resetada aqui.
 
 def aplicar_setup_cnpi_fiis():
     st.session_state.f_busca = ''
@@ -50,9 +48,9 @@ def aplicar_setup_cnpi_fiis():
     st.session_state.f_fii_segmento = []
     st.session_state.f_fii_barsi = False
     
-    st.session_state.f_fii_pvp_min = 0.70   
     st.session_state.f_fii_pvp_max = 1.10   
     st.session_state.f_fii_dy_min = 8.0     
+    st.session_state.f_fii_ffo_min = 7.0     
     st.session_state.f_fii_vacancia_max = 15.0 
 
 def limpar_filtros_fiis():
@@ -61,16 +59,16 @@ def limpar_filtros_fiis():
     st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
     st.session_state.f_fii_segmento = []
     st.session_state.f_fii_barsi = False
-    st.session_state.f_fii_pvp_min = 0.0; st.session_state.f_fii_pvp_max = 10.0
-    st.session_state.f_fii_dy_min = 0.0; st.session_state.f_fii_vacancia_max = 100.0
-    # Nota: f_liq_global NÃO é resetada aqui.
+    st.session_state.f_fii_pvp_max = 10.0
+    st.session_state.f_fii_dy_min = 0.0
+    st.session_state.f_fii_ffo_min = 0.0
+    st.session_state.f_fii_vacancia_max = 100.0
 
-# Inicialização global do estado e do filtro permanente de liquidez
 if 'iniciado' not in st.session_state:
     aplicar_setup_cnpi_acoes()
     aplicar_setup_cnpi_fiis()
     st.session_state.tipo_ativo = 'Ações'
-    st.session_state.f_liq_global = 1000000.0 # Padrão permanente de R$ 1 Milhão
+    st.session_state.f_liq_global = 1000000.0 
     st.session_state.iniciado = True
 
 # ==========================================
@@ -104,8 +102,8 @@ def obter_carteira_ibov():
     except: 
         return ['ABEV3', 'B3SA3', 'BBAS3', 'BBDC4', 'ITUB4', 'PETR4', 'VALE3', 'WEGE3']
 
-# Incluindo 'Value.Traded' para capturar a liquidez dos últimos pregões via TradingView
-TV_COLS = ["name", "Recommend.All", "market_cap_basic", "Value.Traded", "SMA20", "SMA50", "SMA200", "SMA20|1W", "SMA50|1W", "SMA20|1M", "SMA50|1M"]
+# Colunas adicionando 'sector' para extração de Setor via TradingView
+TV_COLS = ["name", "Recommend.All", "market_cap_basic", "Value.Traded", "sector", "SMA20", "SMA50", "SMA200", "SMA20|1W", "SMA50|1W", "SMA20|1M", "SMA50|1M"]
 
 # ==========================================
 # 3. EXTRAÇÃO DE DADOS (AÇÕES)
@@ -142,14 +140,16 @@ def carregar_dados_acoes():
             d = item['d']
             tv_dict[d[0].split(":")[-1]] = {
                 'Score TV': d[1], 'Market Cap': d[2], 'Liq. Diária': d[3] if d[3] is not None else 0.0,
-                'SMA20': d[4], 'SMA50': d[5], 'SMA200': d[6],
-                'SMA20|1W': d[7], 'SMA50|1W': d[8], 'SMA20|1M': d[9], 'SMA50|1M': d[10]
+                'Setor': d[4] if d[4] is not None and d[4] != "" else "Outros",
+                'SMA20': d[5], 'SMA50': d[6], 'SMA200': d[7],
+                'SMA20|1W': d[8], 'SMA50|1W': d[9], 'SMA20|1M': d[10], 'SMA50|1M': d[11]
             }
         df_tv = pd.DataFrame.from_dict(tv_dict, orient='index').reset_index().rename(columns={'index': 'Ticker'})
         df = pd.merge(df, df_tv, on='Ticker', how='left')
     except:
         df['Liq. Diária'] = 0.0
-        for col in TV_COLS[3:]: df[col] = None
+        df['Setor'] = 'Outros'
+        for col in TV_COLS[4:]: df[col] = None
 
     lista_ibov = obter_carteira_ibov()
     df['Sinal Técnico'] = df['Score TV'].apply(classificar_sinal)
@@ -202,8 +202,8 @@ def carregar_dados_fiis():
             d = item['d']
             tv_dict[d[0].split(":")[-1]] = {
                 'Score TV': d[1], 'Liq. Diária': d[3] if d[3] is not None else 0.0,
-                'SMA20': d[4], 'SMA50': d[5], 'SMA200': d[6],
-                'SMA20|1W': d[7], 'SMA50|1W': d[8], 'SMA20|1M': d[9], 'SMA50|1M': d[10]
+                'Setor': d[4], 'SMA20': d[5], 'SMA50': d[6], 'SMA200': d[7],
+                'SMA20|1W': d[8], 'SMA50|1W': d[9], 'SMA20|1M': d[10], 'SMA50|1M': d[11]
             }
         df_tv = pd.DataFrame.from_dict(tv_dict, orient='index').reset_index().rename(columns={'index': 'Ticker'})
         df = pd.merge(df, df_tv, on='Ticker', how='left')
@@ -219,10 +219,10 @@ def carregar_dados_fiis():
     return df
 
 # ==========================================
-# 5. RENDERIZAÇÃO DA BARRA LATERAL E CONTROLES
+# 5. RENDERIZAÇÃO DA BARRA LATERAL (MERCADO)
 # ==========================================
-st.sidebar.title("Configurações")
-tipo_ativo = st.sidebar.radio("1. Selecione o mercado:", ("Ações", "Fundos Imobiliários (FIIs)"), key="tipo_ativo")
+st.sidebar.title("MERCADO")
+tipo_ativo = st.sidebar.radio("Selecione o mercado:", ("Ações", "Fundos Imobiliários (FIIs)"), key="tipo_ativo", label_visibility="collapsed")
 st.sidebar.markdown("---")
 
 # ==========================================
@@ -233,11 +233,19 @@ if tipo_ativo == "Ações":
         df_dados = carregar_dados_acoes()
         
     if not df_dados.empty:
-        st.sidebar.header("🔍 Filtros de Ações")
+        st.sidebar.header("FILTROS DE AÇÕES")
         
-        # Mapeamento com nomes curtos para colunas estreitas
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            st.button("🧹 Limpar Tudo", on_click=limpar_filtros_acoes, use_container_width=True)
+        with col2:
+            st.button("🎯 Padrão", on_click=aplicar_setup_cnpi_acoes, type="primary", use_container_width=True)
+            
+        busca = st.sidebar.text_input("Buscar Ticker (ex: BBAS3)", key='f_busca').upper()
+        
+        # Ocultar/Exibir Colunas (respeitando a ordem de seleção do usuário)
         colunas_disponiveis = {
-            'Ticker': 'Ticker', 'IBOV': 'IBOV', 'Tend. Mensal': 'T. Mês', 
+            'Ticker': 'Ticker', 'IBOV': 'IBOV', 'Setor': 'Setor', 'Tend. Mensal': 'T. Mês', 
             'Tend. Semanal': 'T. Sem', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal', 
             'Cotação': 'Preço', 'Preço Justo (Graham)': 'V. Graham', 'Margem Graham (%)': 'M. Graham', 
             'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 'Div. Yield (%)': 'DY', 
@@ -245,35 +253,15 @@ if tipo_ativo == "Ações":
             'Margem EBIT (%)': 'M. EBIT', 'Liq. Corrente': 'Liq. Corr', 'Liq. Diária': 'Liq. Diária'
         }
         
-        # Ocultar/Exibir Colunas colocado no topo e com TODAS marcadas por padrão
         colunas_escolhidas = st.sidebar.multiselect(
-            "👁️ Ocultar/Exibir Colunas", 
+            "Ocultar/Exibir Colunas", 
             options=list(colunas_disponiveis.values()), 
             default=list(colunas_disponiveis.values())
         )
         
         st.sidebar.markdown("---")
-        
-        col1, col2 = st.sidebar.columns(2)
-        with col1:
-            st.button("🧹 Limpar Tudo", on_click=limpar_filtros_acoes, use_container_width=True)
-        with col2:
-            st.button("🎯 Padrão CNPI", on_click=aplicar_setup_cnpi_acoes, type="primary", use_container_width=True)
-            
-        busca = st.sidebar.text_input("Buscar Ticker (ex: BBAS3)", key='f_busca').upper()
-        
-        # Filtro Permanente de Liquidez Diária posicionado nos filtros analíticos
-        st.sidebar.subheader("💧 Liquidez Mínima")
-        filtro_liq_permanente = st.sidebar.number_input(
-            "Volume Diário Mín. (R$)", 
-            min_value=0.0, 
-            step=500000.0, 
-            format="%.0f",
-            key='f_liq_global',
-            help="Filtro permanente de segurança institucional baseado na média recente. Não é resetado pelo botão 'Limpar Tudo'."
-        )
-        
-        with st.sidebar.expander("📈 Rastreador de Tendências", expanded=False):
+        st.sidebar.subheader("RASTREADOR DE TENDÊNCIAS")
+        with st.sidebar.expander("Configurar Médias Móveis"):
             opcoes_tv = st.multiselect("Sinal Geral (TradingView)", ["Compra", "Venda", "Manter"], key='f_tv')
             p_diario = st.selectbox("Período da Média Diária", [20, 50, 200], index=0)
             t_diario = st.multiselect("Tendência Diária", ["🟢 Alta", "🔴 Baixa"], key='f_tend_d')
@@ -282,26 +270,41 @@ if tipo_ativo == "Ações":
             p_mensal = st.selectbox("Período da Média Mensal", [20, 50], index=0)
             t_mensal = st.multiselect("Tendência Mensal", ["🟢 Alta", "🔴 Baixa"], key='f_tend_m')
 
-        st.sidebar.subheader("📊 Classificação e Valuation")
-        apenas_ibov = st.sidebar.checkbox("Apenas ações do IBOV", key='f_apenas_ibov')
-        opcoes_tamanho = st.sidebar.multiselect("Tamanho", ["Blue Chip", "Mid Cap", "Small Cap"], key='f_tamanho')
+        st.sidebar.subheader("CLASSIFICAÇÃO E VALUATION")
+        apenas_ibov = st.sidebar.checkbox("Filtrar IBOV (Sim / Não)", key='f_apenas_ibov')
+        opcoes_tamanho = st.sidebar.multiselect("Filtrar Tamanho", ["Blue Chip", "Mid Cap", "Small Cap"], key='f_tamanho')
+        
+        setores_disp = sorted(df_dados['Setor'].dropna().unique().tolist())
+        opcoes_setor = st.sidebar.multiselect("Filtrar Setor", setores_disp, key='f_setor')
+        
+        opcoes_sinal_val = st.sidebar.multiselect("Filtrar Sinal", ["Compra", "Venda", "Manter", "Sem Dados"], key='f_sinal_filtro') if 'f_sinal_filtro' in st.session_state else st.sidebar.multiselect("Filtrar Sinal", ["Compra", "Venda", "Manter", "Sem Dados"], key='f_sinal_filtro')
+
         filtro_barsi = st.sidebar.checkbox("Cotação Abaixo do Preço Teto (Barsi)", key='f_barsi')
         filtro_graham = st.sidebar.checkbox("Cotação Abaixo do Preço Justo (Graham)", key='f_graham')
         
-        with st.sidebar.expander("💼 Preço & Múltiplos"):
-            min_pvp = st.number_input("P/VP Mínimo", step=0.1, key='f_pvp_min')
+        with st.sidebar.expander("Preços e Múltiplos"):
             max_pvp = st.number_input("P/VP Máximo (0=desativa)", step=0.1, key='f_pvp_max')
             min_pl = st.number_input("P/L Mínimo", step=1.0, key='f_pl_min')
             max_pl = st.number_input("P/L Máximo (0=desativa)", step=1.0, key='f_pl_max')
             min_dy = st.number_input("Dividend Yield Mín. (%)", step=0.5, key='f_dy')
             max_evebitda = st.number_input("EV/EBITDA Máx. (0=desativa)", step=1.0, key='f_evebitda')
 
-        with st.sidebar.expander("💼 Rentabilidade & Saúde"):
+        with st.sidebar.expander("Rentabilidade e Saúde"):
             min_roe = st.number_input("ROE Mínimo (%)", step=1.0, key='f_roe')
             min_mebit = st.number_input("Margem EBIT Mín. (%)", step=1.0, key='f_mebit')
             min_mliq = st.number_input("Margem Líquida Mín. (%)", step=1.0, key='f_mliq')
             min_liq = st.number_input("Liquidez Corrente Mínima", step=0.1, key='f_liq')
             min_cagr = st.number_input("CAGR Receita Mínimo (%)", step=1.0, key='f_cagr')
+
+        st.sidebar.subheader("LIQUIDEZ MÍNIMA")
+        filtro_liq_permanente = st.sidebar.number_input(
+            "Volume Diário Mín. (R$)", 
+            min_value=0.0, 
+            step=500000.0, 
+            format="%.0f",
+            key='f_liq_global',
+            help="Filtro permanente de segurança institucional baseado na média recente. Não é resetado pelo botão 'Limpar Tudo'."
+        )
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
         df_dados['Tend. Semanal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_semanal}|1W', 0)), axis=1)
@@ -315,14 +318,16 @@ if tipo_ativo == "Ações":
         if busca: df_f = df_f[df_f['Ticker'].str.contains(busca)]
         if apenas_ibov: df_f = df_f[df_f['IBOV'] == "Sim"]
         if opcoes_tamanho: df_f = df_f[df_f['Categoria'].isin(opcoes_tamanho)]
+        if opcoes_setor: df_f = df_f[df_f['Setor'].isin(opcoes_setor)]
         if opcoes_tv: df_f = df_f[df_f['Sinal Técnico'].isin(opcoes_tv)]
+        if opcoes_sinal_val: df_f = df_f[df_f['Sinal Técnico'].isin(opcoes_sinal_val)]
         if t_diario: df_f = df_f[df_f['Tend. Diária'].isin(t_diario)]
         if t_semanal: df_f = df_f[df_f['Tend. Semanal'].isin(t_semanal)]
         if t_mensal: df_f = df_f[df_f['Tend. Mensal'].isin(t_mensal)]
         if filtro_barsi: df_f = df_f[df_f['Cotação'] < df_f['Preço Teto (Barsi)']]
         if filtro_graham: df_f = df_f[df_f['Cotação'] < df_f['Preço Justo (Graham)']]
         
-        if max_pvp > 0: df_f = df_f[(df_f['P/VP'] >= min_pvp) & (df_f['P/VP'] <= max_pvp)]
+        if max_pvp > 0: df_f = df_f[df_f['P/VP'] <= max_pvp]
         if max_pl > 0: df_f = df_f[(df_f['P/L'] >= min_pl) & (df_f['P/L'] <= max_pl)]
         if min_dy > 0: df_f = df_f[df_f['Div. Yield (%)'] >= min_dy]
         if max_evebitda > 0: df_f = df_f[df_f['EV/EBITDA'] <= max_evebitda]
@@ -334,10 +339,13 @@ if tipo_ativo == "Ações":
 
         st.subheader(f"🏢 Ações Encontradas: {len(df_f)}")
         
+        # Ordena as colunas reais conforme o usuário selecionou e ordenou no multiselect
         chaves_reais = [k for k, v in colunas_disponiveis.items() if v in colunas_escolhidas]
+        # Garante a ordem exata escolhida pelo usuário no multiselect
+        chaves_reais_ordenadas = sorted(chaves_reais, key=lambda x: colunas_escolhidas.index(colunas_disponiveis[x]))
 
-        if chaves_reais:
-            st.dataframe(df_f[chaves_reais].rename(columns=colunas_disponiveis).style.format({
+        if chaves_reais_ordenadas:
+            st.dataframe(df_f[chaves_reais_ordenadas].rename(columns=colunas_disponiveis).style.format({
                 "Preço": "R$ {:.2f}", "V. Graham": "R$ {:.2f}", "M. Graham": "{:+.1f}%",
                 "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%", "DY": "{:.1f}%", 
                 "DY Mês": "{:.2f}%", "ROE": "{:.1f}%", "M. EBIT": "{:.1f}%", 
@@ -355,45 +363,20 @@ else:
         df_dados = carregar_dados_fiis()
         
     if not df_dados.empty:
-        st.sidebar.header("🏢 Filtros de FIIs")
-        
-        colunas_disponiveis_fii = {
-            'Ticker': 'Ticker', 'Segmento': 'Segmento', 'Tend. Mensal': 'T. Mês', 
-            'Tend. Semanal': 'T. Sem', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal', 
-            'Cotação': 'Preço', 'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 
-            'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'P/VP': 'P/VP', 
-            'Vacância Média (%)': 'Vacância', 'Liq. Diária': 'Liq. Diária'
-        }
-        
-        colunas_escolhidas_fii = st.sidebar.multiselect(
-            "👁️ Ocultar/Exibir Colunas", 
-            options=list(colunas_disponiveis_fii.values()), 
-            default=list(colunas_disponiveis_fii.values())
-        )
-        
-        st.sidebar.markdown("---")
+        st.sidebar.header("FILTROS DE FIIs")
         
         col1, col2 = st.sidebar.columns(2)
         with col1:
             st.button("🧹 Limpar Tudo", on_click=limpar_filtros_fiis, use_container_width=True)
         with col2:
-            st.button("🎯 Padrão CNPI", on_click=aplicar_setup_cnpi_fiis, type="primary", use_container_width=True)
+            st.button("🎯 Padrão", on_click=aplicar_setup_cnpi_fiis, type="primary", use_container_width=True)
         
-        busca = st.sidebar.text_input("Buscar FII (ex: MXRF11)", key='f_busca').upper()
-        
-        st.sidebar.subheader("💧 Liquidez Mínima")
-        filtro_liq_permanente = st.sidebar.number_input(
-            "Volume Diário Mín. (R$)", 
-            min_value=0.0, 
-            step=500000.0, 
-            format="%.0f",
-            key='f_liq_global',
-            help="Filtro permanente de segurança institucional. Não é resetado pelo botão 'Limpar Tudo'."
-        )
+        busca = st.sidebar.text_input("Buscar FII pelo código (ex: MXRF11)", key='f_busca').upper()
         
         opcoes_seg = st.sidebar.multiselect("Filtrar por Segmento", sorted(df_dados['Segmento'].unique().tolist()), key='f_fii_segmento')
         
-        with st.sidebar.expander("📈 Rastreador de Tendências", expanded=False):
+        st.sidebar.subheader("RASTREADOR DE TENDENCIAS")
+        with st.sidebar.expander("Configurar Médias Móveis"):
             opcoes_tv = st.multiselect("Sinal Geral (TradingView)", ["Compra", "Venda", "Manter"], key='f_tv')
             p_diario = st.selectbox("Período da Média Diária", [20, 50, 200], index=0)
             t_diario = st.multiselect("Tendência Diária", ["🟢 Alta", "🔴 Baixa"], key='f_tend_d')
@@ -402,13 +385,36 @@ else:
             p_mensal = st.selectbox("Período da Média Mensal", [20, 50], index=0)
             t_mensal = st.multiselect("Tendência Mensal", ["🟢 Alta", "🔴 Baixa"], key='f_tend_m')
 
-        st.sidebar.subheader("🎯 Metodologias e Indicadores")
-        filtro_barsi = st.sidebar.checkbox("Cotação Abaixo do Preço Teto (Barsi)", key='f_fii_barsi')
+        colunas_disponiveis_fii = {
+            'Ticker': 'Ticker', 'Segmento': 'Segmento', 'Tend. Mensal': 'T. Mês', 
+            'Tend. Semanal': 'T. Sem', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal', 
+            'Cotação': 'Preço', 'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 
+            'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'FFO Yield (%)': 'FFO Yield', 'P/VP': 'P/VP', 
+            'Vacância Média (%)': 'Vacância', 'Liq. Diária': 'Liq. Diária'
+        }
         
-        min_pvp = st.sidebar.number_input("P/VP Mínimo", step=0.05, key='f_fii_pvp_min')
+        colunas_escolhidas_fii = st.sidebar.multiselect(
+            "Ocultar/Exibir Colunas", 
+            options=list(colunas_disponiveis_fii.values()), 
+            default=list(colunas_disponiveis_fii.values())
+        )
+
+        st.sidebar.subheader("METODOLOGIAS E INDICADORES")
+        filtro_barsi = st.sidebar.checkbox("Cotação Abaixo do Preço Teto (Barsi)", key='f_fii_barsi')
         max_pvp = st.sidebar.number_input("P/VP Máximo (0=desativa)", step=0.05, key='f_fii_pvp_max')
-        min_dy = st.sidebar.number_input("Dividend Yield Mín. (%)", step=0.5, key='f_fii_dy_min')
+        min_dy = st.sidebar.number_input("Dividend Yield Mínimo (%)", step=0.5, key='f_fii_dy_min')
+        min_ffo = st.sidebar.number_input("FFO Yield Mínimo (%)", step=0.5, key='f_fii_ffo_min')
         max_vac = st.sidebar.number_input("Vacância Máxima (%)", step=1.0, key='f_fii_vacancia_max')
+
+        st.sidebar.subheader("LIQUIDEZ MÍNIMA")
+        filtro_liq_permanente = st.sidebar.number_input(
+            "Volume Diário Mín. (R$)", 
+            min_value=0.0, 
+            step=500000.0, 
+            format="%.0f",
+            key='f_liq_global',
+            help="Filtro permanente de segurança institucional. Não é resetado pelo botão 'Limpar Tudo'."
+        )
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
         df_dados['Tend. Semanal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_semanal}|1W', 0)), axis=1)
@@ -427,18 +433,20 @@ else:
         if t_mensal: df_f = df_f[df_f['Tend. Mensal'].isin(t_mensal)]
         if filtro_barsi: df_f = df_f[df_f['Cotação'] < df_f['Preço Teto (Barsi)']]
         
-        if max_pvp > 0: df_f = df_f[(df_f['P/VP'] >= min_pvp) & (df_f['P/VP'] <= max_pvp)]
+        if max_pvp > 0: df_f = df_f[df_f['P/VP'] <= max_pvp]
         if min_dy > 0: df_f = df_f[df_f['Div. Yield (%)'] >= min_dy]
+        if min_ffo > 0: df_f = df_f[df_f['FFO Yield (%)'] >= min_ffo]
         if max_vac > 0: df_f = df_f[df_f['Vacância Média (%)'] <= max_vac]
 
         st.subheader(f"🏢 FIIs Encontrados: {len(df_f)}")
         
         chaves_reais_fii = [k for k, v in colunas_disponiveis_fii.items() if v in colunas_escolhidas_fii]
+        chaves_reais_fii_ordenadas = sorted(chaves_reais_fii, key=lambda x: colunas_escolhidas_fii.index(colunas_disponiveis_fii[x]))
 
-        if chaves_reais_fii:
-            st.dataframe(df_f[chaves_reais_fii].rename(columns=colunas_disponiveis_fii).style.format({
+        if chaves_reais_fii_ordenadas:
+            st.dataframe(df_f[chaves_reais_fii_ordenadas].rename(columns=colunas_disponiveis_fii).style.format({
                 "Preço": "R$ {:.2f}", "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%",
-                "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "P/VP": "{:.2f}", 
+                "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "FFO Yield": "{:.1f}%", "P/VP": "{:.2f}", 
                 "Vacância": "{:.1f}%", "Liq. Diária": "R$ {:,.0f}"
             }), use_container_width=True, height=600)
         else:
