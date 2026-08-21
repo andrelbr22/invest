@@ -19,17 +19,17 @@ def aplicar_setup_cnpi_acoes():
     st.session_state.f_tamanho = []; st.session_state.f_apenas_ibov = False
     st.session_state.f_barsi = False; st.session_state.f_graham = False
     
-    st.session_state.f_roe = 8.0           # Rentabilidade saudável
-    st.session_state.f_mebit = 5.0         # Margem operacional viável
+    st.session_state.f_roe = 8.0           
+    st.session_state.f_mebit = 5.0         
     st.session_state.f_mliq = 0.0 
     st.session_state.f_cagr = 0.0           
     st.session_state.f_evebitda = 0.0 
     st.session_state.f_dy = 0.0
-    st.session_state.f_pvp_min = 0.2        # Evita distorções extremas
-    st.session_state.f_pvp_max = 5.0        # Permite empresas premium
-    st.session_state.f_pl_min = 0.1         # Foco em empresas com lucro
-    st.session_state.f_pl_max = 20.0        # Teto razoável de mercado
-    st.session_state.f_liq = 1.0            # Liquidez equilibrada
+    st.session_state.f_pvp_min = 0.2        
+    st.session_state.f_pvp_max = 5.0        
+    st.session_state.f_pl_min = 0.1         
+    st.session_state.f_pl_max = 20.0        
+    st.session_state.f_liq = 1.0            
 
 def limpar_filtros_acoes():
     st.session_state.f_busca = ''; st.session_state.f_tv = []
@@ -154,13 +154,14 @@ def carregar_dados_acoes():
     df['VPA'] = df.apply(lambda r: r['Cotação'] / r['P/VP'] if r['P/VP'] > 0 else 0, axis=1)
     df['LPA'] = df.apply(lambda r: r['Cotação'] / r['P/L'] if r['P/L'] > 0 else 0, axis=1)
     
-    # Cálculos de Valuation e Margens (%) em relação à cotação
     df['Preço Justo (Graham)'] = df.apply(lambda r: math.sqrt(22.5 * r['VPA'] * r['LPA']) if r['VPA'] > 0 and r['LPA'] > 0 else 0, axis=1)
     df['Preço Teto (Barsi)'] = df.apply(lambda r: (r['Cotação'] * (r['Div. Yield (%)'] / 100)) / 0.06, axis=1)
     
     df['Margem Graham (%)'] = df.apply(lambda r: ((r['Preço Justo (Graham)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Justo (Graham)'] > 0 else 0, axis=1)
     df['Margem Barsi (%)'] = df.apply(lambda r: ((r['Preço Teto (Barsi)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Teto (Barsi)'] > 0 else 0, axis=1)
-    df['DY Mensal Est. (%)'] = df['Div. Yield (%)'] / 12
+    
+    # Cálculo de Juros Compostos para a Taxa Mensal Equivalente
+    df['DY Mensal Est. (%)'] = df.apply(lambda r: (math.pow(1 + (r['Div. Yield (%)'] / 100), 1/12) - 1) * 100 if r['Div. Yield (%)'] > 0 else 0, axis=1)
     
     return df
 
@@ -208,7 +209,9 @@ def carregar_dados_fiis():
     df['Sinal Técnico'] = df['Score TV'].apply(classificar_sinal)
     df['Preço Teto (Barsi)'] = df.apply(lambda r: (r['Cotação'] * (r['Div. Yield (%)'] / 100)) / 0.06, axis=1)
     df['Margem Barsi (%)'] = df.apply(lambda r: ((r['Preço Teto (Barsi)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Teto (Barsi)'] > 0 else 0, axis=1)
-    df['DY Mensal Est. (%)'] = df['Div. Yield (%)'] / 12
+    
+    # Cálculo de Juros Compostos para FIIs
+    df['DY Mensal Est. (%)'] = df.apply(lambda r: (math.pow(1 + (r['Div. Yield (%)'] / 100), 1/12) - 1) * 100 if r['Div. Yield (%)'] > 0 else 0, axis=1)
     
     return df
 
@@ -294,7 +297,6 @@ if tipo_ativo == "Ações":
 
         st.subheader(f"🏢 Ações Encontradas: {len(df_f)}")
         
-        # Tabela com as informações explicativas solicitadas no título
         colunas = [
             'Ticker', 'Cotação', 'Preço Justo (Graham)', 'Margem Graham (%)', 
             'Preço Teto (Barsi)', 'Margem Barsi (%)', 'Div. Yield (%)', 'DY Mensal Est. (%)', 
@@ -308,7 +310,7 @@ if tipo_ativo == "Ações":
             "Preço Teto (Barsi)": "R$ {:.2f}", 
             "Margem Barsi (%)": "{:+.1f}%",
             "Div. Yield (%)": "{:.1f}%", 
-            "DY Mensal Est. (%)": math.pow((1 + r['Div. Yield (%)'] / 100), 1/12) - 1) * 100,
+            "DY Mensal Est. (%)": "{:.2f}%",
             "ROE (%)": "{:.1f}%", 
             "Margem EBIT (%)": "{:.1f}%", 
             "P/L": "{:.2f}", 
@@ -316,7 +318,7 @@ if tipo_ativo == "Ações":
         }), use_container_width=True, height=600,
         column_config={
             "Div. Yield (%)": st.column_config.NumberColumn("Div. Yield (Anual)", help="Dividendos pagos nos últimos 12 meses divididos pelo preço. Quanto maior, melhor."),
-            "DY Mensal Est. (%)": st.column_config.NumberColumn("DY Mensal (Est.)", help="Média estimada de rendimento proporcional por mês. Quanto maior, melhor."),
+            "DY Mensal Est. (%)": st.column_config.NumberColumn("DY Mensal (Composto)", help="Taxa equivalente de rendimento mensal calculada por juros compostos. Quanto maior, melhor."),
             "Margem Graham (%)": st.column_config.NumberColumn("Margem Graham", help="Distância percentual entre o Preço Justo de Graham e a Cotação atual. Positivo indica desconto."),
             "Margem Barsi (%)": st.column_config.NumberColumn("Margem Barsi", help="Distância percentual entre o Preço Teto de Barsi e a Cotação atual. Positivo indica desconto em relação ao teto de dividendos."),
             "P/L": st.column_config.NumberColumn("P/L (Preço/Lucro)", help="Quanto o mercado paga pelo lucro da empresa. Quanto menor (sem ser negativo), mais barata."),
@@ -397,7 +399,7 @@ else:
         }), use_container_width=True, height=600,
         column_config={
             "Div. Yield (%)": st.column_config.NumberColumn("Div. Yield (Anual)", help="Rendimento de dividendos pagos pelo FII nos últimos 12 meses. Quanto maior, melhor."),
-            "DY Mensal Est. (%)": st.column_config.NumberColumn("DY Mensal (Est.)", help="Média estimada do rendimento proporcional distribuído por mês. Quanto maior, melhor."),
+            "DY Mensal Est. (%)": st.column_config.NumberColumn("DY Mensal (Composto)", help="Taxa equivalente de rendimento mensal calculada por juros compostos. Quanto maior, melhor."),
             "Margem Barsi (%)": st.column_config.NumberColumn("Margem Barsi", help="Distância percentual entre o Preço Teto calculado e a Cotação atual do FII. Positivo indica que está abaixo do teto."),
             "P/VP": st.column_config.NumberColumn("P/VP", help="Preço sobre o Valor Patrimonial do FII. Abaixo de 1.0 indica que o fundo está sendo negociado com desconto sobre seus imóveis/ativos."),
             "Vacância Média (%)": st.column_config.NumberColumn("Vacância", help="Percentual do portfólio que está desocupado. Quanto menor, melhor.")
