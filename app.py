@@ -41,6 +41,7 @@ def limpar_filtros_acoes():
     st.session_state.f_pvp_min = 0.0; st.session_state.f_pvp_max = 100.0
     st.session_state.f_pl_min = -100.0; st.session_state.f_pl_max = 1000.0
     st.session_state.f_liq = 0.0
+    # Nota: f_liq_global (liquidez financeira) NÃO é resetada aqui de propósito.
 
 def aplicar_setup_cnpi_fiis():
     st.session_state.f_busca = ''
@@ -53,7 +54,6 @@ def aplicar_setup_cnpi_fiis():
     st.session_state.f_fii_pvp_max = 1.10   
     st.session_state.f_fii_dy_min = 8.0     
     st.session_state.f_fii_vacancia_max = 15.0 
-    st.session_state.f_fii_liq_min = 1000000.0 
 
 def limpar_filtros_fiis():
     st.session_state.f_busca = ''
@@ -63,16 +63,18 @@ def limpar_filtros_fiis():
     st.session_state.f_fii_barsi = False
     st.session_state.f_fii_pvp_min = 0.0; st.session_state.f_fii_pvp_max = 10.0
     st.session_state.f_fii_dy_min = 0.0; st.session_state.f_fii_vacancia_max = 100.0
-    st.session_state.f_fii_liq_min = 0.0
+    # Nota: f_liq_global NÃO é resetada aqui.
 
+# Inicialização global do estado e do filtro permanente de liquidez
 if 'iniciado' not in st.session_state:
     aplicar_setup_cnpi_acoes()
     aplicar_setup_cnpi_fiis()
     st.session_state.tipo_ativo = 'Ações'
+    st.session_state.f_liq_global = 1000000.0 # Filtro base permanente de R$ 1 Milhão
     st.session_state.iniciado = True
 
 # ==========================================
-# 2. FUNÇÕES AUXILIARES E GLOSSÁRIO DE AJUDA
+# 2. FUNÇÕES AUXILIARES
 # ==========================================
 def classificar_sinal(score):
     if pd.isna(score): return "Sem Dados"
@@ -102,7 +104,8 @@ def obter_carteira_ibov():
     except: 
         return ['ABEV3', 'B3SA3', 'BBAS3', 'BBDC4', 'ITUB4', 'PETR4', 'VALE3', 'WEGE3']
 
-TV_COLS = ["name", "Recommend.All", "market_cap_basic", "SMA20", "SMA50", "SMA200", "SMA20|1W", "SMA50|1W", "SMA20|1M", "SMA50|1M"]
+# Incluindo 'Value.Traded' para capturar o volume financeiro médio/recente
+TV_COLS = ["name", "Recommend.All", "market_cap_basic", "Value.Traded", "SMA20", "SMA50", "SMA200", "SMA20|1W", "SMA50|1W", "SMA20|1M", "SMA50|1M"]
 
 # ==========================================
 # 3. EXTRAÇÃO DE DADOS (AÇÕES)
@@ -138,13 +141,15 @@ def carregar_dados_acoes():
         for item in resp.get('data', []):
             d = item['d']
             tv_dict[d[0].split(":")[-1]] = {
-                'Score TV': d[1], 'Market Cap': d[2], 'SMA20': d[3], 'SMA50': d[4], 'SMA200': d[5],
-                'SMA20|1W': d[6], 'SMA50|1W': d[7], 'SMA20|1M': d[8], 'SMA50|1M': d[9]
+                'Score TV': d[1], 'Market Cap': d[2], 'Liq. Diária': d[3] if d[3] is not None else 0.0,
+                'SMA20': d[4], 'SMA50': d[5], 'SMA200': d[6],
+                'SMA20|1W': d[7], 'SMA50|1W': d[8], 'SMA20|1M': d[9], 'SMA50|1M': d[10]
             }
         df_tv = pd.DataFrame.from_dict(tv_dict, orient='index').reset_index().rename(columns={'index': 'Ticker'})
         df = pd.merge(df, df_tv, on='Ticker', how='left')
     except:
-        for col in TV_COLS[1:]: df[col] = None
+        df['Liq. Diária'] = 0.0
+        for col in TV_COLS[3:]: df[col] = None
 
     lista_ibov = obter_carteira_ibov()
     df['Sinal Técnico'] = df['Score TV'].apply(classificar_sinal)
@@ -159,8 +164,6 @@ def carregar_dados_acoes():
     
     df['Margem Graham (%)'] = df.apply(lambda r: ((r['Preço Justo (Graham)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Justo (Graham)'] > 0 else 0, axis=1)
     df['Margem Barsi (%)'] = df.apply(lambda r: ((r['Preço Teto (Barsi)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Teto (Barsi)'] > 0 else 0, axis=1)
-    
-    # Cálculo de Juros Compostos para a Taxa Mensal Equivalente
     df['DY Mensal Est. (%)'] = df.apply(lambda r: (math.pow(1 + (r['Div. Yield (%)'] / 100), 1/12) - 1) * 100 if r['Div. Yield (%)'] > 0 else 0, axis=1)
     
     return df
@@ -198,19 +201,19 @@ def carregar_dados_fiis():
         for item in resp.get('data', []):
             d = item['d']
             tv_dict[d[0].split(":")[-1]] = {
-                'Score TV': d[1], 'SMA20': d[3], 'SMA50': d[4], 'SMA200': d[5],
-                'SMA20|1W': d[6], 'SMA50|1W': d[7], 'SMA20|1M': d[8], 'SMA50|1M': d[9]
+                'Score TV': d[1], 'Liq. Diária': d[3] if d[3] is not None else 0.0,
+                'SMA20': d[4], 'SMA50': d[5], 'SMA200': d[6],
+                'SMA20|1W': d[7], 'SMA50|1W': d[8], 'SMA20|1M': d[9], 'SMA50|1M': d[10]
             }
         df_tv = pd.DataFrame.from_dict(tv_dict, orient='index').reset_index().rename(columns={'index': 'Ticker'})
         df = pd.merge(df, df_tv, on='Ticker', how='left')
     except:
-        for col in TV_COLS[1:]: df[col] = None
+        df['Liq. Diária'] = df.get('Liquidez Diária (R$)', 0.0)
+        for col in TV_COLS[3:]: df[col] = None
 
     df['Sinal Técnico'] = df['Score TV'].apply(classificar_sinal)
     df['Preço Teto (Barsi)'] = df.apply(lambda r: (r['Cotação'] * (r['Div. Yield (%)'] / 100)) / 0.06, axis=1)
     df['Margem Barsi (%)'] = df.apply(lambda r: ((r['Preço Teto (Barsi)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Teto (Barsi)'] > 0 else 0, axis=1)
-    
-    # Cálculo de Juros Compostos para FIIs
     df['DY Mensal Est. (%)'] = df.apply(lambda r: (math.pow(1 + (r['Div. Yield (%)'] / 100), 1/12) - 1) * 100 if r['Div. Yield (%)'] > 0 else 0, axis=1)
     
     return df
@@ -220,6 +223,18 @@ def carregar_dados_fiis():
 # ==========================================
 st.sidebar.title("Configurações")
 tipo_ativo = st.sidebar.radio("1. Selecione o mercado:", ("Ações", "Fundos Imobiliários (FIIs)"), key="tipo_ativo")
+st.sidebar.markdown("---")
+
+# Filtro Permanente de Liquidez Diária (Não afetado pelo botão "Limpar Tudo")
+st.sidebar.subheader("💧 Liquidez Mínima")
+filtro_liq_permanente = st.sidebar.number_input(
+    "Volume Diário Mín. (R$)", 
+    min_value=0.0, 
+    step=500000.0, 
+    format="%.0f",
+    key='f_liq_global',
+    help="Filtro permanente de segurança institucional. Não é resetado pelo botão 'Limpar Tudo'."
+)
 st.sidebar.markdown("---")
 
 # ==========================================
@@ -275,6 +290,11 @@ if tipo_ativo == "Ações":
         df_dados['Tend. Mensal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_mensal}|1M', 0)), axis=1)
 
         df_f = df_dados.copy()
+        
+        # Aplicação do Filtro Permanente de Liquidez
+        if filtro_liq_permanente > 0:
+            df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
+            
         if busca: df_f = df_f[df_f['Ticker'].str.contains(busca)]
         if apenas_ibov: df_f = df_f[df_f['IBOV'] == "Sim"]
         if opcoes_tamanho: df_f = df_f[df_f['Categoria'].isin(opcoes_tamanho)]
@@ -297,34 +317,37 @@ if tipo_ativo == "Ações":
 
         st.subheader(f"🏢 Ações Encontradas: {len(df_f)}")
         
-        colunas = [
-            'Ticker', 'Cotação', 'Preço Justo (Graham)', 'Margem Graham (%)', 
-            'Preço Teto (Barsi)', 'Margem Barsi (%)', 'Div. Yield (%)', 'DY Mensal Est. (%)', 
-            'P/L', 'P/VP', 'ROE (%)', 'Margem EBIT (%)'
-        ]
+        # Mapeamento com nomes curtos para colunas estreitas
+        colunas_disponiveis = {
+            'Ticker': 'Ticker', 'IBOV': 'IBOV', 'Tend. Mensal': 'T. Mês', 
+            'Tend. Semanal': 'T. Sem', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal', 
+            'Cotação': 'Preço', 'Preço Justo (Graham)': 'V. Graham', 'Margem Graham (%)': 'M. Graham', 
+            'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 'Div. Yield (%)': 'DY', 
+            'DY Mensal Est. (%)': 'DY Mês', 'P/L': 'P/L', 'P/VP': 'P/VP', 'ROE (%)': 'ROE', 
+            'Margem EBIT (%)': 'M. EBIT', 'Liq. Corrente': 'Liq. Corr', 'Liq. Diária': 'Liq. Diária'
+        }
         
-        st.dataframe(df_f[colunas].style.format({
-            "Cotação": "R$ {:.2f}", 
-            "Preço Justo (Graham)": "R$ {:.2f}", 
-            "Margem Graham (%)": "{:+.1f}%",
-            "Preço Teto (Barsi)": "R$ {:.2f}", 
-            "Margem Barsi (%)": "{:+.1f}%",
-            "Div. Yield (%)": "{:.1f}%", 
-            "DY Mensal Est. (%)": "{:.2f}%",
-            "ROE (%)": "{:.1f}%", 
-            "Margem EBIT (%)": "{:.1f}%", 
-            "P/L": "{:.2f}", 
-            "P/VP": "{:.2f}"
-        }), use_container_width=True, height=600,
-        column_config={
-            "Div. Yield (%)": st.column_config.NumberColumn("Div. Yield (Anual)", help="Dividendos pagos nos últimos 12 meses divididos pelo preço. Quanto maior, melhor."),
-            "DY Mensal Est. (%)": st.column_config.NumberColumn("DY Mensal", help="Taxa equivalente de rendimento mensal calculada por juros compostos. Quanto maior, melhor."),
-            "Margem Graham (%)": st.column_config.NumberColumn("Margem G.", help="Distância percentual entre o Preço Justo de Graham e a Cotação atual. Positivo indica desconto."),
-            "Margem Barsi (%)": st.column_config.NumberColumn("Margem B.", help="Distância percentual entre o Preço Teto de Barsi e a Cotação atual. Positivo indica desconto em relação ao teto de dividendos."),
-            "P/L": st.column_config.NumberColumn("P/L", help="Quanto o mercado paga pelo lucro da empresa. Quanto menor (sem ser negativo), mais barata."),
-            "P/VP": st.column_config.NumberColumn("P/VP", help="Compara o preço da ação com seu patrimônio líquido real. Abaixo de 1 pode indicar desconto patrimonial."),
-            "ROE (%)": st.column_config.NumberColumn("ROE", help="Mede a capacidade da empresa de gerar lucro com o dinheiro dos acionistas. Quanto maior, melhor.")
-        })
+        colunas_padrao = ['Ticker', 'Preço', 'V. Graham', 'M. Graham', 'T. Barsi', 'M. Barsi', 'DY', 'DY Mês', 'P/L', 'P/VP', 'ROE', 'Liq. Diária']
+        
+        colunas_escolhidas = st.sidebar.multiselect(
+            "👁️ Ocultar/Exibir Colunas", 
+            options=list(colunas_disponiveis.values()), 
+            default=[colunas_disponiveis[c] for c in colunas_padrao if c in colunas_disponiveis]
+        )
+        
+        # Mapeia de volta para os nomes reais internos do dataframe
+        chaves_reais = [k for k, v in colunas_disponiveis.items() if v in colunas_escolhidas]
+
+        if chaves_reais:
+            st.dataframe(df_f[chaves_reais].rename(columns=colunas_disponiveis).style.format({
+                "Preço": "R$ {:.2f}", "V. Graham": "R$ {:.2f}", "M. Graham": "{:+.1f}%",
+                "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%", "DY": "{:.1f}%", 
+                "DY Mês": "{:.2f}%", "ROE": "{:.1f}%", "M. EBIT": "{:.1f}%", 
+                "P/L": "{:.2f}", "P/VP": "{:.2f}", "Liq. Corr": "{:.2f}",
+                "Liq. Diária": "R$ {:,.0f}"
+            }), use_container_width=True, height=600)
+        else:
+            st.warning("Selecione ao menos uma coluna para exibir na tabela.")
 
 # ==========================================
 # 7. LÓGICA E TELAS - FIIs
@@ -361,13 +384,17 @@ else:
         max_pvp = st.sidebar.number_input("P/VP Máximo (0=desativa)", step=0.05, key='f_fii_pvp_max')
         min_dy = st.sidebar.number_input("Dividend Yield Mín. (%)", step=0.5, key='f_fii_dy_min')
         max_vac = st.sidebar.number_input("Vacância Máxima (%)", step=1.0, key='f_fii_vacancia_max')
-        min_liq = st.sidebar.number_input("Liquidez Mínima (R$)", step=100000.0, format="%f", key='f_fii_liq_min')
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
         df_dados['Tend. Semanal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_semanal}|1W', 0)), axis=1)
         df_dados['Tend. Mensal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_mensal}|1M', 0)), axis=1)
 
         df_f = df_dados.copy()
+        
+        # Aplicação do Filtro Permanente de Liquidez
+        if filtro_liq_permanente > 0:
+            df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
+            
         if busca: df_f = df_f[df_f['Ticker'].str.contains(busca)]
         if opcoes_seg: df_f = df_f[df_f['Segmento'].isin(opcoes_seg)]
         if opcoes_tv: df_f = df_f[df_f['Sinal Técnico'].isin(opcoes_tv)]
@@ -379,28 +406,32 @@ else:
         if max_pvp > 0: df_f = df_f[(df_f['P/VP'] >= min_pvp) & (df_f['P/VP'] <= max_pvp)]
         if min_dy > 0: df_f = df_f[df_f['Div. Yield (%)'] >= min_dy]
         if max_vac > 0: df_f = df_f[df_f['Vacância Média (%)'] <= max_vac]
-        if min_liq > 0: df_f = df_f[df_f['Liquidez Diária (R$)'] >= min_liq]
 
         st.subheader(f"🏢 FIIs Encontrados: {len(df_f)}")
-        colunas = [
-            'Ticker', 'Segmento', 'Cotação', 'Preço Teto (Barsi)', 'Margem Barsi (%)', 
-            'Div. Yield (%)', 'DY Mensal Est. (%)', 'P/VP', 'Vacância Média (%)', 'Liquidez Diária (R$)'
-        ]
         
-        st.dataframe(df_f[colunas].style.format({
-            "Cotação": "R$ {:.2f}", 
-            "Preço Teto (Barsi)": "R$ {:.2f}", 
-            "Margem Barsi (%)": "{:+.1f}%",
-            "Div. Yield (%)": "{:.1f}%", 
-            "DY Mensal Est. (%)": "{:.2f}%",
-            "P/VP": "{:.2f}", 
-            "Vacância Média (%)": "{:.1f}%", 
-            "Liquidez Diária (R$)": "R$ {:,.2f}"
-        }), use_container_width=True, height=600,
-        column_config={
-            "Div. Yield (%)": st.column_config.NumberColumn("Div. Yield (Anual)", help="Rendimento de dividendos pagos pelo FII nos últimos 12 meses. Quanto maior, melhor."),
-            "DY Mensal Est. (%)": st.column_config.NumberColumn("DY Mensal (Composto)", help="Taxa equivalente de rendimento mensal calculada por juros compostos. Quanto maior, melhor."),
-            "Margem Barsi (%)": st.column_config.NumberColumn("Margem Barsi", help="Distância percentual entre o Preço Teto calculado e a Cotação atual do FII. Positivo indica que está abaixo do teto."),
-            "P/VP": st.column_config.NumberColumn("P/VP", help="Preço sobre o Valor Patrimonial do FII. Abaixo de 1.0 indica que o fundo está sendo negociado com desconto sobre seus imóveis/ativos."),
-            "Vacância Média (%)": st.column_config.NumberColumn("Vacância", help="Percentual do portfólio que está desocupado. Quanto menor, melhor.")
-        })
+        colunas_disponiveis_fii = {
+            'Ticker': 'Ticker', 'Segmento': 'Segmento', 'Tend. Mensal': 'T. Mês', 
+            'Tend. Semanal': 'T. Sem', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal', 
+            'Cotação': 'Preço', 'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 
+            'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'P/VP': 'P/VP', 
+            'Vacância Média (%)': 'Vacância', 'Liq. Diária': 'Liq. Diária'
+        }
+        
+        colunas_padrao_fii = ['Ticker', 'Segmento', 'Preço', 'T. Barsi', 'M. Barsi', 'DY', 'DY Mês', 'P/VP', 'Vacância', 'Liq. Diária']
+        
+        colunas_escolhidas_fii = st.sidebar.multiselect(
+            "👁️ Ocultar/Exibir Colunas", 
+            options=list(colunas_disponiveis_fii.values()), 
+            default=[colunas_disponiveis_fii[c] for c in colunas_padrao_fii if c in colunas_disponiveis_fii]
+        )
+        
+        chaves_reais_fii = [k for k, v in colunas_disponiveis_fii.items() if v in colunas_escolhidas_fii]
+
+        if chaves_reais_fii:
+            st.dataframe(df_f[chaves_reais_fii].rename(columns=colunas_disponiveis_fii).style.format({
+                "Preço": "R$ {:.2f}", "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%",
+                "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "P/VP": "{:.2f}", 
+                "Vacância": "{:.1f}%", "Liq. Diária": "R$ {:,.0f}"
+            }), use_container_width=True, height=600)
+        else:
+            st.warning("Selecione ao menos uma coluna para exibir na tabela.")
