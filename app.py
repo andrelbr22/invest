@@ -69,7 +69,7 @@ if 'tipo_ativo' not in st.session_state:
     st.session_state.iniciado = True
 
 # ==========================================
-# 2. FUNÇÕES AUXILIARES
+# 2. FUNÇÕES AUXILIARES SEGURAS
 # ==========================================
 def classificar_sinal(score):
     if pd.isna(score): return "Sem Dados"
@@ -87,9 +87,14 @@ def limpar_numero(texto):
     try: return float(val_str)
     except ValueError: return 0.0
 
+# Funções de Estilização Blindadas contra erros de tipo
 def colorir_margem(val):
-    if pd.isna(val) or val == 0: return ''
-    return 'color: #00C851; font-weight: bold;' if val > 0 else 'color: #ff4444; font-weight: bold;'
+    try:
+        num = float(val)
+        if math.isnan(num) or num == 0: return ''
+        return 'color: #00C851; font-weight: bold;' if num > 0 else 'color: #ff4444; font-weight: bold;'
+    except:
+        return ''
 
 def colorir_sinal(val):
     if val == 'Compra': return 'color: #00C851; font-weight: bold;'
@@ -192,7 +197,23 @@ if tipo_ativo == "Ações":
     df_f = df_dados[df_dados['Liq. Diária'] >= filtro_liq].sort_values(by='Margem Graham (%)', ascending=False)
     
     chaves = [k for k, v in colunas_disponiveis.items() if v in escolhidas]
-    st.dataframe(df_f[chaves].rename(columns=colunas_disponiveis).style.map(colorir_margem, subset=['M. Graham', 'M. Barsi'] if 'M. Graham' in chaves else None), hide_index=True, use_container_width=False)
+    
+    if chaves:
+        df_view = df_f[chaves].rename(columns=colunas_disponiveis)
+        styled_df = df_view.style.format({
+            "Preço": "R$ {:.2f}", "V. Graham": "R$ {:.2f}", "M. Graham": "{:+.1f}%",
+            "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%", "DY": "{:.1f}%", 
+            "DY Mês": "{:.2f}%", "ROE": "{:.1f}%", "M. EBIT": "{:.1f}%", 
+            "P/L": "{:.2f}", "P/VP": "{:.2f}", "Liq Corr.": "{:.2f}", "Liq Diária": "R$ {:,.0f}"
+        })
+        
+        cols_margem = [c for c in ['M. Graham', 'M. Barsi'] if c in df_view.columns]
+        if cols_margem:
+            styled_df = styled_df.map(colorir_margem, subset=cols_margem)
+            
+        st.dataframe(styled_df, hide_index=True, use_container_width=False)
+    else:
+        st.warning("Selecione ao menos uma coluna.")
 
 else:
     df_dados = carregar_dados_fiis()
@@ -213,4 +234,19 @@ else:
     df_f = df_dados[df_dados['Liq. Diária'] >= filtro_liq_fii].sort_values(by='Margem Barsi (%)', ascending=False)
     
     chaves = [k for k, v in colunas_disponiveis_fii.items() if v in escolhidas_fii]
-    st.dataframe(df_f[chaves].rename(columns=colunas_disponiveis_fii).style.map(colorir_margem, subset=['M. Barsi'] if 'M. Barsi' in chaves else None), hide_index=True, use_container_width=False)
+    
+    if chaves:
+        df_view = df_f[chaves].rename(columns=colunas_disponiveis_fii)
+        styled_df = df_view.style.format({
+            "Preço": "R$ {:.2f}", "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%",
+            "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "FFO Yield": "{:.1f}%", "P/VP": "{:.2f}", 
+            "Vacância": "{:.1f}%", "Liq. Diária": "R$ {:,.0f}"
+        })
+        
+        cols_margem = [c for c in ['M. Barsi'] if c in df_view.columns]
+        if cols_margem:
+            styled_df = styled_df.map(colorir_margem, subset=cols_margem)
+            
+        st.dataframe(styled_df, hide_index=True, use_container_width=False)
+    else:
+        st.warning("Selecione ao menos uma coluna.")
