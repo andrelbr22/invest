@@ -9,31 +9,18 @@ st.set_page_config(page_title="Screener Avançado", layout="wide", initial_sideb
 st.title("📊 Screener Avançado de Investimentos")
 st.markdown("Cruzamento Fundamentalista, Rastreador de Tendências e Indicadores de Valuation.")
 
-# Dicionário super otimizado para tradução instantânea dos setores do TradingView
 SETORES_TRADUCAO = {
-    "Finance": "Finanças",
-    "Electronic Technology": "Tecnologia Eletrônica",
-    "Energy Minerals": "Minerais Energéticos",
-    "Commercial Services": "Serviços Comerciais",
-    "Process Industries": "Indústrias de Transformação",
-    "Utilities": "Utilidade Pública",
-    "Consumer Non-Durables": "Bens de Consumo Não-Duráveis",
-    "Consumer Durables": "Bens de Consumo Duráveis",
-    "Health Technology": "Tecnologia em Saúde",
-    "Health Services": "Serviços de Saúde",
-    "Transportation": "Transportes",
-    "Retail Trade": "Varejo",
-    "Producer Manufacturing": "Manufatura de Produção",
-    "Non-Energy Minerals": "Minerais Não-Energéticos",
-    "Technology Services": "Serviços de Tecnologia",
-    "Communications": "Comunicações",
-    "Industrial Services": "Serviços Industriais",
-    "Consumer Services": "Serviços ao Consumidor",
-    "Distribution Services": "Serviços de Distribuição",
-    "Miscellaneous": "Diversos",
-    "Government": "Governo",
-    "Real Estate": "Imobiliário",
-    "Outros": "Outros"
+    "Finance": "Finanças", "Electronic Technology": "Tecnologia Eletrônica",
+    "Energy Minerals": "Minerais Energéticos", "Commercial Services": "Serviços Comerciais",
+    "Process Industries": "Indústrias de Transformação", "Utilities": "Utilidade Pública",
+    "Consumer Non-Durables": "Bens de Consumo Não-Duráveis", "Consumer Durables": "Bens de Consumo Duráveis",
+    "Health Technology": "Tecnologia em Saúde", "Health Services": "Serviços de Saúde",
+    "Transportation": "Transportes", "Retail Trade": "Varejo",
+    "Producer Manufacturing": "Manufatura de Produção", "Non-Energy Minerals": "Minerais Não-Energéticos",
+    "Technology Services": "Serviços de Tecnologia", "Communications": "Comunicações",
+    "Industrial Services": "Serviços Industriais", "Consumer Services": "Serviços ao Consumidor",
+    "Distribution Services": "Serviços de Distribuição", "Miscellaneous": "Diversos",
+    "Government": "Governo", "Real Estate": "Imobiliário", "Outros": "Outros"
 }
 
 # ==========================================
@@ -55,7 +42,7 @@ def aplicar_setup_cnpi_acoes():
     st.session_state.f_pl_min = 0.1         
     st.session_state.f_pl_max = 20.0        
     st.session_state.f_liq = 1.0            
-    st.session_state.f_divida = 0.0 # Novo Indicador
+    st.session_state.f_divida = 0.0
     st.session_state.val_liq_acoes = 1000000.0
 
 def limpar_filtros_acoes():
@@ -81,7 +68,7 @@ def aplicar_setup_cnpi_fiis():
     st.session_state.f_fii_pvp_max = 1.10   
     st.session_state.f_fii_dy_min = 8.0     
     st.session_state.f_fii_ffo_min = 7.0     
-    st.session_state.f_fii_cap_rate = 0.0 # Novo Indicador
+    st.session_state.f_fii_cap_rate = 0.0 
     st.session_state.f_fii_vacancia_max = 15.0 
     st.session_state.val_liq_fiis = 500000.0
 
@@ -98,11 +85,8 @@ def limpar_filtros_fiis():
     st.session_state.f_fii_vacancia_max = 100.0
     st.session_state.val_liq_fiis = 500000.0
 
-# Shadow State (Variáveis de Sombra)
-if 'val_liq_acoes' not in st.session_state:
-    st.session_state.val_liq_acoes = 1000000.0
-if 'val_liq_fiis' not in st.session_state:
-    st.session_state.val_liq_fiis = 500000.0
+if 'val_liq_acoes' not in st.session_state: st.session_state.val_liq_acoes = 1000000.0
+if 'val_liq_fiis' not in st.session_state: st.session_state.val_liq_fiis = 500000.0
 
 if 'iniciado' not in st.session_state:
     aplicar_setup_cnpi_acoes()
@@ -122,8 +106,7 @@ def calc_tendencia(cotacao, sma):
         if pd.isna(float(sma)) or float(sma) == 0 or pd.isna(float(cotacao)) or float(cotacao) == 0: 
             return "Sem Dados"
         return "🟢 Alta" if float(cotacao) > float(sma) else "🔴 Baixa"
-    except:
-        return "Sem Dados"
+    except: return "Sem Dados"
 
 def limpar_numero(texto):
     val_str = texto.text.strip().replace('%', '').replace('.', '').replace(',', '.')
@@ -148,6 +131,13 @@ def colorir_tendencia(val):
     if '🔴' in str(val): return 'color: #ff4444;'
     return ''
 
+# Nova função de cor para o IFR (RSI)
+def colorir_rsi(val):
+    if pd.isna(val) or val == 0: return ''
+    if val >= 70: return 'color: #ff4444; font-weight: bold;' # Sobrecomprado (Alerta)
+    if val <= 30: return 'color: #00C851; font-weight: bold;' # Sobrevendido (Oportunidade)
+    return 'color: #FFBB33;' # Neutro
+
 @st.cache_data(ttl=3600)
 def obter_carteira_ibov():
     try:
@@ -156,7 +146,12 @@ def obter_carteira_ibov():
     except: 
         return ['ABEV3', 'B3SA3', 'BBAS3', 'BBDC4', 'ITUB4', 'PETR4', 'VALE3', 'WEGE3']
 
-TV_COLS = ["name", "Recommend.All", "market_cap_basic", "Value.Traded", "sector", "SMA20", "SMA50", "SMA200", "SMA20|1W", "SMA50|1W", "SMA20|1M", "SMA50|1M"]
+# Novos indicadores adicionados à query do TradingView (RSI e Bollinger Bands)
+TV_COLS = [
+    "name", "Recommend.All", "market_cap_basic", "Value.Traded", "sector", 
+    "SMA20", "SMA50", "SMA200", "SMA20|1W", "SMA50|1W", "SMA20|1M", "SMA50|1M", 
+    "high", "low", "close", "RSI", "BB.lower", "BB.upper"
+]
 
 # ==========================================
 # 3. EXTRAÇÃO DE DADOS (AÇÕES)
@@ -186,23 +181,35 @@ def carregar_dados_acoes():
     try:
         payload = {"filter": [{"left": "type", "operation": "equal", "right": "stock"}], "options": {"lang": "pt"}, "symbols": {"query": {"types": []}, "tickers": []}, "columns": TV_COLS}
         resp = requests.post("https://scanner.tradingview.com/brazil/scan", json=payload, timeout=15).json()
+        
         tv_dict = {item['d'][0].split(":")[-1]: {
-            'Score TV': item['d'][1], 'Market Cap': item['d'][2], 'Liq. Diária TV': item['d'][3] if item['d'][3] is not None else 0.0,
+            'Score TV': item['d'][1], 
+            'Market Cap': item['d'][2] if item['d'][2] is not None else 0.0, 
+            'Liq. Diária TV': item['d'][3] if item['d'][3] is not None else 0.0,
             'Setor': item['d'][4] if item['d'][4] else "Outros", 'SMA20': item['d'][5], 'SMA50': item['d'][6], 'SMA200': item['d'][7],
-            'SMA20|1W': item['d'][8], 'SMA50|1W': item['d'][9], 'SMA20|1M': item['d'][10], 'SMA50|1M': item['d'][11]
+            'SMA20|1W': item['d'][8], 'SMA50|1W': item['d'][9], 'SMA20|1M': item['d'][10], 'SMA50|1M': item['d'][11],
+            'High TV': item['d'][12] if item['d'][12] is not None else 0.0,
+            'Low TV': item['d'][13] if item['d'][13] is not None else 0.0,
+            'Close TV': item['d'][14] if item['d'][14] is not None else 0.0,
+            'IFR (RSI)': item['d'][15] if item['d'][15] is not None else 0.0,
+            'BB Inferior': item['d'][16] if item['d'][16] is not None else 0.0,
+            'BB Superior': item['d'][17] if item['d'][17] is not None else 0.0,
         } for item in resp.get('data', [])}
+        
         df = pd.merge(df, pd.DataFrame.from_dict(tv_dict, orient='index').reset_index().rename(columns={'index': 'Ticker'}), on='Ticker', how='left')
     except:
-        df['Liq. Diária TV'] = 0.0; df['Setor'] = 'Outros'; 
-        for col in TV_COLS[5:]: df[col] = None
+        df['Liq. Diária TV'] = 0.0; df['Setor'] = 'Outros'; df['Market Cap'] = 0.0
+        for col in TV_COLS[5:]: df[col] = 0.0
 
-    # Aplica a tradução rápida dos Setores
     df['Setor'] = df['Setor'].map(SETORES_TRADUCAO).fillna(df['Setor'])
-    
     df['Liq. Diária'] = df['Liq. Diária TV']
 
     lista_ibov = obter_carteira_ibov()
     df['Sinal Técnico'] = df['Score TV'].apply(classificar_sinal)
+    
+    df['Market Cap'] = pd.to_numeric(df.get('Market Cap', 0.0), errors='coerce').fillna(0.0)
+    df['SMA200'] = pd.to_numeric(df.get('SMA200', 0.0), errors='coerce').fillna(0.0)
+    
     df['Categoria'] = df['Market Cap'].apply(lambda m: "Blue Chip" if m >= 15e9 else ("Small Cap" if m > 0 and m <= 3e9 else "Mid Cap" if m > 0 else "Desconhecido"))
     df['IBOV'] = df['Ticker'].apply(lambda x: "Sim" if x in lista_ibov else "Não")
 
@@ -215,6 +222,20 @@ def carregar_dados_acoes():
     df['Margem Barsi (%)'] = df.apply(lambda r: ((r['Preço Teto (Barsi)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Teto (Barsi)'] > 0 else 0, axis=1)
     df['DY Mensal Est. (%)'] = df.apply(lambda r: (math.pow(1 + (r['Div. Yield (%)'] / 100), 1/12) - 1) * 100 if r['Div. Yield (%)'] > 0 else 0, axis=1)
     
+    # ---------------- INDICADORES TÉCNICOS AVANÇADOS ----------------
+    # 1. Pivot Points
+    df['PP'] = (df['High TV'] + df['Low TV'] + df['Close TV']) / 3
+    df['R1'] = (2 * df['PP']) - df['Low TV']
+    df['S1'] = (2 * df['PP']) - df['High TV']
+    df['R2'] = df['PP'] + (df['High TV'] - df['Low TV'])
+    df['S2'] = df['PP'] - (df['High TV'] - df['Low TV'])
+    df['R3'] = df['High TV'] + 2 * (df['PP'] - df['Low TV'])
+    df['S3'] = df['Low TV'] - 2 * (df['High TV'] - df['PP'])
+    
+    # 2. Distância da Média Móvel de 200 (Mostra se está muito esticado)
+    df['Dist. M200 (%)'] = df.apply(lambda r: ((r['Cotação'] / r['SMA200']) - 1) * 100 if r['SMA200'] > 0 else 0, axis=1)
+    # ----------------------------------------------------------------
+
     return df
 
 # ==========================================
@@ -243,17 +264,24 @@ def carregar_dados_fiis():
     try:
         payload = {"filter": [{"left": "type", "operation": "equal", "right": "fund"}], "options": {"lang": "pt"}, "symbols": {"query": {"types": []}, "tickers": []}, "columns": TV_COLS}
         resp = requests.post("https://scanner.tradingview.com/brazil/scan", json=payload, timeout=15).json()
+        
         tv_dict = {item['d'][0].split(":")[-1]: {
             'Score TV': item['d'][1], 'Liq. Diária TV': item['d'][3] if item['d'][3] is not None else 0.0,
             'Setor': item['d'][4], 'SMA20': item['d'][5], 'SMA50': item['d'][6], 'SMA200': item['d'][7],
-            'SMA20|1W': item['d'][8], 'SMA50|1W': item['d'][9], 'SMA20|1M': item['d'][10], 'SMA50|1M': item['d'][11]
+            'SMA20|1W': item['d'][8], 'SMA50|1W': item['d'][9], 'SMA20|1M': item['d'][10], 'SMA50|1M': item['d'][11],
+            'High TV': item['d'][12] if item['d'][12] is not None else 0.0,
+            'Low TV': item['d'][13] if item['d'][13] is not None else 0.0,
+            'Close TV': item['d'][14] if item['d'][14] is not None else 0.0,
+            'IFR (RSI)': item['d'][15] if item['d'][15] is not None else 0.0,
+            'BB Inferior': item['d'][16] if item['d'][16] is not None else 0.0,
+            'BB Superior': item['d'][17] if item['d'][17] is not None else 0.0,
         } for item in resp.get('data', [])}
         df = pd.merge(df, pd.DataFrame.from_dict(tv_dict, orient='index').reset_index().rename(columns={'index': 'Ticker'}), on='Ticker', how='left')
     except:
         df['Liq. Diária TV'] = 0.0
-        for col in TV_COLS[4:]: df[col] = None
+        for col in TV_COLS[4:]: df[col] = 0.0
 
-    # Prioridade Categórica para o Fundamentus
+    df['SMA200'] = pd.to_numeric(df.get('SMA200', 0.0), errors='coerce').fillna(0.0)
     df['Liq. Diária'] = df.apply(lambda r: r['Liq. Diária Fundamentus'] if pd.notna(r['Liq. Diária Fundamentus']) and r['Liq. Diária Fundamentus'] > 0 else r.get('Liq. Diária TV', 0.0), axis=1)
 
     df['Sinal Técnico'] = df['Score TV'].apply(classificar_sinal)
@@ -261,6 +289,16 @@ def carregar_dados_fiis():
     df['Margem Barsi (%)'] = df.apply(lambda r: ((r['Preço Teto (Barsi)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Teto (Barsi)'] > 0 else 0, axis=1)
     df['DY Mensal Est. (%)'] = df.apply(lambda r: (math.pow(1 + (r['Div. Yield (%)'] / 100), 1/12) - 1) * 100 if r['Div. Yield (%)'] > 0 else 0, axis=1)
     
+    # Indicadores Técnicos Avançados para FIIs
+    df['PP'] = (df['High TV'] + df['Low TV'] + df['Close TV']) / 3
+    df['R1'] = (2 * df['PP']) - df['Low TV']
+    df['S1'] = (2 * df['PP']) - df['High TV']
+    df['R2'] = df['PP'] + (df['High TV'] - df['Low TV'])
+    df['S2'] = df['PP'] - (df['High TV'] - df['Low TV'])
+    df['R3'] = df['High TV'] + 2 * (df['PP'] - df['Low TV'])
+    df['S3'] = df['Low TV'] - 2 * (df['High TV'] - df['PP'])
+    df['Dist. M200 (%)'] = df.apply(lambda r: ((r['Cotação'] / r['SMA200']) - 1) * 100 if r['SMA200'] > 0 else 0, axis=1)
+
     return df
 
 # ==========================================
@@ -288,7 +326,6 @@ if tipo_ativo == "Ações":
             
         busca = st.sidebar.text_input("Buscar Ticker (ex: BBAS3)", key='f_busca').upper()
         
-        # Adicionado o novo indicador Dívida Bruta/PL
         colunas_disponiveis = {
             'Ticker': 'Ticker', 'Cotação': 'Preço', 'IBOV': 'IBOV', 'Categoria': 'Tipo', 
             'Setor': 'Setor', 'P/VP': 'P/VP', 'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 
@@ -392,50 +429,70 @@ if tipo_ativo == "Ações":
             c4.metric("Mediana Liq. Diária", f"R$ {df_f['Liq. Diária'].median()/1e6:.1f} Milhões")
         st.markdown("---")
 
-        chaves_reais_ordenadas = [k for k, v in colunas_disponiveis.items() if v in colunas_escolhidas]
+        # Configuração das ABAS
+        aba1, aba2 = st.tabs(["📊 Análise Fundamentalista", "📉 Indicadores Técnicos & Pivot"])
 
-        if chaves_reais_ordenadas:
-            df_view = df_f[chaves_reais_ordenadas].rename(columns=colunas_disponiveis)
-            
-            styled_df = df_view.style.format({
-                "Preço": "R$ {:.2f}", "V. Graham": "R$ {:.2f}", "M. Graham": "{:+.1f}%",
-                "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%", "DY": "{:.1f}%", 
-                "DY Mês": "{:.2f}%", "ROE": "{:.1f}%", "M. EBIT": "{:.1f}%", 
-                "P/L": "{:.2f}", "P/VP": "{:.2f}", "Dív. Bruta/PL": "{:.2f}", 
-                "Liq Corr.": "{:.2f}", "Liq Diária": "R$ {:,.0f}"
-            })
-            
-            cols_margem = [c for c in ['M. Graham', 'M. Barsi'] if c in df_view.columns]
-            if cols_margem: styled_df = styled_df.map(colorir_margem, subset=cols_margem)
-            
-            cols_sinal = [c for c in ['Sinal'] if c in df_view.columns]
-            if cols_sinal: styled_df = styled_df.map(colorir_sinal, subset=cols_sinal)
-            
-            cols_tendencia = [c for c in ['T. Mês', 'T. Sem.', 'T. Dia'] if c in df_view.columns]
-            if cols_tendencia: styled_df = styled_df.map(colorir_tendencia, subset=cols_tendencia)
-
-            st.dataframe(styled_df, 
-                hide_index=True, 
-                use_container_width=False, 
-                height=600,
-                column_config={
-                    "DY": st.column_config.NumberColumn("DY", help="Dividendos (12m) / Preço. Quanto maior, melhor."),
-                    "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos)."),
-                    "M. Graham": st.column_config.NumberColumn("M. Graham", help="Distância % entre o Preço Justo e a Cotação. Positivo = Desconto."),
-                    "M. Barsi": st.column_config.NumberColumn("M. Barsi", help="Distância % entre o Preço Teto e a Cotação. Positivo = Desconto."),
-                    "P/L": st.column_config.NumberColumn("P/L", help="Preço / Lucro. Quanto menor (acima de zero), mais barata."),
-                    "P/VP": st.column_config.NumberColumn("P/VP", help="Preço / Valor Patrimonial. Menor que 1 indica desconto patrimonial."),
-                    "ROE": st.column_config.NumberColumn("ROE", help="Retorno sobre o Patrimônio Líquido. Capacidade de gerar lucro com capital próprio."),
-                    "M. EBIT": st.column_config.NumberColumn("M. EBIT", help="Margem Operacional. Eficiência do negócio principal."),
-                    "V. Graham": st.column_config.NumberColumn("V. Graham", help="Preço Justo calculado por Benjamin Graham."),
-                    "T. Barsi": st.column_config.NumberColumn("T. Barsi", help="Preço Teto calculado pela metodologia de Décio Barsi."),
-                    "Tipo": st.column_config.TextColumn("Tipo", help="Tamanho da empresa por valor de mercado na bolsa."),
-                    "Setor": st.column_config.TextColumn("Setor", help="Setor de atuação da empresa segundo o TradingView."),
-                    "Dív. Bruta/PL": st.column_config.NumberColumn("Dív. Bruta/PL", help="Dívida Bruta sobre o Patrimônio Líquido. Mede o nível de endividamento da empresa."),
-                    "Liq Corr.": st.column_config.NumberColumn("Liq Corr.", help="Liquidez Corrente: Caixa para pagar dívidas de curto prazo (>1.0 é bom).")
+        with aba1:
+            chaves_reais_ordenadas = [k for k, v in colunas_disponiveis.items() if v in colunas_escolhidas]
+            if chaves_reais_ordenadas:
+                df_view = df_f[chaves_reais_ordenadas].rename(columns=colunas_disponiveis)
+                
+                styled_df = df_view.style.format({
+                    "Preço": "R$ {:.2f}", "V. Graham": "R$ {:.2f}", "M. Graham": "{:+.1f}%",
+                    "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%", "DY": "{:.1f}%", 
+                    "DY Mês": "{:.2f}%", "ROE": "{:.1f}%", "M. EBIT": "{:.1f}%", 
+                    "P/L": "{:.2f}", "P/VP": "{:.2f}", "Dív. Bruta/PL": "{:.2f}", 
+                    "Liq Corr.": "{:.2f}", "Liq Diária": "R$ {:,.0f}"
                 })
-        else:
-            st.warning("Selecione ao menos uma coluna para exibir na tabela.")
+                
+                cols_margem = [c for c in ['M. Graham', 'M. Barsi'] if c in df_view.columns]
+                if cols_margem: styled_df = styled_df.map(colorir_margem, subset=cols_margem)
+                
+                cols_sinal = [c for c in ['Sinal'] if c in df_view.columns]
+                if cols_sinal: styled_df = styled_df.map(colorir_sinal, subset=cols_sinal)
+                
+                cols_tendencia = [c for c in ['T. Mês', 'T. Sem.', 'T. Dia'] if c in df_view.columns]
+                if cols_tendencia: styled_df = styled_df.map(colorir_tendencia, subset=cols_tendencia)
+
+                st.dataframe(styled_df, hide_index=True, use_container_width=False, height=500)
+            else:
+                st.warning("Selecione ao menos uma coluna para exibir na tabela.")
+
+        with aba2:
+            st.markdown("### 🎯 Sincronização de Setup (Técnica + Pivot)")
+            st.markdown("Combine suportes/resistências com indicadores de momento para validar a sua entrada.")
+            
+            if not df_f.empty:
+                colunas_tec = [
+                    'Ticker', 'Cotação', 'IFR (RSI)', 'Dist. M200 (%)', 'BB Inferior', 'BB Superior', 
+                    'S2', 'S1', 'PP', 'R1', 'R2', 'Sinal Técnico'
+                ]
+                df_tec = df_f[colunas_tec].copy()
+                
+                styled_tec = df_tec.style.format({
+                    "Cotação": "R$ {:.2f}", "Dist. M200 (%)": "{:+.1f}%", "IFR (RSI)": "{:.1f}", 
+                    "BB Inferior": "R$ {:.2f}", "BB Superior": "R$ {:.2f}", "S2": "R$ {:.2f}", 
+                    "S1": "R$ {:.2f}", "PP": "R$ {:.2f}", "R1": "R$ {:.2f}", "R2": "R$ {:.2f}"
+                }).map(colorir_sinal, subset=['Sinal Técnico']).map(colorir_rsi, subset=['IFR (RSI)'])
+                
+                st.dataframe(styled_tec, 
+                    hide_index=True, 
+                    use_container_width=True, 
+                    height=500,
+                    column_config={
+                        "IFR (RSI)": st.column_config.NumberColumn("IFR (14)", help="Índice de Força Relativa. Acima de 70 = Sobrecomprado. Abaixo de 30 = Sobrevendido."),
+                        "Dist. M200 (%)": st.column_config.NumberColumn("Dist. M200", help="Distância percentual do preço atual para a Média Móvel de 200 dias."),
+                        "BB Inferior": st.column_config.NumberColumn("Banda Inf.", help="Banda de Bollinger Inferior (Suporte Dinâmico)."),
+                        "BB Superior": st.column_config.NumberColumn("Banda Sup.", help="Banda de Bollinger Superior (Resistência Dinâmica)."),
+                        "S2": st.column_config.NumberColumn("Suporte 2"),
+                        "S1": st.column_config.NumberColumn("Suporte 1"),
+                        "PP": st.column_config.NumberColumn("Pivot Point"),
+                        "R1": st.column_config.NumberColumn("Resistência 1"),
+                        "R2": st.column_config.NumberColumn("Resistência 2"),
+                        "Cotação": st.column_config.NumberColumn("Preço Atual")
+                    })
+            else:
+                st.info("Nenhuma ação corresponde aos filtros atuais.")
 
 # ==========================================
 # 7. LÓGICA E TELAS - FIIs
@@ -466,7 +523,6 @@ else:
             p_mensal = st.selectbox("Período da Média Mensal", [20, 50], index=0)
             t_mensal = st.multiselect("Tendência Mensal", ["🟢 Alta", "🔴 Baixa"], key='f_tend_m')
 
-        # Adicionado o novo indicador Cap Rate
         colunas_disponiveis_fii = {
             'Ticker': 'Ticker', 'Cotação': 'Preço', 'Segmento': 'Segmento', 'P/VP': 'P/VP', 
             'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'FFO Yield (%)': 'FFO Yield', 
@@ -533,38 +589,65 @@ else:
             c4.metric("Mediana Vacância", f"{df_f['Vacância Média (%)'].median():.1f}%")
         st.markdown("---")
         
-        chaves_reais_fii_ordenadas = [k for k, v in colunas_disponiveis_fii.items() if v in colunas_escolhidas_fii]
+        aba1, aba2 = st.tabs(["📊 Análise Fundamentalista", "📉 Indicadores Técnicos & Pivot"])
 
-        if chaves_reais_fii_ordenadas:
-            df_view_fii = df_f[chaves_reais_fii_ordenadas].rename(columns=colunas_disponiveis_fii)
-            
-            styled_df_fii = df_view_fii.style.format({
-                "Preço": "R$ {:.2f}", "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%",
-                "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "FFO Yield": "{:.1f}%", "Cap Rate": "{:.1f}%", 
-                "P/VP": "{:.2f}", "Vacância": "{:.1f}%", "Liq. Diária": "R$ {:,.0f}"
-            })
-            
-            cols_margem_fii = [c for c in ['M. Barsi'] if c in df_view_fii.columns]
-            if cols_margem_fii: styled_df_fii = styled_df_fii.map(colorir_margem, subset=cols_margem_fii)
-            
-            cols_sinal_fii = [c for c in ['Sinal'] if c in df_view_fii.columns]
-            if cols_sinal_fii: styled_df_fii = styled_df_fii.map(colorir_sinal, subset=cols_sinal_fii)
-            
-            cols_tend_fii = [c for c in ['T. Mês', 'T. Sem.', 'T. Dia'] if c in df_view_fii.columns]
-            if cols_tend_fii: styled_df_fii = styled_df_fii.map(colorir_tendencia, subset=cols_tend_fii)
+        with aba1:
+            chaves_reais_fii_ordenadas = [k for k, v in colunas_disponiveis_fii.items() if v in colunas_escolhidas_fii]
 
-            st.dataframe(styled_df_fii, 
-                hide_index=True,
-                use_container_width=False, 
-                height=600,
-                column_config={
-                    "DY": st.column_config.NumberColumn("DY", help="Dividendos (12m) / Preço. Quanto maior, melhor."),
-                    "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos)."),
-                    "M. Barsi": st.column_config.NumberColumn("M. Barsi", help="Distância % entre o Preço Teto calculado e a Cotação atual do FII. Positivo indica que está abaixo do teto."),
-                    "P/VP": st.column_config.NumberColumn("P/VP", help="Preço / Valor Patrimonial. Abaixo de 1.0 = Fundo com desconto."),
-                    "Vacância": st.column_config.NumberColumn("Vacância", help="Percentual do portfólio físico desocupado. Quanto menor, melhor."),
-                    "FFO Yield": st.column_config.NumberColumn("FFO Yield", help="Caixa gerado pelas operações do fundo sobre o preço. Mostra o potencial de distribuição."),
-                    "Cap Rate": st.column_config.NumberColumn("Cap Rate", help="Retorno médio anual que os imóveis físicos do fundo estão gerando com aluguéis.")
+            if chaves_reais_fii_ordenadas:
+                df_view_fii = df_f[chaves_reais_fii_ordenadas].rename(columns=colunas_disponiveis_fii)
+                
+                styled_df_fii = df_view_fii.style.format({
+                    "Preço": "R$ {:.2f}", "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%",
+                    "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "FFO Yield": "{:.1f}%", "Cap Rate": "{:.1f}%", 
+                    "P/VP": "{:.2f}", "Vacância": "{:.1f}%", "Liq. Diária": "R$ {:,.0f}"
                 })
-        else:
-            st.warning("Selecione ao menos uma coluna para exibir na tabela.")
+                
+                cols_margem_fii = [c for c in ['M. Barsi'] if c in df_view_fii.columns]
+                if cols_margem_fii: styled_df_fii = styled_df_fii.map(colorir_margem, subset=cols_margem_fii)
+                
+                cols_sinal_fii = [c for c in ['Sinal'] if c in df_view_fii.columns]
+                if cols_sinal_fii: styled_df_fii = styled_df_fii.map(colorir_sinal, subset=cols_sinal_fii)
+                
+                cols_tend_fii = [c for c in ['T. Mês', 'T. Sem.', 'T. Dia'] if c in df_view_fii.columns]
+                if cols_tend_fii: styled_df_fii = styled_df_fii.map(colorir_tendencia, subset=cols_tend_fii)
+
+                st.dataframe(styled_df_fii, hide_index=True, use_container_width=False, height=500)
+            else:
+                st.warning("Selecione ao menos uma coluna para exibir na tabela.")
+
+        with aba2:
+            st.markdown("### 🎯 Sincronização de Setup (Técnica + Pivot)")
+            st.markdown("Combine suportes/resistências com indicadores de momento para validar a sua entrada.")
+            
+            if not df_f.empty:
+                colunas_tec_fii = [
+                    'Ticker', 'Cotação', 'IFR (RSI)', 'Dist. M200 (%)', 'BB Inferior', 'BB Superior', 
+                    'S2', 'S1', 'PP', 'R1', 'R2', 'Sinal Técnico'
+                ]
+                df_tec_fii = df_f[colunas_tec_fii].copy()
+                
+                styled_tec_fii = df_tec_fii.style.format({
+                    "Cotação": "R$ {:.2f}", "Dist. M200 (%)": "{:+.1f}%", "IFR (RSI)": "{:.1f}", 
+                    "BB Inferior": "R$ {:.2f}", "BB Superior": "R$ {:.2f}", "S2": "R$ {:.2f}", 
+                    "S1": "R$ {:.2f}", "PP": "R$ {:.2f}", "R1": "R$ {:.2f}", "R2": "R$ {:.2f}"
+                }).map(colorir_sinal, subset=['Sinal Técnico']).map(colorir_rsi, subset=['IFR (RSI)'])
+                
+                st.dataframe(styled_tec_fii, 
+                    hide_index=True, 
+                    use_container_width=True, 
+                    height=500,
+                    column_config={
+                        "IFR (RSI)": st.column_config.NumberColumn("IFR (14)", help="Índice de Força Relativa. Acima de 70 = Sobrecomprado. Abaixo de 30 = Sobrevendido."),
+                        "Dist. M200 (%)": st.column_config.NumberColumn("Dist. M200", help="Distância percentual do preço atual para a Média Móvel de 200 dias."),
+                        "BB Inferior": st.column_config.NumberColumn("Banda Inf.", help="Banda de Bollinger Inferior (Suporte Dinâmico)."),
+                        "BB Superior": st.column_config.NumberColumn("Banda Sup.", help="Banda de Bollinger Superior (Resistência Dinâmica)."),
+                        "S2": st.column_config.NumberColumn("Suporte 2"),
+                        "S1": st.column_config.NumberColumn("Suporte 1"),
+                        "PP": st.column_config.NumberColumn("Pivot Point"),
+                        "R1": st.column_config.NumberColumn("Resistência 1"),
+                        "R2": st.column_config.NumberColumn("Resistência 2"),
+                        "Cotação": st.column_config.NumberColumn("Preço Atual")
+                    })
+            else:
+                st.info("Nenhum FII corresponde aos filtros atuais.")
