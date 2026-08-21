@@ -41,7 +41,7 @@ def limpar_filtros_acoes():
     st.session_state.f_pvp_min = 0.0; st.session_state.f_pvp_max = 100.0
     st.session_state.f_pl_min = -100.0; st.session_state.f_pl_max = 1000.0
     st.session_state.f_liq = 0.0
-    # Nota: f_liq_global (liquidez financeira) NÃO é resetada aqui de propósito.
+    # Nota: f_liq_global (liquidez financeira permanente) NÃO é resetada aqui.
 
 def aplicar_setup_cnpi_fiis():
     st.session_state.f_busca = ''
@@ -70,7 +70,7 @@ if 'iniciado' not in st.session_state:
     aplicar_setup_cnpi_acoes()
     aplicar_setup_cnpi_fiis()
     st.session_state.tipo_ativo = 'Ações'
-    st.session_state.f_liq_global = 1000000.0 # Filtro base permanente de R$ 1 Milhão
+    st.session_state.f_liq_global = 1000000.0 # Padrão permanente de R$ 1 Milhão
     st.session_state.iniciado = True
 
 # ==========================================
@@ -104,7 +104,7 @@ def obter_carteira_ibov():
     except: 
         return ['ABEV3', 'B3SA3', 'BBAS3', 'BBDC4', 'ITUB4', 'PETR4', 'VALE3', 'WEGE3']
 
-# Incluindo 'Value.Traded' para capturar o volume financeiro médio/recente
+# Incluindo 'Value.Traded' para capturar a liquidez dos últimos pregões via TradingView
 TV_COLS = ["name", "Recommend.All", "market_cap_basic", "Value.Traded", "SMA20", "SMA50", "SMA200", "SMA20|1W", "SMA50|1W", "SMA20|1M", "SMA50|1M"]
 
 # ==========================================
@@ -225,18 +225,6 @@ st.sidebar.title("Configurações")
 tipo_ativo = st.sidebar.radio("1. Selecione o mercado:", ("Ações", "Fundos Imobiliários (FIIs)"), key="tipo_ativo")
 st.sidebar.markdown("---")
 
-# Filtro Permanente de Liquidez Diária (Não afetado pelo botão "Limpar Tudo")
-st.sidebar.subheader("💧 Liquidez Mínima")
-filtro_liq_permanente = st.sidebar.number_input(
-    "Volume Diário Mín. (R$)", 
-    min_value=0.0, 
-    step=500000.0, 
-    format="%.0f",
-    key='f_liq_global',
-    help="Filtro permanente de segurança institucional. Não é resetado pelo botão 'Limpar Tudo'."
-)
-st.sidebar.markdown("---")
-
 # ==========================================
 # 6. LÓGICA E TELAS - AÇÕES
 # ==========================================
@@ -247,6 +235,25 @@ if tipo_ativo == "Ações":
     if not df_dados.empty:
         st.sidebar.header("🔍 Filtros de Ações")
         
+        # Mapeamento com nomes curtos para colunas estreitas
+        colunas_disponiveis = {
+            'Ticker': 'Ticker', 'IBOV': 'IBOV', 'Tend. Mensal': 'T. Mês', 
+            'Tend. Semanal': 'T. Sem', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal', 
+            'Cotação': 'Preço', 'Preço Justo (Graham)': 'V. Graham', 'Margem Graham (%)': 'M. Graham', 
+            'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 'Div. Yield (%)': 'DY', 
+            'DY Mensal Est. (%)': 'DY Mês', 'P/L': 'P/L', 'P/VP': 'P/VP', 'ROE (%)': 'ROE', 
+            'Margem EBIT (%)': 'M. EBIT', 'Liq. Corrente': 'Liq. Corr', 'Liq. Diária': 'Liq. Diária'
+        }
+        
+        # Ocultar/Exibir Colunas colocado no topo e com TODAS marcadas por padrão
+        colunas_escolhidas = st.sidebar.multiselect(
+            "👁️ Ocultar/Exibir Colunas", 
+            options=list(colunas_disponiveis.values()), 
+            default=list(colunas_disponiveis.values())
+        )
+        
+        st.sidebar.markdown("---")
+        
         col1, col2 = st.sidebar.columns(2)
         with col1:
             st.button("🧹 Limpar Tudo", on_click=limpar_filtros_acoes, use_container_width=True)
@@ -254,6 +261,17 @@ if tipo_ativo == "Ações":
             st.button("🎯 Padrão CNPI", on_click=aplicar_setup_cnpi_acoes, type="primary", use_container_width=True)
             
         busca = st.sidebar.text_input("Buscar Ticker (ex: BBAS3)", key='f_busca').upper()
+        
+        # Filtro Permanente de Liquidez Diária posicionado nos filtros analíticos
+        st.sidebar.subheader("💧 Liquidez Mínima")
+        filtro_liq_permanente = st.sidebar.number_input(
+            "Volume Diário Mín. (R$)", 
+            min_value=0.0, 
+            step=500000.0, 
+            format="%.0f",
+            key='f_liq_global',
+            help="Filtro permanente de segurança institucional baseado na média recente. Não é resetado pelo botão 'Limpar Tudo'."
+        )
         
         with st.sidebar.expander("📈 Rastreador de Tendências", expanded=False):
             opcoes_tv = st.multiselect("Sinal Geral (TradingView)", ["Compra", "Venda", "Manter"], key='f_tv')
@@ -291,7 +309,6 @@ if tipo_ativo == "Ações":
 
         df_f = df_dados.copy()
         
-        # Aplicação do Filtro Permanente de Liquidez
         if filtro_liq_permanente > 0:
             df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
             
@@ -317,25 +334,6 @@ if tipo_ativo == "Ações":
 
         st.subheader(f"🏢 Ações Encontradas: {len(df_f)}")
         
-        # Mapeamento com nomes curtos para colunas estreitas
-        colunas_disponiveis = {
-            'Ticker': 'Ticker', 'IBOV': 'IBOV', 'Tend. Mensal': 'T. Mês', 
-            'Tend. Semanal': 'T. Sem', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal', 
-            'Cotação': 'Preço', 'Preço Justo (Graham)': 'V. Graham', 'Margem Graham (%)': 'M. Graham', 
-            'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 'Div. Yield (%)': 'DY', 
-            'DY Mensal Est. (%)': 'DY Mês', 'P/L': 'P/L', 'P/VP': 'P/VP', 'ROE (%)': 'ROE', 
-            'Margem EBIT (%)': 'M. EBIT', 'Liq. Corrente': 'Liq. Corr', 'Liq. Diária': 'Liq. Diária'
-        }
-        
-        colunas_padrao = ['Ticker', 'Preço', 'V. Graham', 'M. Graham', 'T. Barsi', 'M. Barsi', 'DY', 'DY Mês', 'P/L', 'P/VP', 'ROE', 'Liq. Diária']
-        
-        colunas_escolhidas = st.sidebar.multiselect(
-            "👁️ Ocultar/Exibir Colunas", 
-            options=list(colunas_disponiveis.values()), 
-            default=[colunas_disponiveis[c] for c in colunas_padrao if c in colunas_disponiveis]
-        )
-        
-        # Mapeia de volta para os nomes reais internos do dataframe
         chaves_reais = [k for k, v in colunas_disponiveis.items() if v in colunas_escolhidas]
 
         if chaves_reais:
@@ -359,6 +357,22 @@ else:
     if not df_dados.empty:
         st.sidebar.header("🏢 Filtros de FIIs")
         
+        colunas_disponiveis_fii = {
+            'Ticker': 'Ticker', 'Segmento': 'Segmento', 'Tend. Mensal': 'T. Mês', 
+            'Tend. Semanal': 'T. Sem', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal', 
+            'Cotação': 'Preço', 'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 
+            'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'P/VP': 'P/VP', 
+            'Vacância Média (%)': 'Vacância', 'Liq. Diária': 'Liq. Diária'
+        }
+        
+        colunas_escolhidas_fii = st.sidebar.multiselect(
+            "👁️ Ocultar/Exibir Colunas", 
+            options=list(colunas_disponiveis_fii.values()), 
+            default=list(colunas_disponiveis_fii.values())
+        )
+        
+        st.sidebar.markdown("---")
+        
         col1, col2 = st.sidebar.columns(2)
         with col1:
             st.button("🧹 Limpar Tudo", on_click=limpar_filtros_fiis, use_container_width=True)
@@ -366,6 +380,17 @@ else:
             st.button("🎯 Padrão CNPI", on_click=aplicar_setup_cnpi_fiis, type="primary", use_container_width=True)
         
         busca = st.sidebar.text_input("Buscar FII (ex: MXRF11)", key='f_busca').upper()
+        
+        st.sidebar.subheader("💧 Liquidez Mínima")
+        filtro_liq_permanente = st.sidebar.number_input(
+            "Volume Diário Mín. (R$)", 
+            min_value=0.0, 
+            step=500000.0, 
+            format="%.0f",
+            key='f_liq_global',
+            help="Filtro permanente de segurança institucional. Não é resetado pelo botão 'Limpar Tudo'."
+        )
+        
         opcoes_seg = st.sidebar.multiselect("Filtrar por Segmento", sorted(df_dados['Segmento'].unique().tolist()), key='f_fii_segmento')
         
         with st.sidebar.expander("📈 Rastreador de Tendências", expanded=False):
@@ -391,7 +416,6 @@ else:
 
         df_f = df_dados.copy()
         
-        # Aplicação do Filtro Permanente de Liquidez
         if filtro_liq_permanente > 0:
             df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
             
@@ -408,22 +432,6 @@ else:
         if max_vac > 0: df_f = df_f[df_f['Vacância Média (%)'] <= max_vac]
 
         st.subheader(f"🏢 FIIs Encontrados: {len(df_f)}")
-        
-        colunas_disponiveis_fii = {
-            'Ticker': 'Ticker', 'Segmento': 'Segmento', 'Tend. Mensal': 'T. Mês', 
-            'Tend. Semanal': 'T. Sem', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal', 
-            'Cotação': 'Preço', 'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 
-            'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'P/VP': 'P/VP', 
-            'Vacância Média (%)': 'Vacância', 'Liq. Diária': 'Liq. Diária'
-        }
-        
-        colunas_padrao_fii = ['Ticker', 'Segmento', 'Preço', 'T. Barsi', 'M. Barsi', 'DY', 'DY Mês', 'P/VP', 'Vacância', 'Liq. Diária']
-        
-        colunas_escolhidas_fii = st.sidebar.multiselect(
-            "👁️ Ocultar/Exibir Colunas", 
-            options=list(colunas_disponiveis_fii.values()), 
-            default=[colunas_disponiveis_fii[c] for c in colunas_padrao_fii if c in colunas_disponiveis_fii]
-        )
         
         chaves_reais_fii = [k for k, v in colunas_disponiveis_fii.items() if v in colunas_escolhidas_fii]
 
