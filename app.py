@@ -62,15 +62,17 @@ def limpar_filtros_fiis():
     st.session_state.f_fii_ffo_min = 0.0
     st.session_state.f_fii_vacancia_max = 100.0
 
+# Inicialização global. As liquidezes ficam salvas aqui de forma permanente
 if 'iniciado' not in st.session_state:
     aplicar_setup_cnpi_acoes()
     aplicar_setup_cnpi_fiis()
     st.session_state.tipo_ativo = 'Ações'
-    st.session_state.f_liq_global = 1000000.0 
+    st.session_state.f_liq_global = 1000000.0       # Ações: R$ 1 Milhão
+    st.session_state.f_liq_global_fii = 500000.0    # FIIs: R$ 500 Mil
     st.session_state.iniciado = True
 
 # ==========================================
-# 2. FUNÇÕES AUXILIARES E GLOSSÁRIO
+# 2. FUNÇÕES AUXILIARES DE CORES E DADOS
 # ==========================================
 def classificar_sinal(score):
     if pd.isna(score): return "Sem Dados"
@@ -89,6 +91,24 @@ def limpar_numero(texto):
     if not val_str or val_str in ['-', 'nan', 'N/D']: return 0.0
     try: return float(val_str)
     except ValueError: return 0.0
+
+# Estilos Condicionais para Pandas
+def colorir_margem(val):
+    if pd.isna(val): return ''
+    if val > 0: return 'color: #00C851; font-weight: bold;' # Verde para desconto
+    if val < 0: return 'color: #ff4444; font-weight: bold;' # Vermelho para ágio
+    return ''
+
+def colorir_sinal(val):
+    if val == 'Compra': return 'color: #00C851; font-weight: bold;'
+    if val == 'Venda': return 'color: #ff4444; font-weight: bold;'
+    if val == 'Manter': return 'color: #FFBB33;'
+    return ''
+
+def colorir_tendencia(val):
+    if '🟢' in str(val): return 'color: #00C851;'
+    if '🔴' in str(val): return 'color: #ff4444;'
+    return ''
 
 @st.cache_data(ttl=3600)
 def obter_carteira_ibov():
@@ -222,7 +242,6 @@ if tipo_ativo == "Ações":
             
         busca = st.sidebar.text_input("Buscar Ticker (ex: BBAS3)", key='f_busca').upper()
         
-        # Dicionário com a ORDEM EXATA solicitada para Ações
         colunas_disponiveis = {
             'Ticker': 'Ticker', 'Cotação': 'Preço', 'IBOV': 'IBOV', 'Categoria': 'Tipo', 
             'Setor': 'Setor', 'P/VP': 'P/VP', 'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 
@@ -243,6 +262,7 @@ if tipo_ativo == "Ações":
             default=colunas_padrao_visiveis
         )
         
+        st.sidebar.markdown("---")
         st.sidebar.subheader("RASTREADOR DE TENDÊNCIAS")
         with st.sidebar.expander("Configurar Médias Móveis"):
             p_diario = st.selectbox("Período da Média Diária", [20, 50, 200], index=0)
@@ -258,7 +278,6 @@ if tipo_ativo == "Ações":
         
         setores_disp = sorted(df_dados['Setor'].dropna().unique().tolist())
         opcoes_setor = st.sidebar.multiselect("Filtrar Setor", setores_disp, key='f_setor')
-        
         opcoes_tv = st.sidebar.multiselect("Filtrar Sinal", ["Compra", "Venda", "Manter", "Sem Dados"], key='f_tv')
         
         filtro_barsi = st.sidebar.checkbox("Cotação Abaixo do Preço Teto (Barsi)", key='f_barsi')
@@ -282,7 +301,7 @@ if tipo_ativo == "Ações":
         filtro_liq_permanente = st.sidebar.number_input(
             "Volume Diário Mín. (R$)", 
             min_value=0.0, step=500000.0, format="%.0f", key='f_liq_global',
-            help="Filtro de segurança institucional. Não é resetado pelo botão 'Limpar Tudo'."
+            help="Filtro de segurança permanente. Padrão R$ 1.000.000."
         )
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
@@ -291,6 +310,7 @@ if tipo_ativo == "Ações":
 
         df_f = df_dados.copy()
         
+        # Filtros e Ordenação
         if filtro_liq_permanente > 0: df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
         if busca: df_f = df_f[df_f['Ticker'].str.contains(busca)]
         if apenas_ibov: df_f = df_f[df_f['IBOV'] == "Sim"]
@@ -312,37 +332,52 @@ if tipo_ativo == "Ações":
         if min_liq > 0: df_f = df_f[df_f['Liq. Corrente'] >= min_liq]
         if min_cagr > 0: df_f = df_f[df_f['CAGR Receita 5a (%)'] >= min_cagr]
 
+        # ORDENAÇÃO AUTOMÁTICA
+        df_f = df_f.sort_values(by='Margem Graham (%)', ascending=False)
+
         st.subheader(f"🏢 Ações Encontradas: {len(df_f)}")
         
-        # Mantém a ordem rigorosa do dicionário original 'colunas_disponiveis' para exibição
         chaves_reais_ordenadas = [k for k, v in colunas_disponiveis.items() if v in colunas_escolhidas]
 
         if chaves_reais_ordenadas:
-            st.dataframe(df_f[chaves_reais_ordenadas].rename(columns=colunas_disponiveis).style.format({
+            df_view = df_f[chaves_reais_ordenadas].rename(columns=colunas_disponiveis)
+            
+            # Aplicação de Cores com o Styler do Pandas
+            styled_df = df_view.style.format({
                 "Preço": "R$ {:.2f}", "V. Graham": "R$ {:.2f}", "M. Graham": "{:+.1f}%",
                 "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%", "DY": "{:.1f}%", 
                 "DY Mês": "{:.2f}%", "ROE": "{:.1f}%", "M. EBIT": "{:.1f}%", 
-                "P/L": "{:.2f}", "P/VP": "{:.2f}", "Liq Corr.": "{:.2f}",
-                "Liq Diária": "R$ {:,.0f}"
-            }), 
-            hide_index=True, # Remove os índices 0, 1, 2, 3...
-            use_container_width=False, # Ajusta à menor largura necessária baseada no conteúdo
-            height=600,
-            column_config={
-                "DY": st.column_config.NumberColumn("DY", help="Dividendos (12m) / Preço. Quanto maior, melhor."),
-                "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos). Quanto maior, melhor."),
-                "M. Graham": st.column_config.NumberColumn("M. Graham", help="Distância % entre o Preço Justo e a Cotação. Positivo = Desconto."),
-                "M. Barsi": st.column_config.NumberColumn("M. Barsi", help="Distância % entre o Preço Teto e a Cotação. Positivo = Desconto."),
-                "P/L": st.column_config.NumberColumn("P/L", help="Preço / Lucro. Quanto menor (acima de zero), mais barata."),
-                "P/VP": st.column_config.NumberColumn("P/VP", help="Preço / Valor Patrimonial. Menor que 1 indica desconto patrimonial."),
-                "ROE": st.column_config.NumberColumn("ROE", help="Retorno sobre o Patrimônio Líquido. Capacidade de gerar lucro com capital próprio."),
-                "M. EBIT": st.column_config.NumberColumn("M. EBIT", help="Margem Operacional. Eficiência do negócio principal."),
-                "V. Graham": st.column_config.NumberColumn("V. Graham", help="Preço Justo calculado por Benjamin Graham."),
-                "T. Barsi": st.column_config.NumberColumn("T. Barsi", help="Preço Teto calculado pela metodologia de Décio Barsi."),
-                "Tipo": st.column_config.TextColumn("Tipo", help="Tamanho da empresa por valor de mercado na bolsa."),
-                "Setor": st.column_config.TextColumn("Setor", help="Setor de atuação da empresa segundo o TradingView."),
-                "Liq Corr.": st.column_config.NumberColumn("Liq Corr.", help="Liquidez Corrente: Caixa para pagar dívidas de curto prazo (>1.0 é bom).")
+                "P/L": "{:.2f}", "P/VP": "{:.2f}", "Liq Corr.": "{:.2f}", "Liq Diária": "R$ {:,.0f}"
             })
+            
+            cols_margem = [c for c in ['M. Graham', 'M. Barsi'] if c in df_view.columns]
+            if cols_margem: styled_df = styled_df.map(colorir_margem, subset=cols_margem)
+            
+            cols_sinal = [c for c in ['Sinal'] if c in df_view.columns]
+            if cols_sinal: styled_df = styled_df.map(colorir_sinal, subset=cols_sinal)
+            
+            cols_tendencia = [c for c in ['T. Mês', 'T. Sem.', 'T. Dia'] if c in df_view.columns]
+            if cols_tendencia: styled_df = styled_df.map(colorir_tendencia, subset=cols_tendencia)
+
+            st.dataframe(styled_df, 
+                hide_index=True, 
+                use_container_width=False, 
+                height=600,
+                column_config={
+                    "DY": st.column_config.NumberColumn("DY", help="Dividendos (12m) / Preço. Quanto maior, melhor."),
+                    "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos). Quanto maior, melhor."),
+                    "M. Graham": st.column_config.NumberColumn("M. Graham", help="Distância % entre o Preço Justo e a Cotação. Positivo = Desconto."),
+                    "M. Barsi": st.column_config.NumberColumn("M. Barsi", help="Distância % entre o Preço Teto e a Cotação. Positivo = Desconto."),
+                    "P/L": st.column_config.NumberColumn("P/L", help="Preço / Lucro. Quanto menor (acima de zero), mais barata."),
+                    "P/VP": st.column_config.NumberColumn("P/VP", help="Preço / Valor Patrimonial. Menor que 1 indica desconto patrimonial."),
+                    "ROE": st.column_config.NumberColumn("ROE", help="Retorno sobre o Patrimônio Líquido. Capacidade de gerar lucro com capital próprio."),
+                    "M. EBIT": st.column_config.NumberColumn("M. EBIT", help="Margem Operacional. Eficiência do negócio principal."),
+                    "V. Graham": st.column_config.NumberColumn("V. Graham", help="Preço Justo calculado por Benjamin Graham."),
+                    "T. Barsi": st.column_config.NumberColumn("T. Barsi", help="Preço Teto calculado pela metodologia de Décio Barsi."),
+                    "Tipo": st.column_config.TextColumn("Tipo", help="Tamanho da empresa por valor de mercado na bolsa."),
+                    "Setor": st.column_config.TextColumn("Setor", help="Setor de atuação da empresa segundo o TradingView."),
+                    "Liq Corr.": st.column_config.NumberColumn("Liq Corr.", help="Liquidez Corrente: Caixa para pagar dívidas de curto prazo (>1.0 é bom).")
+                })
         else:
             st.warning("Selecione ao menos uma coluna para exibir na tabela.")
 
@@ -376,7 +411,7 @@ else:
             t_mensal = st.multiselect("Tendência Mensal", ["🟢 Alta", "🔴 Baixa"], key='f_tend_m')
 
         colunas_disponiveis_fii = {
-            'Ticker': 'Ticker', 'Segmento': 'Segmento', 'Cotação': 'Preço', 'P/VP': 'P/VP', 
+            'Ticker': 'Ticker', 'Cotação': 'Preço', 'Segmento': 'Segmento', 'P/VP': 'P/VP', 
             'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'FFO Yield (%)': 'FFO Yield', 
             'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 'Vacância Média (%)': 'Vacância', 
             'Liq. Diária': 'Liq. Diária', 'Tend. Mensal': 'T. Mês', 'Tend. Semanal': 'T. Sem.', 
@@ -404,8 +439,8 @@ else:
         st.sidebar.subheader("LIQUIDEZ MÍNIMA")
         filtro_liq_permanente = st.sidebar.number_input(
             "Volume Diário Mín. (R$)", 
-            min_value=0.0, step=500000.0, format="%.0f", key='f_liq_global_fii',
-            help="Filtro permanente de segurança institucional."
+            min_value=0.0, step=100000.0, format="%.0f", key='f_liq_global_fii',
+            help="Filtro de segurança permanente. Padrão FIIs: R$ 500.000."
         )
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
@@ -427,27 +462,43 @@ else:
         if min_ffo > 0: df_f = df_f[df_f['FFO Yield (%)'] >= min_ffo]
         if max_vac > 0: df_f = df_f[df_f['Vacância Média (%)'] <= max_vac]
 
+        # ORDENAÇÃO AUTOMÁTICA
+        df_f = df_f.sort_values(by='Margem Barsi (%)', ascending=False)
+
         st.subheader(f"🏢 FIIs Encontrados: {len(df_f)}")
         
-        # Mantém a ordem rigorosa do dicionário original para exibição
-        chaves_reais_fii = [k for k, v in colunas_disponiveis_fii.items() if v in colunas_escolhidas_fii]
+        chaves_reais_fii_ordenadas = [k for k, v in colunas_disponiveis_fii.items() if v in colunas_escolhidas_fii]
 
-        if chaves_reais_fii:
-            st.dataframe(df_f[chaves_reais_fii].rename(columns=colunas_disponiveis_fii).style.format({
+        if chaves_reais_fii_ordenadas:
+            df_view_fii = df_f[chaves_reais_fii_ordenadas].rename(columns=colunas_disponiveis_fii)
+            
+            # Aplicação de Cores com o Styler do Pandas
+            styled_df_fii = df_view_fii.style.format({
                 "Preço": "R$ {:.2f}", "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%",
                 "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "FFO Yield": "{:.1f}%", "P/VP": "{:.2f}", 
                 "Vacância": "{:.1f}%", "Liq. Diária": "R$ {:,.0f}"
-            }), 
-            hide_index=True,
-            use_container_width=False, 
-            height=600,
-            column_config={
-                "DY": st.column_config.NumberColumn("DY", help="Dividendos (12m) / Preço. Quanto maior, melhor."),
-                "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos). Quanto maior, melhor."),
-                "M. Barsi": st.column_config.NumberColumn("M. Barsi", help="Distância % entre o Preço Teto e a Cotação. Positivo = Desconto."),
-                "P/VP": st.column_config.NumberColumn("P/VP", help="Preço / Valor Patrimonial. Abaixo de 1.0 = Fundo com desconto."),
-                "Vacância": st.column_config.NumberColumn("Vacância", help="Percentual do portfólio físico desocupado. Quanto menor, melhor."),
-                "FFO Yield": st.column_config.NumberColumn("FFO Yield", help="Caixa gerado pelas operações do fundo sobre o preço. Mostra o potencial de distribuição.")
             })
+            
+            cols_margem_fii = [c for c in ['M. Barsi'] if c in df_view_fii.columns]
+            if cols_margem_fii: styled_df_fii = styled_df_fii.map(colorir_margem, subset=cols_margem_fii)
+            
+            cols_sinal_fii = [c for c in ['Sinal'] if c in df_view_fii.columns]
+            if cols_sinal_fii: styled_df_fii = styled_df_fii.map(colorir_sinal, subset=cols_sinal_fii)
+            
+            cols_tend_fii = [c for c in ['T. Mês', 'T. Sem.', 'T. Dia'] if c in df_view_fii.columns]
+            if cols_tend_fii: styled_df_fii = styled_df_fii.map(colorir_tendencia, subset=cols_tend_fii)
+
+            st.dataframe(styled_df_fii, 
+                hide_index=True,
+                use_container_width=False, 
+                height=600,
+                column_config={
+                    "DY": st.column_config.NumberColumn("DY", help="Dividendos (12m) / Preço. Quanto maior, melhor."),
+                    "DY Mês": st.column_config.NumberColumn("DY Mês", help="Taxa equivalente mensal (Juros Compostos). Quanto maior, melhor."),
+                    "M. Barsi": st.column_config.NumberColumn("M. Barsi", help="Distância % entre o Preço Teto calculado e a Cotação atual do FII. Positivo indica que está abaixo do teto."),
+                    "P/VP": st.column_config.NumberColumn("P/VP", help="Preço / Valor Patrimonial. Abaixo de 1.0 = Fundo com desconto."),
+                    "Vacância": st.column_config.NumberColumn("Vacância", help="Percentual do portfólio físico desocupado. Quanto menor, melhor."),
+                    "FFO Yield": st.column_config.NumberColumn("FFO Yield", help="Caixa gerado pelas operações do fundo sobre o preço. Mostra o potencial de distribuição.")
+                })
         else:
             st.warning("Selecione ao menos uma coluna para exibir na tabela.")
