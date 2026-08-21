@@ -9,6 +9,33 @@ st.set_page_config(page_title="Screener Avançado", layout="wide", initial_sideb
 st.title("📊 Screener Avançado de Investimentos")
 st.markdown("Cruzamento Fundamentalista, Rastreador de Tendências e Indicadores de Valuation.")
 
+# Dicionário super otimizado para tradução instantânea dos setores do TradingView
+SETORES_TRADUCAO = {
+    "Finance": "Finanças",
+    "Electronic Technology": "Tecnologia Eletrônica",
+    "Energy Minerals": "Minerais Energéticos",
+    "Commercial Services": "Serviços Comerciais",
+    "Process Industries": "Indústrias de Transformação",
+    "Utilities": "Utilidade Pública",
+    "Consumer Non-Durables": "Bens de Consumo Não-Duráveis",
+    "Consumer Durables": "Bens de Consumo Duráveis",
+    "Health Technology": "Tecnologia em Saúde",
+    "Health Services": "Serviços de Saúde",
+    "Transportation": "Transportes",
+    "Retail Trade": "Varejo",
+    "Producer Manufacturing": "Manufatura de Produção",
+    "Non-Energy Minerals": "Minerais Não-Energéticos",
+    "Technology Services": "Serviços de Tecnologia",
+    "Communications": "Comunicações",
+    "Industrial Services": "Serviços Industriais",
+    "Consumer Services": "Serviços ao Consumidor",
+    "Distribution Services": "Serviços de Distribuição",
+    "Miscellaneous": "Diversos",
+    "Government": "Governo",
+    "Real Estate": "Imobiliário",
+    "Outros": "Outros"
+}
+
 # ==========================================
 # 1. CONFIGURAÇÃO DE ESTADO E SETUP CNPI FLEXÍVEL
 # ==========================================
@@ -28,6 +55,7 @@ def aplicar_setup_cnpi_acoes():
     st.session_state.f_pl_min = 0.1         
     st.session_state.f_pl_max = 20.0        
     st.session_state.f_liq = 1.0            
+    st.session_state.f_divida = 0.0 # Novo Indicador
     st.session_state.val_liq_acoes = 1000000.0
 
 def limpar_filtros_acoes():
@@ -41,6 +69,7 @@ def limpar_filtros_acoes():
     st.session_state.f_pvp_max = 100.0
     st.session_state.f_pl_min = -100.0; st.session_state.f_pl_max = 1000.0
     st.session_state.f_liq = 0.0
+    st.session_state.f_divida = 0.0
     st.session_state.val_liq_acoes = 1000000.0
 
 def aplicar_setup_cnpi_fiis():
@@ -52,6 +81,7 @@ def aplicar_setup_cnpi_fiis():
     st.session_state.f_fii_pvp_max = 1.10   
     st.session_state.f_fii_dy_min = 8.0     
     st.session_state.f_fii_ffo_min = 7.0     
+    st.session_state.f_fii_cap_rate = 0.0 # Novo Indicador
     st.session_state.f_fii_vacancia_max = 15.0 
     st.session_state.val_liq_fiis = 500000.0
 
@@ -64,10 +94,11 @@ def limpar_filtros_fiis():
     st.session_state.f_fii_pvp_max = 10.0
     st.session_state.f_fii_dy_min = 0.0
     st.session_state.f_fii_ffo_min = 0.0
+    st.session_state.f_fii_cap_rate = 0.0
     st.session_state.f_fii_vacancia_max = 100.0
     st.session_state.val_liq_fiis = 500000.0
 
-# Shadow State (Variáveis de Sombra) - Impede que o Streamlit perca o valor ao trocar de tela
+# Shadow State (Variáveis de Sombra)
 if 'val_liq_acoes' not in st.session_state:
     st.session_state.val_liq_acoes = 1000000.0
 if 'val_liq_fiis' not in st.session_state:
@@ -165,6 +196,9 @@ def carregar_dados_acoes():
         df['Liq. Diária TV'] = 0.0; df['Setor'] = 'Outros'; 
         for col in TV_COLS[5:]: df[col] = None
 
+    # Aplica a tradução rápida dos Setores
+    df['Setor'] = df['Setor'].map(SETORES_TRADUCAO).fillna(df['Setor'])
+    
     df['Liq. Diária'] = df['Liq. Diária TV']
 
     lista_ibov = obter_carteira_ibov()
@@ -219,7 +253,7 @@ def carregar_dados_fiis():
         df['Liq. Diária TV'] = 0.0
         for col in TV_COLS[4:]: df[col] = None
 
-    # Prioridade Categórica: Usa Fundamentus se houver valor, ignora TradingView nulo/zerado
+    # Prioridade Categórica para o Fundamentus
     df['Liq. Diária'] = df.apply(lambda r: r['Liq. Diária Fundamentus'] if pd.notna(r['Liq. Diária Fundamentus']) and r['Liq. Diária Fundamentus'] > 0 else r.get('Liq. Diária TV', 0.0), axis=1)
 
     df['Sinal Técnico'] = df['Score TV'].apply(classificar_sinal)
@@ -254,18 +288,19 @@ if tipo_ativo == "Ações":
             
         busca = st.sidebar.text_input("Buscar Ticker (ex: BBAS3)", key='f_busca').upper()
         
+        # Adicionado o novo indicador Dívida Bruta/PL
         colunas_disponiveis = {
             'Ticker': 'Ticker', 'Cotação': 'Preço', 'IBOV': 'IBOV', 'Categoria': 'Tipo', 
             'Setor': 'Setor', 'P/VP': 'P/VP', 'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 
             'Preço Justo (Graham)': 'V. Graham', 'Margem Graham (%)': 'M. Graham', 'Preço Teto (Barsi)': 'T. Barsi', 
             'Margem Barsi (%)': 'M. Barsi', 'P/L': 'P/L', 'ROE (%)': 'ROE', 'Margem EBIT (%)': 'M. EBIT', 
-            'Liq. Corrente': 'Liq Corr.', 'Liq. Diária': 'Liq Diária', 'Tend. Mensal': 'T. Mês', 
-            'Tend. Semanal': 'T. Sem.', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal'
+            'Dívida Bruta/Patrimônio': 'Dív. Bruta/PL', 'Liq. Corrente': 'Liq Corr.', 'Liq. Diária': 'Liq Diária', 
+            'Tend. Mensal': 'T. Mês', 'Tend. Semanal': 'T. Sem.', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal'
         }
         
         colunas_padrao_visiveis = [
             'Ticker', 'Preço', 'IBOV', 'P/VP', 'DY', 'V. Graham', 'T. Barsi', 
-            'P/L', 'ROE', 'M. EBIT', 'Liq Corr.', 'Liq Diária', 'T. Mês', 'T. Sem.', 'T. Dia', 'Sinal'
+            'P/L', 'ROE', 'M. EBIT', 'Dív. Bruta/PL', 'Liq Corr.', 'Liq Diária', 'T. Mês', 'T. Sem.', 'T. Dia', 'Sinal'
         ]
         
         colunas_escolhidas = st.sidebar.multiselect(
@@ -306,18 +341,18 @@ if tipo_ativo == "Ações":
             min_roe = st.number_input("ROE Mínimo (%)", step=1.0, key='f_roe')
             min_mebit = st.number_input("Margem EBIT Mín. (%)", step=1.0, key='f_mebit')
             min_mliq = st.number_input("Margem Líquida Mín. (%)", step=1.0, key='f_mliq')
+            max_divida = st.number_input("Dívida Bruta/PL Máx. (0=desativa)", step=0.5, key='f_divida')
             min_liq = st.number_input("Liquidez Corrente Mínima", step=0.1, key='f_liq')
             min_cagr = st.number_input("CAGR Receita Mínimo (%)", step=1.0, key='f_cagr')
 
         st.sidebar.subheader("LIQUIDEZ MÍNIMA")
-        # Implementação do Shadow State desacoplado
         filtro_liq_permanente = st.sidebar.number_input(
             "Volume Diário Mín. (R$)", 
             min_value=0.0, step=500000.0, format="%.0f", 
             value=st.session_state.val_liq_acoes,
             help="Filtro de segurança permanente. Padrão R$ 1.000.000."
         )
-        st.session_state.val_liq_acoes = filtro_liq_permanente # Salva a nova digitação na memória
+        st.session_state.val_liq_acoes = filtro_liq_permanente
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
         df_dados['Tend. Semanal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_semanal}|1W', 0)), axis=1)
@@ -343,12 +378,12 @@ if tipo_ativo == "Ações":
         if min_roe > 0: df_f = df_f[df_f['ROE (%)'] >= min_roe]
         if min_mebit > 0: df_f = df_f[df_f['Margem EBIT (%)'] >= min_mebit]
         if min_mliq > 0: df_f = df_f[df_f['Margem Líquida (%)'] >= min_mliq]
+        if max_divida > 0: df_f = df_f[df_f['Dívida Bruta/Patrimônio'] <= max_divida]
         if min_liq > 0: df_f = df_f[df_f['Liq. Corrente'] >= min_liq]
         if min_cagr > 0: df_f = df_f[df_f['CAGR Receita 5a (%)'] >= min_cagr]
 
         df_f = df_f.sort_values(by='Margem Graham (%)', ascending=False)
 
-        # Dashboard de Métricas Rápidas
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("🏢 Ações Encontradas", len(df_f))
         if not df_f.empty:
@@ -366,7 +401,8 @@ if tipo_ativo == "Ações":
                 "Preço": "R$ {:.2f}", "V. Graham": "R$ {:.2f}", "M. Graham": "{:+.1f}%",
                 "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%", "DY": "{:.1f}%", 
                 "DY Mês": "{:.2f}%", "ROE": "{:.1f}%", "M. EBIT": "{:.1f}%", 
-                "P/L": "{:.2f}", "P/VP": "{:.2f}", "Liq Corr.": "{:.2f}", "Liq Diária": "R$ {:,.0f}"
+                "P/L": "{:.2f}", "P/VP": "{:.2f}", "Dív. Bruta/PL": "{:.2f}", 
+                "Liq Corr.": "{:.2f}", "Liq Diária": "R$ {:,.0f}"
             })
             
             cols_margem = [c for c in ['M. Graham', 'M. Barsi'] if c in df_view.columns]
@@ -395,6 +431,7 @@ if tipo_ativo == "Ações":
                     "T. Barsi": st.column_config.NumberColumn("T. Barsi", help="Preço Teto calculado pela metodologia de Décio Barsi."),
                     "Tipo": st.column_config.TextColumn("Tipo", help="Tamanho da empresa por valor de mercado na bolsa."),
                     "Setor": st.column_config.TextColumn("Setor", help="Setor de atuação da empresa segundo o TradingView."),
+                    "Dív. Bruta/PL": st.column_config.NumberColumn("Dív. Bruta/PL", help="Dívida Bruta sobre o Patrimônio Líquido. Mede o nível de endividamento da empresa."),
                     "Liq Corr.": st.column_config.NumberColumn("Liq Corr.", help="Liquidez Corrente: Caixa para pagar dívidas de curto prazo (>1.0 é bom).")
                 })
         else:
@@ -429,16 +466,17 @@ else:
             p_mensal = st.selectbox("Período da Média Mensal", [20, 50], index=0)
             t_mensal = st.multiselect("Tendência Mensal", ["🟢 Alta", "🔴 Baixa"], key='f_tend_m')
 
+        # Adicionado o novo indicador Cap Rate
         colunas_disponiveis_fii = {
             'Ticker': 'Ticker', 'Cotação': 'Preço', 'Segmento': 'Segmento', 'P/VP': 'P/VP', 
             'Div. Yield (%)': 'DY', 'DY Mensal Est. (%)': 'DY Mês', 'FFO Yield (%)': 'FFO Yield', 
-            'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 'Vacância Média (%)': 'Vacância', 
-            'Liq. Diária': 'Liq. Diária', 'Tend. Mensal': 'T. Mês', 'Tend. Semanal': 'T. Sem.', 
-            'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal'
+            'Cap Rate (%)': 'Cap Rate', 'Preço Teto (Barsi)': 'T. Barsi', 'Margem Barsi (%)': 'M. Barsi', 
+            'Vacância Média (%)': 'Vacância', 'Liq. Diária': 'Liq. Diária', 'Tend. Mensal': 'T. Mês', 
+            'Tend. Semanal': 'T. Sem.', 'Tend. Diária': 'T. Dia', 'Sinal Técnico': 'Sinal'
         }
         
         colunas_padrao_fii_visiveis = [
-            'Ticker', 'Preço', 'Segmento', 'P/VP', 'DY', 'FFO Yield', 'T. Barsi', 
+            'Ticker', 'Preço', 'Segmento', 'P/VP', 'DY', 'FFO Yield', 'Cap Rate', 'T. Barsi', 
             'Vacância', 'Liq. Diária', 'T. Mês', 'T. Sem.', 'T. Dia', 'Sinal'
         ]
         
@@ -453,17 +491,17 @@ else:
         max_pvp = st.sidebar.number_input("P/VP Máximo (0=desativa)", step=0.05, key='f_fii_pvp_max')
         min_dy = st.sidebar.number_input("Dividend Yield Mínimo (%)", step=0.5, key='f_fii_dy_min')
         min_ffo = st.sidebar.number_input("FFO Yield Mínimo (%)", step=0.5, key='f_fii_ffo_min')
+        min_cap = st.sidebar.number_input("Cap Rate Mínimo (%)", step=0.5, key='f_fii_cap_rate')
         max_vac = st.sidebar.number_input("Vacância Máxima (%)", step=1.0, key='f_fii_vacancia_max')
 
         st.sidebar.subheader("LIQUIDEZ MÍNIMA")
-        # Implementação do Shadow State desacoplado
         filtro_liq_permanente = st.sidebar.number_input(
             "Volume Diário Mín. (R$)", 
             min_value=0.0, step=100000.0, format="%.0f", 
             value=st.session_state.val_liq_fiis,
             help="Filtro de segurança permanente. Padrão FIIs: R$ 500.000."
         )
-        st.session_state.val_liq_fiis = filtro_liq_permanente # Salva a nova digitação na memória
+        st.session_state.val_liq_fiis = filtro_liq_permanente 
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
         df_dados['Tend. Semanal'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_semanal}|1W', 0)), axis=1)
@@ -482,11 +520,11 @@ else:
         if max_pvp > 0: df_f = df_f[df_f['P/VP'] <= max_pvp]
         if min_dy > 0: df_f = df_f[df_f['Div. Yield (%)'] >= min_dy]
         if min_ffo > 0: df_f = df_f[df_f['FFO Yield (%)'] >= min_ffo]
+        if min_cap > 0: df_f = df_f[df_f['Cap Rate (%)'] >= min_cap]
         if max_vac > 0: df_f = df_f[df_f['Vacância Média (%)'] <= max_vac]
 
         df_f = df_f.sort_values(by='Margem Barsi (%)', ascending=False)
 
-        # Dashboard de Métricas Rápidas
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("🏢 FIIs Encontrados", len(df_f))
         if not df_f.empty:
@@ -502,8 +540,8 @@ else:
             
             styled_df_fii = df_view_fii.style.format({
                 "Preço": "R$ {:.2f}", "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%",
-                "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "FFO Yield": "{:.1f}%", "P/VP": "{:.2f}", 
-                "Vacância": "{:.1f}%", "Liq. Diária": "R$ {:,.0f}"
+                "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "FFO Yield": "{:.1f}%", "Cap Rate": "{:.1f}%", 
+                "P/VP": "{:.2f}", "Vacância": "{:.1f}%", "Liq. Diária": "R$ {:,.0f}"
             })
             
             cols_margem_fii = [c for c in ['M. Barsi'] if c in df_view_fii.columns]
@@ -525,7 +563,8 @@ else:
                     "M. Barsi": st.column_config.NumberColumn("M. Barsi", help="Distância % entre o Preço Teto calculado e a Cotação atual do FII. Positivo indica que está abaixo do teto."),
                     "P/VP": st.column_config.NumberColumn("P/VP", help="Preço / Valor Patrimonial. Abaixo de 1.0 = Fundo com desconto."),
                     "Vacância": st.column_config.NumberColumn("Vacância", help="Percentual do portfólio físico desocupado. Quanto menor, melhor."),
-                    "FFO Yield": st.column_config.NumberColumn("FFO Yield", help="Caixa gerado pelas operações do fundo sobre o preço. Mostra o potencial de distribuição.")
+                    "FFO Yield": st.column_config.NumberColumn("FFO Yield", help="Caixa gerado pelas operações do fundo sobre o preço. Mostra o potencial de distribuição."),
+                    "Cap Rate": st.column_config.NumberColumn("Cap Rate", help="Retorno médio anual que os imóveis físicos do fundo estão gerando com aluguéis.")
                 })
         else:
             st.warning("Selecione ao menos uma coluna para exibir na tabela.")
