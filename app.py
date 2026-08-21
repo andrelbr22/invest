@@ -321,9 +321,9 @@ if tipo_ativo == "Ações":
             "DY Mensal Est. (%)": st.column_config.NumberColumn("DY Mensal", help="Taxa equivalente de rendimento mensal calculada por juros compostos. Quanto maior, melhor."),
             "Margem Graham (%)": st.column_config.NumberColumn("Margem G.", help="Distância percentual entre o Preço Justo de Graham e a Cotação atual. Positivo indica desconto."),
             "Margem Barsi (%)": st.column_config.NumberColumn("Margem B.", help="Distância percentual entre o Preço Teto de Barsi e a Cotação atual. Positivo indica desconto em relação ao teto de dividendos."),
-            "P/L": st.column_config.NumberColumn("P/L (Preço/Lucro)", help="Quanto o mercado paga pelo lucro da empresa. Quanto menor (sem ser negativo), mais barata."),
-            "P/VP": st.column_config.NumberColumn("P/VP (Preço/Valor Patrimonial)", help="Compara o preço da ação com seu patrimônio líquido real. Abaixo de 1 pode indicar desconto patrimonial."),
-            "ROE (%)": st.column_config.NumberColumn("ROE (Retorno s/ Patrimônio)", help="Mede a capacidade da empresa de gerar lucro com o dinheiro dos acionistas. Quanto maior, melhor.")
+            "P/L": st.column_config.NumberColumn("P/L", help="Quanto o mercado paga pelo lucro da empresa. Quanto menor (sem ser negativo), mais barata."),
+            "P/VP": st.column_config.NumberColumn("P/VP", help="Compara o preço da ação com seu patrimônio líquido real. Abaixo de 1 pode indicar desconto patrimonial."),
+            "ROE (%)": st.column_config.NumberColumn("ROE", help="Mede a capacidade da empresa de gerar lucro com o dinheiro dos acionistas. Quanto maior, melhor.")
         })
 
 # ==========================================
