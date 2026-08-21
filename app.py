@@ -62,14 +62,17 @@ def limpar_filtros_fiis():
     st.session_state.f_fii_ffo_min = 0.0
     st.session_state.f_fii_vacancia_max = 100.0
 
-# Inicialização global. As liquidezes ficam salvas aqui de forma permanente
-if 'iniciado' not in st.session_state:
+# Inicialização global robusta (Força os valores corretos independentemente do cache)
+if 'tipo_ativo' not in st.session_state:
+    st.session_state.tipo_ativo = 'Ações'
     aplicar_setup_cnpi_acoes()
     aplicar_setup_cnpi_fiis()
-    st.session_state.tipo_ativo = 'Ações'
-    st.session_state.f_liq_global = 1000000.0       # Ações: R$ 1 Milhão
-    st.session_state.f_liq_global_fii = 500000.0    # FIIs: R$ 500 Mil
-    st.session_state.iniciado = True
+
+if 'f_liq_global' not in st.session_state:
+    st.session_state.f_liq_global = 1000000.0
+    
+if 'f_liq_global_fii' not in st.session_state:
+    st.session_state.f_liq_global_fii = 500000.0
 
 # ==========================================
 # 2. FUNÇÕES AUXILIARES DE CORES E DADOS
@@ -95,8 +98,8 @@ def limpar_numero(texto):
 # Estilos Condicionais para Pandas
 def colorir_margem(val):
     if pd.isna(val): return ''
-    if val > 0: return 'color: #00C851; font-weight: bold;' # Verde para desconto
-    if val < 0: return 'color: #ff4444; font-weight: bold;' # Vermelho para ágio
+    if val > 0: return 'color: #00C851; font-weight: bold;' 
+    if val < 0: return 'color: #ff4444; font-weight: bold;'
     return ''
 
 def colorir_sinal(val):
@@ -201,14 +204,16 @@ def carregar_dados_fiis():
         payload = {"filter": [{"left": "type", "operation": "equal", "right": "fund"}], "options": {"lang": "pt"}, "symbols": {"query": {"types": []}, "tickers": []}, "columns": TV_COLS}
         resp = requests.post("https://scanner.tradingview.com/brazil/scan", json=payload, timeout=15).json()
         tv_dict = {item['d'][0].split(":")[-1]: {
-            'Score TV': item['d'][1], 'Liq. Diária': item['d'][3] if item['d'][3] is not None else 0.0,
+            'Score TV': item['d'][1], 
             'Setor': item['d'][4], 'SMA20': item['d'][5], 'SMA50': item['d'][6], 'SMA200': item['d'][7],
             'SMA20|1W': item['d'][8], 'SMA50|1W': item['d'][9], 'SMA20|1M': item['d'][10], 'SMA50|1M': item['d'][11]
         } for item in resp.get('data', [])}
         df = pd.merge(df, pd.DataFrame.from_dict(tv_dict, orient='index').reset_index().rename(columns={'index': 'Ticker'}), on='Ticker', how='left')
     except:
-        df['Liq. Diária'] = df.get('Liquidez Diária (R$)', 0.0)
         for col in TV_COLS[4:]: df[col] = None
+
+    # Correção: Força a liquidez do Fundamentus para FIIs (Muito mais precisa)
+    df['Liq. Diária'] = df['Liquidez Diária (R$)']
 
     df['Sinal Técnico'] = df['Score TV'].apply(classificar_sinal)
     df['Preço Teto (Barsi)'] = df.apply(lambda r: (r['Cotação'] * (r['Div. Yield (%)'] / 100)) / 0.06, axis=1)
@@ -301,7 +306,7 @@ if tipo_ativo == "Ações":
         filtro_liq_permanente = st.sidebar.number_input(
             "Volume Diário Mín. (R$)", 
             min_value=0.0, step=500000.0, format="%.0f", key='f_liq_global',
-            help="Filtro de segurança permanente. Padrão R$ 1.000.000."
+            help="Filtro permanente. Padrão Ações: R$ 1.000.000"
         )
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
@@ -310,7 +315,6 @@ if tipo_ativo == "Ações":
 
         df_f = df_dados.copy()
         
-        # Filtros e Ordenação
         if filtro_liq_permanente > 0: df_f = df_f[df_f['Liq. Diária'] >= filtro_liq_permanente]
         if busca: df_f = df_f[df_f['Ticker'].str.contains(busca)]
         if apenas_ibov: df_f = df_f[df_f['IBOV'] == "Sim"]
@@ -342,7 +346,6 @@ if tipo_ativo == "Ações":
         if chaves_reais_ordenadas:
             df_view = df_f[chaves_reais_ordenadas].rename(columns=colunas_disponiveis)
             
-            # Aplicação de Cores com o Styler do Pandas
             styled_df = df_view.style.format({
                 "Preço": "R$ {:.2f}", "V. Graham": "R$ {:.2f}", "M. Graham": "{:+.1f}%",
                 "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%", "DY": "{:.1f}%", 
@@ -440,7 +443,7 @@ else:
         filtro_liq_permanente = st.sidebar.number_input(
             "Volume Diário Mín. (R$)", 
             min_value=0.0, step=100000.0, format="%.0f", key='f_liq_global_fii',
-            help="Filtro de segurança permanente. Padrão FIIs: R$ 500.000."
+            help="Filtro permanente. Padrão FIIs: R$ 500.000"
         )
 
         df_dados['Tend. Diária'] = df_dados.apply(lambda r: calc_tendencia(r['Cotação'], r.get(f'SMA{p_diario}', 0)), axis=1)
@@ -472,7 +475,6 @@ else:
         if chaves_reais_fii_ordenadas:
             df_view_fii = df_f[chaves_reais_fii_ordenadas].rename(columns=colunas_disponiveis_fii)
             
-            # Aplicação de Cores com o Styler do Pandas
             styled_df_fii = df_view_fii.style.format({
                 "Preço": "R$ {:.2f}", "T. Barsi": "R$ {:.2f}", "M. Barsi": "{:+.1f}%",
                 "DY": "{:.1f}%", "DY Mês": "{:.2f}%", "FFO Yield": "{:.1f}%", "P/VP": "{:.2f}", 
