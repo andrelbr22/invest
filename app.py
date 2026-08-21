@@ -7,7 +7,7 @@ import math
 st.set_page_config(page_title="Screener Avançado", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
-# 0. INICIALIZAÇÃO ROBUSTA (Evita erros de estado)
+# 1. INICIALIZAÇÃO SEGURA DO ESTADO
 # ==========================================
 def init_session():
     defaults = {
@@ -15,9 +15,9 @@ def init_session():
         'f_busca': '', 'f_tv': [], 'f_tend_d': [], 'f_tend_s': [], 'f_tend_m': [],
         'f_tamanho': [], 'f_setor': [], 'f_apenas_ibov': False, 'f_barsi': False, 'f_graham': False,
         'f_roe': 0.0, 'f_mebit': 0.0, 'f_mliq': 0.0, 'f_cagr': 0.0, 'f_evebitda': 0.0, 'f_dy': 0.0,
-        'f_pvp_max': 100.0, 'f_pl_min': -100.0, 'f_pl_max': 1000.0, 'f_liq': 0.0,
-        'f_fii_segmento': [], 'f_fii_barsi': False, 'f_fii_pvp_max': 10.0, 'f_fii_dy_min': 0.0,
-        'f_fii_ffo_min': 0.0, 'f_fii_vacancia_max': 100.0
+        'f_pvp_max': 5.0, 'f_pl_min': 0.1, 'f_pl_max': 20.0, 'f_liq': 1.0,
+        'f_fii_segmento': [], 'f_fii_barsi': False, 'f_fii_pvp_max': 1.10, 'f_fii_dy_min': 8.0,
+        'f_fii_ffo_min': 7.0, 'f_fii_vacancia_max': 15.0
     }
     for k, v in defaults.items():
         if k not in st.session_state: st.session_state[k] = v
@@ -25,7 +25,7 @@ def init_session():
 init_session()
 
 # ==========================================
-# FUNÇÕES DE ESTILO E AUXILIARES
+# FUNÇÕES AUXILIARES
 # ==========================================
 def limpar_numero(texto):
     try:
@@ -37,10 +37,8 @@ def colorir_margem(val):
     try:
         clean = str(val).replace('R$', '').replace('%', '').replace('+', '').strip()
         num = float(clean)
-        if num > 0: return 'color: #00C851; font-weight: bold;'
-        if num < 0: return 'color: #ff4444; font-weight: bold;'
-    except: pass
-    return ''
+        return 'color: #00C851; font-weight: bold;' if num > 0 else 'color: #ff4444; font-weight: bold;'
+    except: return ''
 
 # ==========================================
 # CARGA DE DADOS
@@ -58,16 +56,17 @@ def carregar_dados_acoes():
                 dados.append({
                     "Ticker": c[0].text.strip(), "Preço": limpar_numero(c[1]), "P/L": limpar_numero(c[2]),
                     "P/VP": limpar_numero(c[3]), "DY": limpar_numero(c[5]), "M. EBIT": limpar_numero(c[12]),
-                    "Liq Corr.": limpar_numero(c[14]), "ROE": limpar_numero(c[16]), "Liq Diária": 2000000.0
+                    "Liq Corr.": limpar_numero(c[14]), "ROE": limpar_numero(c[16]), "Liq Diária": 2000000.0,
+                    "EV/EBITDA": limpar_numero(c[11]), "CAGR": limpar_numero(c[20])
                 })
         df = pd.DataFrame(dados)
-        df['IBOV'] = 'Não'; df['Tipo'] = 'Mid Cap'; df['Setor'] = 'Outros'
+        df['IBOV'] = 'Não'; df['Tipo'] = 'Mid Cap'; df['Setor'] = 'Outros'; df['Sinal'] = 'Manter'
         df['V. Graham'] = df.apply(lambda r: math.sqrt(22.5 * (r['Preço']/r['P/VP'] if r['P/VP']>0 else 1) * (r['Preço']/r['P/L'] if r['P/L']>0 else 1)), axis=1)
         df['T. Barsi'] = df.apply(lambda r: (r['Preço'] * (r['DY']/100)) / 0.06, axis=1)
         df['M. Graham'] = ((df['V. Graham'] - df['Preço']) / df['Preço']) * 100
         df['M. Barsi'] = ((df['T. Barsi'] - df['Preço']) / df['Preço']) * 100
         df['DY Mês'] = df.apply(lambda r: (math.pow(1 + (r['DY']/100), 1/12) - 1) * 100, axis=1)
-        df['T. Mês'] = '🟢 Alta'; df['T. Sem.'] = '🟢 Alta'; df['T. Dia'] = '🟢 Alta'; df['Sinal'] = 'Manter'
+        df['T. Mês'] = '🟢 Alta'; df['T. Sem.'] = '🟢 Alta'; df['T. Dia'] = '🟢 Alta'
         return df
     except: return pd.DataFrame()
 
@@ -95,7 +94,7 @@ def carregar_dados_fiis():
     except: return pd.DataFrame()
 
 # ==========================================
-# UI E FILTROS
+# UI E FILTROS COMPLETOS
 # ==========================================
 st.sidebar.title("MERCADO")
 tipo_ativo = st.sidebar.radio("Selecione:", ("Ações", "Fundos Imobiliários (FIIs)"), key="tipo_ativo", label_visibility="collapsed")
@@ -103,10 +102,9 @@ tipo_ativo = st.sidebar.radio("Selecione:", ("Ações", "Fundos Imobiliários (F
 if tipo_ativo == "Ações":
     df = carregar_dados_acoes()
     st.sidebar.header("FILTROS DE AÇÕES")
-    
     col1, col2 = st.sidebar.columns(2)
-    col1.button("🧹 Limpar Tudo", on_click=lambda: [setattr(st.session_state, k, v) for k, v in {'f_busca':'', 'f_tamanho':[], 'f_setor':[]}.items()])
-    col2.button("🎯 Análise Padrão", on_click=lambda: None) # Adicione sua lógica de setup aqui
+    col1.button("🧹 Limpar Tudo", on_click=lambda: st.rerun())
+    col2.button("🎯 Análise Padrão", on_click=lambda: None)
     
     st.sidebar.text_input("Buscar Ticker (ex. BBAS3)", key='f_busca')
     
@@ -114,38 +112,47 @@ if tipo_ativo == "Ações":
     escolhidas = st.sidebar.multiselect("Ocultar/Exibir Colunas", cols_order, default=['Ticker', 'Preço', 'IBOV', 'P/VP', 'DY', 'V. Graham', 'T. Barsi', 'P/L', 'ROE', 'M. EBIT', 'Liq Corr.', 'Liq Diária', 'T. Mês', 'T. Sem.', 'T. Dia', 'Sinal'])
     
     with st.sidebar.expander("📈 RASTREADOR DE TENDÊNCIAS"):
-        st.write("Configurações de médias aqui...")
-    
+        st.multiselect("Sinal TV", ["Compra", "Venda", "Manter"], key='f_tv')
+        st.selectbox("Média Diária", [20, 50, 200], key='p_dia')
+        st.multiselect("Tendência Diária", ["🟢 Alta", "🔴 Baixa"], key='f_tend_d')
+        
     st.sidebar.subheader("CLASSIFICAÇÃO E VALUATION")
     st.sidebar.checkbox("Filtrar IBOV", key='f_apenas_ibov')
     st.sidebar.multiselect("Filtrar Tamanho", ["Blue Chip", "Mid Cap", "Small Cap"], key='f_tamanho')
     st.sidebar.multiselect("Filtrar Setor", ["Bancos", "Elétrica", "Metalurgia"], key='f_setor')
+    st.sidebar.checkbox("Cotação Abaixo Preço Teto (Barsi)", key='f_barsi')
+    st.sidebar.checkbox("Cotação Abaixo Preço Justo (Graham)", key='f_graham')
     
     with st.sidebar.expander("💼 Preços e Múltiplos"):
         st.number_input("P/VP Máximo", key='f_pvp_max')
-    with st.sidebar.expander("🏥 Rentabilidade e Saúde"):
-        st.number_input("ROE Mínimo", key='f_roe')
+        st.number_input("P/L Mínimo", key='f_pl_min')
+        st.number_input("P/L Máximo", key='f_pl_max')
+        st.number_input("EV/EBITDA Máximo", key='f_evebitda')
         
-    liq = st.sidebar.number_input("LIQUIDEZ MÍNIMA", value=st.session_state.f_liq_global, step=500000.0, key='f_liq_global')
+    with st.sidebar.expander("🏥 Rentabilidade e Saúde"):
+        st.number_input("ROE Mínimo (%)", key='f_roe')
+        st.number_input("Margem EBIT (%)", key='f_mebit')
+        st.number_input("CAGR Receita (%)", key='f_cagr')
+        st.number_input("Liquidez Corrente", key='f_liq')
+
+    st.sidebar.subheader("LIQUIDEZ MÍNIMA")
+    st.sidebar.number_input("Volume Diário Mín. (R$)", key='f_liq_global', step=500000.0)
     
-    df_f = df[df['Liq Diária'] >= liq]
-    
-    st.dataframe(df_f[escolhidas].style.map(colorir_margem, subset=[c for c in ['M. Graham', 'M. Barsi'] if c in escolhidas]), 
-                 hide_index=True, use_container_width=False, 
-                 column_config={c: st.column_config.NumberColumn(c) for c in escolhidas})
+    df_f = df[df['Liq Diária'] >= st.session_state.f_liq_global]
+    st.dataframe(df_f[escolhidas].style.map(colorir_margem, subset=[c for c in ['M. Graham', 'M. Barsi'] if c in escolhidas]), hide_index=True)
 
 else:
     df = carregar_dados_fiis()
     st.sidebar.header("FILTROS DE FIIs")
     col1, col2 = st.sidebar.columns(2)
-    col1.button("🧹 Limpar Tudo", on_click=lambda: None)
+    col1.button("🧹 Limpar Tudo", on_click=lambda: st.rerun())
     col2.button("🎯 Análise Padrão", on_click=lambda: None)
     
     st.sidebar.text_input("Buscar FII pelo código", key='f_busca')
-    st.sidebar.multiselect("Filtrar por Segmento", ["Tijolo", "Papel"], key='f_fii_segmento')
+    st.sidebar.multiselect("Segmento", ["Tijolo", "Papel"], key='f_fii_segmento')
     
     with st.sidebar.expander("📈 RASTREADOR DE TENDÊNCIAS"):
-        st.write("Configurações...")
+        st.multiselect("Sinal TV", ["Compra", "Venda", "Manter"], key='f_tv')
         
     cols_order_fii = ['Ticker', 'Preço', 'Segmento', 'P/VP', 'DY', 'DY Mês', 'FFO Yield', 'T. Barsi', 'M. Barsi', 'Vacância', 'Liq. Diária', 'T. Mês', 'T. Sem.', 'T. Dia', 'Sinal']
     escolhidas_fii = st.sidebar.multiselect("Ocultar/Exibir Colunas", cols_order_fii, default=cols_order_fii)
@@ -154,10 +161,10 @@ else:
     st.sidebar.checkbox("Abaixo do Preço Teto", key='f_fii_barsi')
     st.sidebar.number_input("P/VP Máximo", key='f_fii_pvp_max')
     st.sidebar.number_input("Dividend Yield Mínimo (%)", key='f_fii_dy_min')
+    st.sidebar.number_input("FFO Yield Mínimo (%)", key='f_fii_ffo_min')
     
-    liq_fii = st.sidebar.number_input("LIQUIDEZ MÍNIMA", value=st.session_state.f_liq_global_fii, step=100000.0, key='f_liq_global_fii')
+    st.sidebar.subheader("LIQUIDEZ MÍNIMA")
+    st.sidebar.number_input("Volume Diário Mín. (R$)", key='f_liq_global_fii', step=100000.0)
     
-    df_f = df[df['Liq. Diária'] >= liq_fii]
-    
-    st.dataframe(df_f[escolhidas_fii].style.map(colorir_margem, subset=[c for c in ['M. Barsi'] if c in escolhidas_fii]), 
-                 hide_index=True, use_container_width=False)
+    df_f = df[df['Liq. Diária'] >= st.session_state.f_liq_global_fii]
+    st.dataframe(df_f[escolhidas_fii].style.map(colorir_margem, subset=[c for c in ['M. Barsi'] if c in escolhidas_fii]), hide_index=True)
