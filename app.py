@@ -24,78 +24,81 @@ SETORES_TRADUCAO = {
 }
 
 # ==========================================
-# 1. CONFIGURAÇÃO DE ESTADO E SETUP CNPI FLEXÍVEL
+# 1. CONFIGURAÇÃO DE ESTADO E SETUP DOS FILTROS (AÇÕES)
 # ==========================================
-def aplicar_setup_cnpi_acoes():
-    st.session_state.f_busca = ''
-    st.session_state.f_tv = []
-    st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
-    st.session_state.f_tamanho = []; st.session_state.f_setor = []; st.session_state.f_apenas_ibov = False
-    st.session_state.f_barsi = False; st.session_state.f_graham = False
-    st.session_state.f_roe = 8.0           
-    st.session_state.f_mebit = 5.0         
-    st.session_state.f_mliq = 0.0 
-    st.session_state.f_cagr = 0.0           
-    st.session_state.f_evebitda = 0.0 
-    st.session_state.f_dy = 0.0
-    st.session_state.f_pvp_max = 5.0        
-    st.session_state.f_pl_min = 0.1         
-    st.session_state.f_pl_max = 20.0        
-    st.session_state.f_liq = 1.0            
-    st.session_state.f_divida = 0.0
-    st.session_state.val_liq_acoes = 1000000.0
-
 def limpar_filtros_acoes():
-    st.session_state.f_busca = ''
-    st.session_state.f_tv = []
+    st.session_state.f_busca = ''; st.session_state.f_tv = []
     st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
     st.session_state.f_tamanho = []; st.session_state.f_setor = []; st.session_state.f_apenas_ibov = False
     st.session_state.f_barsi = False; st.session_state.f_graham = False
     st.session_state.f_roe = 0.0; st.session_state.f_mliq = 0.0; st.session_state.f_mebit = 0.0
     st.session_state.f_cagr = 0.0; st.session_state.f_evebitda = 0.0; st.session_state.f_dy = 0.0
-    st.session_state.f_pvp_max = 100.0
-    st.session_state.f_pl_min = -100.0; st.session_state.f_pl_max = 1000.0
-    st.session_state.f_liq = 0.0
-    st.session_state.f_divida = 0.0
+    st.session_state.f_pvp_max = 0.0
+    st.session_state.f_pl_min = -100.0; st.session_state.f_pl_max = 0.0
+    st.session_state.f_liq = 0.0; st.session_state.f_divida = 0.0
     st.session_state.val_liq_acoes = 1000000.0
 
-def aplicar_setup_cnpi_fiis():
-    st.session_state.f_busca = ''
-    st.session_state.f_tv = []
+def aplicar_setup_padrao_acoes():
+    limpar_filtros_acoes()
+    st.session_state.f_roe = 8.0; st.session_state.f_mebit = 5.0
+    st.session_state.f_pvp_max = 5.0; st.session_state.f_pl_min = 0.1; st.session_state.f_pl_max = 20.0
+    st.session_state.f_liq = 1.0; st.session_state.val_liq_acoes = 1000000.0
+
+def aplicar_setup_cnpi_acoes():
+    limpar_filtros_acoes()
+    st.session_state.f_roe = 12.0; st.session_state.f_mliq = 10.0; st.session_state.f_divida = 1.5
+    st.session_state.f_pl_min = 2.0; st.session_state.f_pl_max = 15.0; st.session_state.f_pvp_max = 2.5
+    st.session_state.f_dy = 5.0; st.session_state.f_cagr = 5.0; st.session_state.f_liq = 1.2
+    st.session_state.val_liq_acoes = 2000000.0
+
+def aplicar_setup_alb_acoes():
+    limpar_filtros_acoes()
+    st.session_state.f_roe = 15.0; st.session_state.f_mliq = 15.0; st.session_state.f_divida = 0.5
+    st.session_state.f_pl_min = 3.0; st.session_state.f_pl_max = 10.0; st.session_state.f_pvp_max = 1.5
+    st.session_state.f_dy = 6.0; st.session_state.f_cagr = 10.0; st.session_state.f_liq = 1.5
+    st.session_state.f_graham = True; st.session_state.val_liq_acoes = 5000000.0
+
+# ==========================================
+# 2. CONFIGURAÇÃO DE ESTADO E SETUP DOS FILTROS (FIIs)
+# ==========================================
+def limpar_filtros_fiis():
+    st.session_state.f_busca = ''; st.session_state.f_tv = []
     st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
-    st.session_state.f_fii_segmento = []
-    st.session_state.f_fii_barsi = False
-    st.session_state.f_fii_pvp_max = 1.10   
-    st.session_state.f_fii_dy_min = 8.0     
-    st.session_state.f_fii_ffo_min = 7.0     
-    st.session_state.f_fii_cap_rate = 0.0 
-    st.session_state.f_fii_vacancia_max = 15.0 
+    st.session_state.f_fii_segmento = []; st.session_state.f_fii_barsi = False
+    st.session_state.f_fii_pvp_max = 0.0; st.session_state.f_fii_dy_min = 0.0
+    st.session_state.f_fii_ffo_min = 0.0; st.session_state.f_fii_cap_rate = 0.0
+    st.session_state.f_fii_vacancia_max = 0.0; st.session_state.val_liq_fiis = 500000.0
+
+def aplicar_setup_padrao_fiis():
+    limpar_filtros_fiis()
+    st.session_state.f_fii_pvp_max = 1.10; st.session_state.f_fii_dy_min = 8.0
+    st.session_state.f_fii_ffo_min = 7.0; st.session_state.f_fii_vacancia_max = 15.0
     st.session_state.val_liq_fiis = 500000.0
 
-def limpar_filtros_fiis():
-    st.session_state.f_busca = ''
-    st.session_state.f_tv = []
-    st.session_state.f_tend_d = []; st.session_state.f_tend_s = []; st.session_state.f_tend_m = []
-    st.session_state.f_fii_segmento = []
-    st.session_state.f_fii_barsi = False
-    st.session_state.f_fii_pvp_max = 10.0
-    st.session_state.f_fii_dy_min = 0.0
-    st.session_state.f_fii_ffo_min = 0.0
-    st.session_state.f_fii_cap_rate = 0.0
-    st.session_state.f_fii_vacancia_max = 100.0
-    st.session_state.val_liq_fiis = 500000.0
+def aplicar_setup_cnpi_fiis():
+    limpar_filtros_fiis()
+    st.session_state.f_fii_pvp_max = 1.05; st.session_state.f_fii_dy_min = 9.0
+    st.session_state.f_fii_ffo_min = 9.0; st.session_state.f_fii_cap_rate = 8.0
+    st.session_state.f_fii_vacancia_max = 10.0; st.session_state.val_liq_fiis = 1000000.0
+
+def aplicar_setup_alb_fiis():
+    limpar_filtros_fiis()
+    st.session_state.f_fii_pvp_max = 0.95; st.session_state.f_fii_dy_min = 10.0
+    st.session_state.f_fii_ffo_min = 10.0; st.session_state.f_fii_cap_rate = 9.0
+    st.session_state.f_fii_vacancia_max = 5.0; st.session_state.f_fii_barsi = True
+    st.session_state.val_liq_fiis = 2000000.0
 
 if 'val_liq_acoes' not in st.session_state: st.session_state.val_liq_acoes = 1000000.0
 if 'val_liq_fiis' not in st.session_state: st.session_state.val_liq_fiis = 500000.0
 
 if 'iniciado' not in st.session_state:
-    aplicar_setup_cnpi_acoes()
-    aplicar_setup_cnpi_fiis()
+    aplicar_setup_padrao_acoes()
+    aplicar_setup_padrao_fiis()
     st.session_state.tipo_ativo = 'Ações'
     st.session_state.iniciado = True
 
 # ==========================================
-# 2. FUNÇÕES AUXILIARES DE CORES E DADOS
+# 3. FUNÇÕES AUXILIARES DE CORES E DADOS
 # ==========================================
 def classificar_sinal(score):
     if pd.isna(score): return "Sem Dados"
@@ -131,12 +134,11 @@ def colorir_tendencia(val):
     if '🔴' in str(val): return 'color: #ff4444;'
     return ''
 
-# Nova função de cor para o IFR (RSI)
 def colorir_rsi(val):
     if pd.isna(val) or val == 0: return ''
-    if val >= 70: return 'color: #ff4444; font-weight: bold;' # Sobrecomprado (Alerta)
-    if val <= 30: return 'color: #00C851; font-weight: bold;' # Sobrevendido (Oportunidade)
-    return 'color: #FFBB33;' # Neutro
+    if val >= 70: return 'color: #ff4444; font-weight: bold;' 
+    if val <= 30: return 'color: #00C851; font-weight: bold;' 
+    return 'color: #FFBB33;' 
 
 @st.cache_data(ttl=3600)
 def obter_carteira_ibov():
@@ -146,7 +148,6 @@ def obter_carteira_ibov():
     except: 
         return ['ABEV3', 'B3SA3', 'BBAS3', 'BBDC4', 'ITUB4', 'PETR4', 'VALE3', 'WEGE3']
 
-# Novos indicadores adicionados à query do TradingView (RSI e Bollinger Bands)
 TV_COLS = [
     "name", "Recommend.All", "market_cap_basic", "Value.Traded", "sector", 
     "SMA20", "SMA50", "SMA200", "SMA20|1W", "SMA50|1W", "SMA20|1M", "SMA50|1M", 
@@ -154,7 +155,7 @@ TV_COLS = [
 ]
 
 # ==========================================
-# 3. EXTRAÇÃO DE DADOS (AÇÕES)
+# 4. EXTRAÇÃO DE DADOS (AÇÕES E FIIs)
 # ==========================================
 @st.cache_data(ttl=3600)
 def carregar_dados_acoes():
@@ -222,8 +223,6 @@ def carregar_dados_acoes():
     df['Margem Barsi (%)'] = df.apply(lambda r: ((r['Preço Teto (Barsi)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Teto (Barsi)'] > 0 else 0, axis=1)
     df['DY Mensal Est. (%)'] = df.apply(lambda r: (math.pow(1 + (r['Div. Yield (%)'] / 100), 1/12) - 1) * 100 if r['Div. Yield (%)'] > 0 else 0, axis=1)
     
-    # ---------------- INDICADORES TÉCNICOS AVANÇADOS ----------------
-    # 1. Pivot Points
     df['PP'] = (df['High TV'] + df['Low TV'] + df['Close TV']) / 3
     df['R1'] = (2 * df['PP']) - df['Low TV']
     df['S1'] = (2 * df['PP']) - df['High TV']
@@ -231,16 +230,10 @@ def carregar_dados_acoes():
     df['S2'] = df['PP'] - (df['High TV'] - df['Low TV'])
     df['R3'] = df['High TV'] + 2 * (df['PP'] - df['Low TV'])
     df['S3'] = df['Low TV'] - 2 * (df['High TV'] - df['PP'])
-    
-    # 2. Distância da Média Móvel de 200 (Mostra se está muito esticado)
     df['Dist. M200 (%)'] = df.apply(lambda r: ((r['Cotação'] / r['SMA200']) - 1) * 100 if r['SMA200'] > 0 else 0, axis=1)
-    # ----------------------------------------------------------------
 
     return df
 
-# ==========================================
-# 4. EXTRAÇÃO DE DADOS (FIIs)
-# ==========================================
 @st.cache_data(ttl=3600)
 def carregar_dados_fiis():
     try:
@@ -289,7 +282,6 @@ def carregar_dados_fiis():
     df['Margem Barsi (%)'] = df.apply(lambda r: ((r['Preço Teto (Barsi)'] - r['Cotação']) / r['Cotação']) * 100 if r['Cotação'] > 0 and r['Preço Teto (Barsi)'] > 0 else 0, axis=1)
     df['DY Mensal Est. (%)'] = df.apply(lambda r: (math.pow(1 + (r['Div. Yield (%)'] / 100), 1/12) - 1) * 100 if r['Div. Yield (%)'] > 0 else 0, axis=1)
     
-    # Indicadores Técnicos Avançados para FIIs
     df['PP'] = (df['High TV'] + df['Low TV'] + df['Close TV']) / 3
     df['R1'] = (2 * df['PP']) - df['Low TV']
     df['S1'] = (2 * df['PP']) - df['High TV']
@@ -316,13 +308,16 @@ if tipo_ativo == "Ações":
         df_dados = carregar_dados_acoes()
         
     if not df_dados.empty:
-        st.sidebar.header("FILTROS DE AÇÕES")
+        st.sidebar.header("FILTROS INTELIGENTES")
         
-        col1, col2 = st.sidebar.columns(2)
-        with col1:
-            st.button("🧹 Limpar Tudo", on_click=limpar_filtros_acoes, use_container_width=True)
-        with col2:
-            st.button("🎯 Análise Padrão", on_click=aplicar_setup_cnpi_acoes, type="primary", use_container_width=True)
+        # Botões organizados em grade (2x2)
+        c1, c2 = st.sidebar.columns(2)
+        with c1: st.button("🧹 Limpar", on_click=limpar_filtros_acoes, use_container_width=True)
+        with c2: st.button("🎯 Padrão", on_click=aplicar_setup_padrao_acoes, help="Filtro básico de segurança.", use_container_width=True)
+        
+        c3, c4 = st.sidebar.columns(2)
+        with c3: st.button("🎓 CNPI", on_click=aplicar_setup_cnpi_acoes, type="primary", help="Filtro rigoroso: Top 20% do mercado em rentabilidade e segurança.", use_container_width=True)
+        with c4: st.button("👑 ALB", on_click=aplicar_setup_alb_acoes, type="primary", help="A Nata do Mercado: Top 5%. Empresas baratas, eficientes e sem dívidas.", use_container_width=True)
             
         busca = st.sidebar.text_input("Buscar Ticker (ex: BBAS3)", key='f_busca').upper()
         
@@ -429,7 +424,6 @@ if tipo_ativo == "Ações":
             c4.metric("Mediana Liq. Diária", f"R$ {df_f['Liq. Diária'].median()/1e6:.1f} Milhões")
         st.markdown("---")
 
-        # Configuração das ABAS
         aba1, aba2 = st.tabs(["📊 Análise Fundamentalista", "📉 Indicadores Técnicos & Pivot"])
 
         with aba1:
@@ -502,13 +496,15 @@ else:
         df_dados = carregar_dados_fiis()
         
     if not df_dados.empty:
-        st.sidebar.header("FILTROS DE FIIs")
+        st.sidebar.header("FILTROS INTELIGENTES")
         
-        col1, col2 = st.sidebar.columns(2)
-        with col1:
-            st.button("🧹 Limpar Tudo", on_click=limpar_filtros_fiis, use_container_width=True)
-        with col2:
-            st.button("🎯 Análise Padrão", on_click=aplicar_setup_cnpi_fiis, type="primary", use_container_width=True)
+        c1, c2 = st.sidebar.columns(2)
+        with c1: st.button("🧹 Limpar", on_click=limpar_filtros_fiis, use_container_width=True)
+        with c2: st.button("🎯 Padrão", on_click=aplicar_setup_padrao_fiis, help="Filtro básico de segurança.", use_container_width=True)
+        
+        c3, c4 = st.sidebar.columns(2)
+        with c3: st.button("🎓 CNPI", on_click=aplicar_setup_cnpi_fiis, type="primary", help="Filtro rigoroso: Top 20% do mercado imobiliário em dividendos e fundamentos.", use_container_width=True)
+        with c4: st.button("👑 ALB", on_click=aplicar_setup_alb_fiis, type="primary", help="A Nata dos FIIs: Top 5%. Alto desconto, altíssima rentabilidade e vacância mínima.", use_container_width=True)
         
         busca = st.sidebar.text_input("Buscar FII pelo código (ex: MXRF11)", key='f_busca').upper()
         opcoes_seg = st.sidebar.multiselect("Filtrar por Segmento", sorted(df_dados['Segmento'].unique().tolist()), key='f_fii_segmento')
@@ -544,6 +540,7 @@ else:
 
         st.sidebar.subheader("METODOLOGIAS E INDICADORES")
         filtro_barsi = st.sidebar.checkbox("Cotação Abaixo do Preço Teto (Barsi)", key='f_fii_barsi')
+        
         max_pvp = st.sidebar.number_input("P/VP Máximo (0=desativa)", step=0.05, key='f_fii_pvp_max')
         min_dy = st.sidebar.number_input("Dividend Yield Mínimo (%)", step=0.5, key='f_fii_dy_min')
         min_ffo = st.sidebar.number_input("FFO Yield Mínimo (%)", step=0.5, key='f_fii_ffo_min')
