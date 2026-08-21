@@ -308,7 +308,7 @@ if tipo_ativo == "Ações":
             "Preço Teto (Barsi)": "R$ {:.2f}", 
             "Margem Barsi (%)": "{:+.1f}%",
             "Div. Yield (%)": "{:.1f}%", 
-            "DY Mensal Est. (%)": "{:.2f}%",
+            "DY Mensal Est. (%)": "math.pow((1 + r['Div. Yield (%)'] / 100), 1/12) - 1) * 100",
             "ROE (%)": "{:.1f}%", 
             "Margem EBIT (%)": "{:.1f}%", 
             "P/L": "{:.2f}", 
