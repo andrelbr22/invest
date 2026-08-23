@@ -1,4 +1,13 @@
-streamlit
-pandas
-requests
-beautifulsoup4
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.0
+pydantic-settings>=2.2
+pandas>=2.0
+requests>=2.31
+beautifulsoup4>=4.12
+sqlalchemy>=2.0
+alembic>=1.13
+psycopg[binary]>=3.1
+pytest>=8.0
+streamlit>=1.42
+Authlib>=1.3.2

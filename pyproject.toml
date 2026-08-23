@@ -1,0 +1,9 @@
+[project]
+name = "investment-engine"
+version = "0.7.0"
+description = "Formação do Investidor V1.6 with production-ready private beta, screening, portfolios and backtesting."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
