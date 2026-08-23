@@ -218,6 +218,7 @@ class UserAccessPolicyORM(Base):
     can_run_backtests: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_sync_market: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_manage_users: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    custom_filter_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -227,6 +228,7 @@ class PortfolioORM(Base):
     __tablename__ = "portfolios"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     base_currency: Mapped[str] = mapped_column(String(8), default="BRL", nullable=False)
     cash_balance: Mapped[Decimal] = mapped_column(Numeric(22, 2), default=0, nullable=False)
@@ -236,6 +238,23 @@ class PortfolioORM(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     positions: Mapped[list["PortfolioPositionORM"]] = relationship(back_populates="portfolio", cascade="all, delete-orphan")
+
+
+class SavedScreeningFilterORM(Base):
+    """A reusable stock/FII screening setup owned by one Google account."""
+    __tablename__ = "saved_screening_filters"
+    __table_args__ = (
+        UniqueConstraint("owner_email", "name", name="uq_saved_filter_owner_name"),
+        Index("ix_saved_filter_owner_type", "owner_email", "asset_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    asset_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    filters_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class PortfolioPositionORM(Base):

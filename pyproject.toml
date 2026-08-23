@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
-version = "0.7.2"
-description = "Formação do Investidor V1.6.2 with Google account permissions, read-only visitors, screening, portfolios and backtesting."
+version = "0.8.0"
+description = "Formação do Investidor V1.7.0 with isolated portfolios, weighted purchases and personal saved screeners."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

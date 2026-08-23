@@ -31,6 +31,7 @@ def full_owner_policy(email: str, display_name: str | None = None) -> dict:
         "role": "owner",
         "status": "approved",
         **{field: True for field in PERMISSION_FIELDS},
+        "custom_filter_limit": 3,
         "is_owner": True,
     }
 
@@ -45,6 +46,7 @@ def policy_dict(row: UserAccessPolicyORM, *, is_owner: bool = False) -> dict:
         "role": row.role,
         "status": row.status,
         **{field: False if blocked else bool(getattr(row, field)) for field in PERMISSION_FIELDS},
+        "custom_filter_limit": 0 if blocked else max(0, min(3, int(row.custom_filter_limit or 0))),
         "is_owner": False,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -79,6 +81,7 @@ class AccessPolicyRepository:
             row.status = "approved"
             for field in PERMISSION_FIELDS:
                 setattr(row, field, True)
+            row.custom_filter_limit = 3
         self.session.flush()
         return row
 
@@ -89,9 +92,10 @@ class AccessPolicyRepository:
         row = self.get(email)
         if row is None:
             return None
-        for field in ("display_name", "role", "status", *PERMISSION_FIELDS):
+        for field in ("display_name", "role", "status", "custom_filter_limit", *PERMISSION_FIELDS):
             if field in changes and changes[field] is not None:
-                setattr(row, field, changes[field])
+                value = max(0, min(3, int(changes[field]))) if field == "custom_filter_limit" else changes[field]
+                setattr(row, field, value)
         row.updated_at = datetime.now(timezone.utc)
         self.session.flush()
         return row

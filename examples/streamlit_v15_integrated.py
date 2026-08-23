@@ -254,16 +254,107 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
             st.caption("Tendência = preço atual acima/abaixo da média simples do período escolhido. Sem histórico suficiente, o filtro técnico ativo reprova o ativo em vez de assumir zero.")
 
 
+def _optional_filter_number(label,key,initial=None,default=0.0,min_value=-1000000000.0,max_value=1000000000.0,step=0.5):
+    enabled=st.checkbox(f"Usar {label}",value=initial is not None,key=f"{key}_enabled")
+    value=st.number_input(label,min_value=float(min_value),max_value=float(max_value),value=float(initial if initial is not None else default),step=float(step),key=f"{key}_value",disabled=not enabled)
+    return float(value) if enabled else None
+
+
+def _custom_filter_editor(asset_type,prefix,initial=None):
+    initial=initial or {}
+    values={}
+    if asset_type=="stock":
+        c1,c2=st.columns(2)
+        with c1:
+            values["roe_min"]=_optional_filter_number("ROE mínimo (%)",f"{prefix}_roe",initial.get("roe_min"),0,-100,200,1)
+            values["net_margin_min"]=_optional_filter_number("Margem líquida mínima (%)",f"{prefix}_net",initial.get("net_margin_min"),0,-100,200,1)
+            values["ebit_margin_min"]=_optional_filter_number("Margem EBIT mínima (%)",f"{prefix}_ebit",initial.get("ebit_margin_min"),0,-100,200,1)
+            values["revenue_cagr_5y_min"]=_optional_filter_number("CAGR de receita 5a mínimo (%)",f"{prefix}_cagr",initial.get("revenue_cagr_5y_min"),0,-100,300,1)
+            values["pe_min"]=_optional_filter_number("P/L mínimo",f"{prefix}_pe_min",initial.get("pe_min"),0,-100,1000,0.5)
+            values["pe_max"]=_optional_filter_number("P/L máximo",f"{prefix}_pe_max",initial.get("pe_max"),15,-100,1000,0.5)
+        with c2:
+            values["pbv_max"]=_optional_filter_number("P/VP máximo",f"{prefix}_pbv",initial.get("pbv_max"),2,-100,100,0.1)
+            values["dividend_yield_min"]=_optional_filter_number("Dividend Yield mínimo (%)",f"{prefix}_dy",initial.get("dividend_yield_min"),4,0,100,0.5)
+            values["ev_ebitda_max"]=_optional_filter_number("EV/EBITDA máximo",f"{prefix}_ev",initial.get("ev_ebitda_max"),10,-100,1000,0.5)
+            values["gross_debt_to_equity_max"]=_optional_filter_number("Dívida bruta/PL máxima",f"{prefix}_debt",initial.get("gross_debt_to_equity_max"),1,0,100,0.1)
+            values["current_ratio_min"]=_optional_filter_number("Liquidez corrente mínima",f"{prefix}_current",initial.get("current_ratio_min"),1,0,100,0.1)
+            values["daily_liquidity_min"]=_optional_filter_number("Liquidez diária mínima (R$)",f"{prefix}_liq",initial.get("daily_liquidity_min"),1000000,0,100000000000,100000)
+        values["require_below_graham"]=st.checkbox("Exigir preço abaixo do valor de Graham",value=bool(initial.get("require_below_graham")),key=f"{prefix}_graham")
+    else:
+        c1,c2=st.columns(2)
+        with c1:
+            values["pbv_max"]=_optional_filter_number("P/VP máximo",f"{prefix}_pbv",initial.get("pbv_max"),1,0,100,0.05)
+            values["dividend_yield_min"]=_optional_filter_number("Dividend Yield mínimo (%)",f"{prefix}_dy",initial.get("dividend_yield_min"),8,0,100,0.5)
+            values["ffo_yield_min"]=_optional_filter_number("FFO Yield mínimo (%)",f"{prefix}_ffo",initial.get("ffo_yield_min"),6,-100,100,0.5)
+        with c2:
+            values["cap_rate_min"]=_optional_filter_number("Cap Rate mínimo (%)",f"{prefix}_cap",initial.get("cap_rate_min"),6,-100,100,0.5)
+            values["vacancy_max"]=_optional_filter_number("Vacância máxima (%)",f"{prefix}_vac",initial.get("vacancy_max"),10,0,100,0.5)
+            values["daily_liquidity_min"]=_optional_filter_number("Liquidez diária mínima (R$)",f"{prefix}_liq",initial.get("daily_liquidity_min"),500000,0,100000000000,100000)
+        values["require_below_dividend_target"]=st.checkbox("Exigir preço abaixo do teto por dividendos",value=bool(initial.get("require_below_dividend_target")),key=f"{prefix}_divtarget")
+    return values
+
+
+def render_custom_filter_manager(asset_type,payload):
+    limit=int((payload or {}).get("limit") or 0); used=int((payload or {}).get("used") or 0)
+    items=(payload or {}).get("items") or []
+    with st.expander("🧑 Meus filtros personalizados",expanded=False):
+        st.caption(f"Você utiliza {used} de {limit} configuração(ões) permitida(s). O limite vale para Ações e FIIs somados.")
+        create_tab,edit_tab=st.tabs(["Criar novo","Alterar ou excluir"])
+        with create_tab:
+            if used>=limit:
+                st.warning("Seu limite de filtros personalizados foi atingido. Exclua um filtro ou peça ao administrador para ampliar o limite.")
+            else:
+                name=st.text_input("Nome (opcional)",value="",placeholder="Em branco: usa seu nome e acrescenta (1), (2)... se necessário",key=f"custom_new_name_{asset_type}")
+                values=_custom_filter_editor(asset_type,f"custom_new_{asset_type}")
+                if st.button("Salvar novo filtro",type="primary",key=f"custom_create_{asset_type}"):
+                    _,err=api_post("/screen/custom-filters",{"asset_type":asset_type,"name":name or None,"filters":values})
+                    if err:st.error(f"Não foi possível salvar: {err}")
+                    else:st.success("Filtro personalizado salvo."); st.rerun()
+        with edit_tab:
+            if not items:
+                st.info("Nenhum filtro personalizado deste mercado.")
+            else:
+                by_id={item["id"]:item for item in items}
+                chosen=st.selectbox("Filtro",list(by_id),format_func=lambda x:by_id[x]["name"],key=f"custom_edit_choice_{asset_type}")
+                current=by_id[chosen]
+                edit_name=st.text_input("Nome",value=current["name"],key=f"custom_edit_name_{asset_type}_{chosen}")
+                values=_custom_filter_editor(asset_type,f"custom_edit_{asset_type}_{chosen}",current.get("filters") or {})
+                a,b=st.columns(2)
+                if a.button("Salvar alterações",type="primary",key=f"custom_update_{asset_type}_{chosen}",use_container_width=True):
+                    _,err=api_put(f"/screen/custom-filters/{chosen}",{"name":edit_name,"filters":values})
+                    if err:st.error(f"Não foi possível salvar: {err}")
+                    else:st.success("Filtro atualizado."); st.rerun()
+                if b.button("Excluir filtro",key=f"custom_delete_{asset_type}_{chosen}",use_container_width=True):
+                    _,err=api_delete(f"/screen/custom-filters/{chosen}")
+                    if err:st.error(f"Não foi possível excluir: {err}")
+                    else:st.success("Filtro excluído."); st.rerun()
+
+
 def render_market():
     st.title("📊 Mercado e Análise Individual")
     st.caption("Screener, scores por perfil de ativo e valuation multi-método.")
     market=st.sidebar.radio("Mercado",["Ações","FIIs"])
-    strategy_label=st.sidebar.selectbox("Estratégia",["Padrão","CNPI","ALB"])
-    strategy={"Padrão":"default","CNPI":"cnpi","ALB":"alb"}[strategy_label]
-    limit=st.sidebar.slider("Máximo de resultados",10,200,50,10)
     asset_type="stock" if market=="Ações" else "fii"
+    custom_payload={"items":[],"limit":int(PERMISSIONS.get("custom_filter_limit") or 0),"used":0}
+    if custom_payload["limit"]>0:
+        loaded,custom_err=api_get("/screen/custom-filters",{"asset_type":asset_type})
+        if not custom_err and loaded:custom_payload=loaded
+    custom_items=custom_payload.get("items") or []
+    preset_labels={"preset:default":"Padrão","preset:cnpi":"CNPI","preset:alb":"ALB"}
+    strategy_options=list(preset_labels)+[f"custom:{item['id']}" for item in custom_items]
+    custom_by_id={item["id"]:item for item in custom_items}
+    def strategy_name(value):
+        if value in preset_labels:return preset_labels[value]
+        return f"Personalizado — {custom_by_id[value.split(':',1)[1]]['name']}"
+    strategy_ref=st.sidebar.selectbox("Filtro de análise",strategy_options,format_func=strategy_name)
+    strategy_label=strategy_name(strategy_ref)
+    limit=st.sidebar.slider("Máximo de resultados",10,200,50,10)
     catalog,catalog_err=api_get("/assets",{"asset_type":asset_type,"limit":500,"offset":0}); catalog=catalog or []
-    endpoint=f"/screen/db/stocks/{strategy}" if market=="Ações" else f"/screen/db/fiis/{strategy}"
+    if strategy_ref.startswith("custom:"):
+        endpoint=f"/screen/db/custom/{strategy_ref.split(':',1)[1]}"
+    else:
+        strategy=strategy_ref.split(":",1)[1]
+        endpoint=f"/screen/db/stocks/{strategy}" if market=="Ações" else f"/screen/db/fiis/{strategy}"
     rows,err=api_get(endpoint,{"limit":limit})
     if err:
         st.error(f"Não foi possível carregar o screener: {err}"); st.stop()
@@ -362,6 +453,9 @@ def render_market():
         view=df.rename(columns=rename)
         preferred=[c for c in ["Ticker","Nome","Segmento","Preço","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
         st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=460)
+
+    if int(PERMISSIONS.get("custom_filter_limit") or 0)>0:
+        render_custom_filter_manager(asset_type,custom_payload)
 
     if can("can_use_advanced_filters"):
         render_advanced_screener(asset_type)
@@ -540,88 +634,108 @@ def render_portfolio():
     if not summary.get("target_is_balanced"):
         st.warning(f"Os percentuais-alvo somam {_pct(summary.get('target_total_pct'))}. Para uma alocação completa, o ideal é totalizar 100% incluindo o caixa.")
 
+    existing_map={p["ticker"]:p for p in positions}
+    portfolio_catalog,catalog_error=api_get("/assets",{"limit":500,"offset":0})
+    portfolio_catalog=portfolio_catalog or []
+    catalog_map={a["ticker"]:a for a in portfolio_catalog}
+    type_options=["Ação","FII","ETF","BDR","Renda Fixa","Cripto","Outro"]
+    type_map={"Ação":"stock","FII":"fii","ETF":"etf","BDR":"bdr","Renda Fixa":"fixed_income","Cripto":"crypto","Outro":"other"}
+    type_rev={v:k for k,v in type_map.items()}
+    stage_options=["Posição atual","Alvo","Em análise"]
+    stage_map={"Posição atual":"position","Alvo":"target","Em análise":"analysis"}
+    stage_rev={v:k for k,v in stage_map.items()}
+
     left,right=st.columns([3,1])
     with left:
-        st.subheader("Adicionar ou atualizar ativo")
-        existing_map={p["ticker"]:p for p in positions}
-        edit_ticker=st.selectbox("Editar posição existente (opcional)",[""]+sorted(existing_map),format_func=lambda x:"Novo ativo" if x=="" else f"Editar {x}",key="pf_edit_existing")
-        existing=existing_map.get(edit_ticker) or {}
-        portfolio_catalog,catalog_error=api_get("/assets",{"limit":500,"offset":0})
-        portfolio_catalog=portfolio_catalog or []
-        catalog_map={a["ticker"]:a for a in portfolio_catalog}
-
-        if existing:
-            ticker=existing.get("ticker","")
-            st.text_input("Ticker",value=ticker,disabled=True,key=f"pf_fixed_ticker_{ticker}")
-        else:
+        purchase_tab,edit_tab=st.tabs(["➕ Adicionar compra","✏️ Editar posição"])
+        with purchase_tab:
+            st.caption("Uma nova compra soma ações à posição existente e recalcula automaticamente o preço médio ponderado.")
             known_options=[""]+sorted(catalog_map)
             known_ticker=st.selectbox(
-                "Selecionar ativo do cadastro",
-                known_options,
+                "Ativo comprado",known_options,
                 format_func=lambda value:"Digitar outro ticker" if value=="" else f"{value} — {catalog_map[value].get('name') or 'nome não cadastrado'}",
-                key="pf_catalog_ticker",
+                key="pf_purchase_catalog_ticker",
             )
-            if known_ticker:
-                ticker=known_ticker
-            else:
-                ticker=st.text_input("Ticker",placeholder="Ex.: BBAS3, HGLG11, BOVA11",key="pf_manual_ticker").strip().upper()
-
-        asset_metadata=catalog_map.get(ticker) or {}
-        automatic_classification=asset_metadata.get("classification") or existing.get("classification") or "Não localizado no cadastro"
-        if catalog_error:
-            st.caption("A classificação automática ficará disponível quando o catálogo puder ser consultado.")
-        type_options=["Ação","FII","ETF","BDR","Renda Fixa","Cripto","Outro"]
-        type_map={"Ação":"stock","FII":"fii","ETF":"etf","BDR":"bdr","Renda Fixa":"fixed_income","Cripto":"crypto","Outro":"other"}
-        type_rev={v:k for k,v in type_map.items()}
-        stage_options=["Posição atual","Alvo","Em análise"]
-        stage_map={"Posição atual":"position","Alvo":"target","Em análise":"analysis"}
-        stage_rev={v:k for k,v in stage_map.items()}
-        form_key=f"portfolio_position_form_{edit_ticker or ticker or 'new'}"
-        quantity_key=f"portfolio_quantity_{edit_ticker or ticker or 'new'}"
-        quantity_step=st.radio("Passo para aumentar ou reduzir",[100,25,10,5,1],horizontal=True,index=0,key=f"portfolio_quantity_step_{edit_ticker or ticker or 'new'}",help="Use 100 para lote padrão ou escolha 25, 10, 5 e 1 para ajustes menores.")
-        with st.form(form_key):
-            b,c=st.columns(2)
-            detected_type=asset_metadata.get("asset_type")
-            default_type=type_rev.get(existing.get("asset_class") or existing.get("asset_type") or detected_type,"Ação")
-            type_label=b.selectbox("Tipo",type_options,index=type_options.index(default_type) if default_type in type_options else 0)
-            default_stage=stage_rev.get(existing.get("stage"),"Posição atual")
-            stage_label=c.selectbox("Situação",stage_options,index=stage_options.index(default_stage))
-            d,e=st.columns(2)
-            qty=d.number_input("Quantidade",min_value=0.0,value=float(existing.get("quantity") or 0.0),step=1.0,format="%.0f",key=quantity_key)
-            qminus,qplus=d.columns(2)
-            decrease=qminus.form_submit_button(f"− {quantity_step}",use_container_width=True,disabled=not can("can_write_portfolio"))
-            increase=qplus.form_submit_button(f"+ {quantity_step}",use_container_width=True,disabled=not can("can_write_portfolio"))
-            current_avg=format_brl_price_input(existing.get("average_price"))
-            avg_text=e.text_input(
-                "Novo preço médio de compra (R$)",
-                value="",
-                placeholder=(f"Atual: {current_avg}. Digite somente para substituir" if current_avg else "Ex.: 27,45"),
-                help="O campo começa vazio para você digitar diretamente, sem precisar apagar 0,00. Aceita vírgula ou ponto e salva com duas casas decimais.",
-            )
-            target=e.number_input("Percentual alvo da carteira (%)",min_value=0.0,max_value=100.0,value=float(existing.get("target_weight_pct") or 0.0),step=0.5)
-            st.text_input("Setor / segmento / categoria (automático)",value=automatic_classification,disabled=True)
-            classification_override=st.text_input("Ajuste manual da classificação (opcional)",value=existing.get("classification_override") or "",placeholder="Preencha apenas se quiser substituir a classificação automática")
-            pnotes=st.text_input("Observação / tese curta",value=existing.get("notes") or "",placeholder="Ex.: aumentar posição se valuation continuar atrativo")
-            save=st.form_submit_button("Salvar ativo",type="primary",disabled=not can("can_write_portfolio"))
-        if decrease:
-            st.session_state[quantity_key]=max(0.0,float(qty)-float(quantity_step)); st.rerun()
-        if increase:
-            st.session_state[quantity_key]=float(qty)+float(quantity_step); st.rerun()
-        if save:
-            if not ticker:st.error("Informe o ticker.")
-            else:
+            purchase_ticker=known_ticker or st.text_input("Ticker",placeholder="Ex.: BBAS3, HGLG11, BOVA11",key="pf_purchase_manual_ticker").strip().upper()
+            purchase_metadata=catalog_map.get(purchase_ticker) or {}
+            purchase_existing=existing_map.get(purchase_ticker) or {}
+            if purchase_existing:
+                st.info(f"Você já possui {purchase_existing.get('quantity',0):.0f} ação(ões) de {purchase_ticker}. Esta compra será somada à posição.")
+            detected_type=purchase_metadata.get("asset_type") or purchase_existing.get("asset_type") or "stock"
+            ptype=st.selectbox("Tipo",type_options,index=type_options.index(type_rev.get(detected_type,"Ação")),key="pf_purchase_type")
+            step=st.selectbox("Quantidade de cada clique",[100,50,25,10,5,1],index=0,key="pf_purchase_step")
+            qty_key=f"pf_purchase_qty_{pid}_{purchase_ticker or 'new'}"
+            if qty_key not in st.session_state:
+                st.session_state[qty_key]=100
+            purchase_qty=st.number_input("Quantidade desta compra",min_value=1,step=1,format="%d",key=qty_key)
+            q1,q2,q3,q4=st.columns(4)
+            if q1.button(f"+ {step}",key=f"purchase_add_1_{pid}_{purchase_ticker}",use_container_width=True,disabled=not can("can_write_portfolio")):
+                st.session_state[qty_key]=int(purchase_qty)+step; st.rerun()
+            if q2.button(f"+ {step*2}",key=f"purchase_add_2_{pid}_{purchase_ticker}",use_container_width=True,disabled=not can("can_write_portfolio")):
+                st.session_state[qty_key]=int(purchase_qty)+(step*2); st.rerun()
+            if q3.button(f"+ {step*5}",key=f"purchase_add_5_{pid}_{purchase_ticker}",use_container_width=True,disabled=not can("can_write_portfolio")):
+                st.session_state[qty_key]=int(purchase_qty)+(step*5); st.rerun()
+            if q4.button("Voltar a 100",key=f"purchase_reset_{pid}_{purchase_ticker}",use_container_width=True,disabled=not can("can_write_portfolio")):
+                st.session_state[qty_key]=100; st.rerun()
+            purchase_price_text=st.text_input("Preço unitário desta compra (R$)",value="",placeholder="Ex.: 27,45",key=f"pf_purchase_price_{pid}_{purchase_ticker}")
+            automatic=purchase_metadata.get("classification") or purchase_existing.get("classification") or "Não localizado no cadastro"
+            st.text_input("Setor / segmento / categoria (automático)",value=automatic,disabled=True,key=f"pf_purchase_class_{pid}_{purchase_ticker}")
+            purchase_notes=st.text_input("Observação (opcional)",value="",key=f"pf_purchase_notes_{pid}_{purchase_ticker}")
+            if st.button("Cadastrar esta compra",type="primary",key=f"pf_save_purchase_{pid}_{purchase_ticker}",disabled=not can("can_write_portfolio")):
                 try:
-                    typed_avg=parse_brl_price_input(avg_text)
+                    purchase_price=parse_brl_price_input(purchase_price_text)
+                    if not purchase_ticker: raise ValueError("Informe o ticker.")
+                    if purchase_price is None: raise ValueError("Informe o preço unitário da compra.")
                 except ValueError as exc:
                     st.error(str(exc))
                 else:
-                    average_price=typed_avg
-                    if typed_avg is None and existing:
-                        average_price=existing.get("average_price")
-                    payload={"asset_type":type_map[type_label],"stage":stage_map[stage_label],"quantity":qty,"average_price":average_price,"target_weight_pct":target,"classification_override":classification_override or None,"notes":pnotes or None}
-                    _,e=api_put(f"/portfolios/{pid}/positions/{ticker}",payload)
+                    payload={"asset_type":type_map[ptype],"quantity":int(purchase_qty),"unit_price":purchase_price,"stage":"position","notes":purchase_notes or None}
+                    result,e=api_post(f"/portfolios/{pid}/positions/{purchase_ticker}/purchase",payload)
                     if e:st.error(e)
-                    else:st.success(f"{ticker} salvo na carteira."); st.rerun()
+                    else:
+                        st.success(f"Compra adicionada. Nova posição: {result.get('quantity',0):.0f} ação(ões), preço médio {br_money(result.get('average_price'))}.")
+                        st.session_state[qty_key]=100; st.rerun()
+
+        with edit_tab:
+            if not positions:
+                st.info("Ainda não há posição para editar.")
+            else:
+                edit_ticker=st.selectbox("Posição",sorted(existing_map),format_func=lambda x:f"{x} — {existing_map[x].get('name') or ''}",key="pf_edit_existing_v170")
+                existing=existing_map[edit_ticker]
+                edit_step=st.selectbox("Quantidade de cada clique",[100,50,25,10,5,1],index=0,key=f"pf_edit_step_{pid}_{edit_ticker}")
+                edit_qty_key=f"pf_edit_qty_{pid}_{edit_ticker}"
+                if edit_qty_key not in st.session_state:
+                    st.session_state[edit_qty_key]=int(float(existing.get("quantity") or 0))
+                edit_qty=st.number_input("Quantidade total da posição",min_value=0,step=1,format="%d",key=edit_qty_key)
+                qm,qp,qz=st.columns(3)
+                if qm.button(f"− {edit_step}",key=f"edit_minus_{pid}_{edit_ticker}",use_container_width=True,disabled=not can("can_write_portfolio")):
+                    st.session_state[edit_qty_key]=max(0,int(edit_qty)-edit_step); st.rerun()
+                if qp.button(f"+ {edit_step}",key=f"edit_plus_{pid}_{edit_ticker}",use_container_width=True,disabled=not can("can_write_portfolio")):
+                    st.session_state[edit_qty_key]=int(edit_qty)+edit_step; st.rerun()
+                if qz.button("Zerar",key=f"edit_zero_{pid}_{edit_ticker}",use_container_width=True,disabled=not can("can_write_portfolio")):
+                    st.session_state[edit_qty_key]=0; st.rerun()
+                e1,e2=st.columns(2)
+                default_stage=stage_rev.get(existing.get("stage"),"Posição atual")
+                edit_stage=e1.selectbox("Situação",stage_options,index=stage_options.index(default_stage),key=f"pf_edit_stage_{pid}_{edit_ticker}")
+                edit_target=e2.number_input("Percentual alvo (%)",min_value=0.0,max_value=100.0,value=float(existing.get("target_weight_pct") or 0),step=0.5,key=f"pf_edit_target_{pid}_{edit_ticker}")
+                current_avg=format_brl_price_input(existing.get("average_price"))
+                edit_avg_text=st.text_input("Substituir preço médio (opcional)",value="",placeholder=f"Atual: {current_avg}" if current_avg else "Ex.: 27,45",key=f"pf_edit_avg_{pid}_{edit_ticker}")
+                st.text_input("Setor / segmento / categoria (automático)",value=existing.get("classification") or "Não localizado",disabled=True,key=f"pf_edit_class_auto_{pid}_{edit_ticker}")
+                edit_override=st.text_input("Ajuste manual da classificação (opcional)",value=existing.get("classification_override") or "",key=f"pf_edit_override_{pid}_{edit_ticker}")
+                edit_notes=st.text_input("Observação / tese curta",value=existing.get("notes") or "",key=f"pf_edit_notes_{pid}_{edit_ticker}")
+                save_col,delete_col=st.columns(2)
+                if save_col.button("Salvar alterações",type="primary",key=f"pf_save_edit_{pid}_{edit_ticker}",use_container_width=True,disabled=not can("can_write_portfolio")):
+                    try: typed_avg=parse_brl_price_input(edit_avg_text)
+                    except ValueError as exc: st.error(str(exc))
+                    else:
+                        payload={"asset_type":existing.get("asset_type") or "stock","stage":stage_map[edit_stage],"quantity":int(edit_qty),"average_price":typed_avg if typed_avg is not None else existing.get("average_price"),"target_weight_pct":edit_target,"classification_override":edit_override or None,"notes":edit_notes or None}
+                        _,e=api_put(f"/portfolios/{pid}/positions/{edit_ticker}",payload)
+                        if e:st.error(e)
+                        else:st.success(f"{edit_ticker} atualizado."); st.rerun()
+                if delete_col.button("Excluir da carteira",key=f"pf_delete_edit_{pid}_{edit_ticker}",use_container_width=True,disabled=not can("can_write_portfolio")):
+                    _,e=api_delete(f"/portfolios/{pid}/positions/{edit_ticker}")
+                    if e:st.error(e)
+                    else:st.success(f"{edit_ticker} removido."); st.rerun()
     with right:
         st.subheader("Cotações")
         st.caption("Atualiza pelo Yahoo e grava o histórico no banco. Útil também para ETFs.")
@@ -633,12 +747,6 @@ def render_portfolio():
                 ok=sum(1 for x in r.get("results",[]) if x.get("status")=="ok")
                 st.success(f"Cotações atualizadas: {ok} ativo(s).")
                 st.rerun()
-        if positions:
-            delete_ticker=st.selectbox("Remover ativo",[""]+[p["ticker"] for p in positions],key="pf_delete")
-            if st.button("Remover selecionado",disabled=(not bool(delete_ticker) or not can("can_write_portfolio")),use_container_width=True):
-                _,e=api_delete(f"/portfolios/{pid}/positions/{delete_ticker}")
-                if e:st.error(e)
-                else:st.success(f"{delete_ticker} removido."); st.rerun()
 
     tabs=st.tabs(["Posição atual","Alvos","Em análise","Composição geral","Setores / segmentos","Rebalanceamento"])
     pdf=pd.DataFrame(positions)
@@ -1273,6 +1381,7 @@ def render_access_admin():
         table.append({
             "E-mail":user.get("email"),"Nome":user.get("display_name"),"Situação":user.get("status"),"Perfil":user.get("role"),
             "Mercado":user.get("can_view_market"),"Filtros avançados":user.get("can_use_advanced_filters"),
+            "Filtros pessoais":user.get("custom_filter_limit",0),
             "Ver carteira":user.get("can_view_portfolio"),"Alterar carteira":user.get("can_write_portfolio"),
             "Ver backtests":user.get("can_view_backtests"),"Executar backtests":user.get("can_run_backtests"),
             "Atualizar banco":user.get("can_sync_market"),"Último acesso":user.get("last_seen_at"),
@@ -1302,6 +1411,11 @@ def render_access_admin():
         view_backtests=c2.checkbox("Ver Backtests e históricos",value=bool(current.get("can_view_backtests")))
         run_backtests=c2.checkbox("Executar novos Backtests",value=bool(current.get("can_run_backtests")))
         sync_market=c2.checkbox("Atualizar dados do Mercado no banco",value=bool(current.get("can_sync_market")))
+        custom_filter_limit=c2.selectbox(
+            "Quantidade de filtros personalizados",[0,1,2,3],
+            index=max(0,min(3,int(current.get("custom_filter_limit") or 0))),
+            help="Zero bloqueia o uso. De 1 a 3 define quantas configurações próprias esta conta pode manter salvas.",
+        )
         st.caption("Nenhum usuário recebe permissão para administrar contas. Essa função permanece exclusiva do proprietário.")
         save=st.form_submit_button("Salvar permissões",type="primary")
     if save:
@@ -1309,6 +1423,7 @@ def render_access_admin():
             "status":status,"role":role,"can_view_market":view_market,"can_use_advanced_filters":advanced,
             "can_view_portfolio":view_portfolio,"can_write_portfolio":write_portfolio,
             "can_view_backtests":view_backtests,"can_run_backtests":run_backtests,"can_sync_market":sync_market,
+            "custom_filter_limit":custom_filter_limit,
         }
         _,save_err=api_put(f"/access/users/{selected}",payload)
         if save_err:st.error(f"Não foi possível salvar: {save_err}")
@@ -1347,4 +1462,4 @@ elif module=="Carteira":render_portfolio()
 elif module=="Backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.6.2. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.7.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

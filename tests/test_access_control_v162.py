@@ -22,6 +22,7 @@ def test_new_google_user_is_read_only_visitor():
         assert policy["can_write_portfolio"] is False
         assert policy["can_run_backtests"] is False
         assert policy["can_sync_market"] is False
+        assert policy["custom_filter_limit"] == 0
 
 
 def test_blocked_user_loses_every_permission():
@@ -40,3 +41,12 @@ def test_owner_policy_is_always_full_access():
     assert policy["status"] == "approved"
     assert policy["can_manage_users"] is True
     assert policy["can_write_portfolio"] is True
+    assert policy["custom_filter_limit"] == 3
+
+
+def test_custom_filter_limit_is_clamped_between_zero_and_three():
+    with make_session() as session:
+        repo = AccessPolicyRepository(session)
+        repo.register("member@example.com")
+        row = repo.update("member@example.com", custom_filter_limit=99)
+        assert policy_dict(row)["custom_filter_limit"] == 3

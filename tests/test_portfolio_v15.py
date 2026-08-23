@@ -40,13 +40,38 @@ def test_portfolio_repository_upserts_same_asset():
     with Session(engine) as session:
         ar = AssetRepository(session); pr = PortfolioRepository(session)
         a = ar.upsert_asset(ticker="ABCD3", asset_type="stock")
-        p = pr.create_portfolio(name="Principal")
+        p = pr.create_portfolio(owner_email="owner@example.com", name="Principal")
         x = pr.upsert_position(p, a, quantity=10, average_price=10, target_weight_pct=20)
         y = pr.upsert_position(p, a, quantity=20, average_price=11, target_weight_pct=25)
         session.commit()
         assert x.id == y.id
         assert float(y.quantity) == 20
         assert len(pr.positions(p.id)) == 1
+
+
+def test_purchase_adds_quantity_and_recalculates_weighted_average():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        ar = AssetRepository(session); pr = PortfolioRepository(session)
+        asset = ar.upsert_asset(ticker="ABCD3", asset_type="stock")
+        portfolio = pr.create_portfolio(owner_email="owner@example.com", name="Principal")
+        pr.add_purchase(portfolio, asset, quantity=100, unit_price=10)
+        position = pr.add_purchase(portfolio, asset, quantity=50, unit_price=16)
+        assert float(position.quantity) == 150
+        assert round(float(position.average_price), 2) == 12.00
+
+
+def test_portfolios_are_isolated_by_owner_email():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        repo = PortfolioRepository(session)
+        first = repo.create_portfolio(owner_email="one@example.com", name="Carteira 1")
+        repo.create_portfolio(owner_email="two@example.com", name="Carteira 2")
+        session.commit()
+        assert [p.name for p in repo.list_portfolios("one@example.com")] == ["Carteira 1"]
+        assert repo.get_portfolio(first.id, "two@example.com") is None
 
 
 def test_missing_quote_is_not_treated_as_zero_or_total_loss():

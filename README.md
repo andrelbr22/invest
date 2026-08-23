@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.6.2
+# Formação do Investidor • Investment Engine V1.7.0
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -12,6 +12,7 @@ Backend Python/FastAPI/PostgreSQL + Streamlit para triagem fundamentalista/técn
 
 ### Mercado & Análise
 - presets Padrão / CNPI / ALB;
+- até três filtros personalizados salvos por usuário, conforme permissão do proprietário;
 - análise individual por perfil setorial;
 - Graham Number;
 - Preço Teto Bazin/Barsi (6%);
@@ -23,6 +24,9 @@ Backend Python/FastAPI/PostgreSQL + Streamlit para triagem fundamentalista/técn
 - Pivot Points clássicos PP, S1-S3 e R1-R3.
 
 ### Carteira
+- isolamento completo das carteiras por conta Google;
+- cadastro de novas compras com soma automática e recálculo do preço médio ponderado;
+- edição do total com botões de 100, 50, 25, 10, 5 ou 1 ação;
 - posição atual, ativos-alvo e ativos em análise;
 - quantidade, preço médio e cotação atual;
 - valor de mercado, custo e P&L;
@@ -75,3 +79,7 @@ A V1.6.1 permite carregar e atualizar o catálogo de ações e FIIs pela própri
 ## V1.6.2
 
 A V1.6.2 libera a autenticação para contas Google externas com perfil inicial de visitante somente leitura. O proprietário passa a controlar individualmente acesso ao Mercado, filtros avançados, Carteira, Backtests e atualização do banco. A quantidade da Carteira ganha botões confiáveis para 100, 25, 10, 5 ou 1 unidade. Consulte `V1_6_2.md`.
+
+## V1.7.0
+
+A V1.7.0 separa cada Carteira por conta Google, distingue novas compras de correções da posição, recalcula o preço médio ponderado e adiciona filtros personalizados persistentes. O proprietário define individualmente um limite de zero a três filtros por usuário. A atualização do banco é automática na primeira inicialização. Consulte `V1_7_0.md`.

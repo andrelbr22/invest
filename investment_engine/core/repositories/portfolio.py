@@ -24,14 +24,22 @@ class PortfolioRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def list_portfolios(self) -> list[PortfolioORM]:
-        return list(self.session.scalars(select(PortfolioORM).order_by(PortfolioORM.created_at, PortfolioORM.name)))
+    def list_portfolios(self, owner_email: str) -> list[PortfolioORM]:
+        return list(self.session.scalars(
+            select(PortfolioORM)
+            .where(PortfolioORM.owner_email == owner_email.strip().lower())
+            .order_by(PortfolioORM.created_at, PortfolioORM.name)
+        ))
 
-    def get_portfolio(self, portfolio_id) -> PortfolioORM | None:
-        return self.session.get(PortfolioORM, portfolio_id)
+    def get_portfolio(self, portfolio_id, owner_email: str) -> PortfolioORM | None:
+        return self.session.scalar(select(PortfolioORM).where(
+            PortfolioORM.id == portfolio_id,
+            PortfolioORM.owner_email == owner_email.strip().lower(),
+        ))
 
-    def create_portfolio(self, *, name: str, base_currency: str = "BRL", cash_balance=0, target_cash_pct=0, notes=None) -> PortfolioORM:
+    def create_portfolio(self, *, owner_email: str, name: str, base_currency: str = "BRL", cash_balance=0, target_cash_pct=0, notes=None) -> PortfolioORM:
         p = PortfolioORM(
+            owner_email=owner_email.strip().lower(),
             name=name.strip() or "Carteira Principal",
             base_currency=base_currency,
             cash_balance=_d(cash_balance) or Decimal("0"),
@@ -83,6 +91,40 @@ class PortfolioRepository:
         row.target_weight_pct = _d(target_weight_pct) or Decimal("0")
         row.classification_override = classification_override.strip() if isinstance(classification_override, str) and classification_override.strip() else None
         row.notes = notes
+        row.updated_at = datetime.now(timezone.utc)
+        self.session.flush()
+        return row
+
+    def add_purchase(self, portfolio: PortfolioORM, asset: AssetORM, *, quantity, unit_price,
+                     stage="position", target_weight_pct=None, classification_override=None, notes=None) -> PortfolioPositionORM:
+        """Add a purchase and preserve a weighted average acquisition price."""
+        purchase_qty = _d(quantity) or Decimal("0")
+        purchase_price = _d(unit_price)
+        if purchase_qty <= 0 or purchase_price is None or purchase_price < 0:
+            raise ValueError("invalid_purchase")
+        row = self.get_position(portfolio.id, asset.id)
+        if row is None:
+            row = PortfolioPositionORM(portfolio_id=portfolio.id, asset_id=asset.id)
+            self.session.add(row)
+            old_qty = Decimal("0")
+            old_average = Decimal("0")
+        else:
+            old_qty = _d(row.quantity) or Decimal("0")
+            old_average = _d(row.average_price)
+            if old_average is None:
+                old_average = purchase_price
+        new_qty = old_qty + purchase_qty
+        row.quantity = new_qty
+        row.average_price = ((old_qty * old_average) + (purchase_qty * purchase_price)) / new_qty
+        row.stage = stage
+        if target_weight_pct is not None:
+            row.target_weight_pct = _d(target_weight_pct) or Decimal("0")
+        elif row.target_weight_pct is None:
+            row.target_weight_pct = Decimal("0")
+        if classification_override is not None:
+            row.classification_override = classification_override.strip() or None
+        if notes is not None:
+            row.notes = notes
         row.updated_at = datetime.now(timezone.utc)
         self.session.flush()
         return row

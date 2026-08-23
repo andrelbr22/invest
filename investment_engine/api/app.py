@@ -17,12 +17,14 @@ from ..core.screening.filters import stock_passes, fii_passes
 from ..core.screening.advanced import advanced_screen
 from ..core.repositories.assets import AssetRepository
 from ..core.repositories.portfolio import PortfolioRepository
+from ..core.repositories.screening_filters import SavedScreeningFilterRepository
 from ..core.repositories.backtests import BacktestRepository
 from ..core.repositories.access import AccessPolicyRepository, PERMISSION_FIELDS, full_owner_policy, policy_dict
 from ..core.portfolio.service import build_portfolio_snapshot, classification_for
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
 from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
 from ..infrastructure.db.models import AssetORM
+from ..core.models.strategy import StockFilterSet, FiiFilterSet
 from ..infrastructure.db.session import get_session_factory
 from ..core.services_v14 import calculate_asset_intelligence
 from ..data.ingestion.prices import PriceIngestionService
@@ -30,8 +32,8 @@ from ..data.ingestion.pipeline import MarketIngestionPipeline
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.6.2",
-    version="0.7.2",
+    title="Investment Engine V1.7.0",
+    version="0.8.0",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -68,9 +70,9 @@ def _request_email(x_app_user_email: str = Header(default="")) -> str:
 
 def _access_policy(db: Session, email: str) -> dict:
     is_owner = email in settings.owner_emails or (email == "local-owner@localhost" and not settings.app_auth_required)
-    if is_owner:
-        return full_owner_policy(email)
     row = AccessPolicyRepository(db).get(email)
+    if is_owner:
+        return full_owner_policy(email, row.display_name if row else None)
     if row is None:
         return {
             "email": email,
@@ -78,6 +80,7 @@ def _access_policy(db: Session, email: str) -> dict:
             "role": "visitor",
             "status": "pending",
             "can_view_market": True,
+            "custom_filter_limit": 0,
             **{field: False for field in PERMISSION_FIELDS if field != "can_view_market"},
             "is_owner": False,
         }
@@ -175,6 +178,16 @@ class PortfolioPositionRequest(BaseModel):
     quantity: float = Field(default=0.0, ge=0)
     average_price: float | None = Field(default=None, ge=0)
     target_weight_pct: float = Field(default=0.0, ge=0, le=100)
+    classification_override: str | None = Field(default=None, max_length=120)
+    notes: str | None = None
+
+
+class PortfolioPurchaseRequest(BaseModel):
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|fixed_income|crypto|other)$")
+    quantity: float = Field(gt=0)
+    unit_price: float = Field(gt=0)
+    stage: str = Field(default="position", pattern="^(position|target|analysis)$")
+    target_weight_pct: float | None = Field(default=None, ge=0, le=100)
     classification_override: str | None = Field(default=None, max_length=120)
     notes: str | None = None
 
@@ -307,11 +320,23 @@ class AccessPolicyUpdateRequest(BaseModel):
     can_view_backtests: bool | None = None
     can_run_backtests: bool | None = None
     can_sync_market: bool | None = None
+    custom_filter_limit: int | None = Field(default=None, ge=0, le=3)
+
+
+class SavedScreeningFilterCreateRequest(BaseModel):
+    asset_type: Literal["stock", "fii"]
+    name: str | None = Field(default=None, max_length=120)
+    filters: dict = Field(default_factory=dict)
+
+
+class SavedScreeningFilterUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+    filters: dict | None = None
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.7.2", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.8.0", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -369,7 +394,7 @@ def update_access_user(
     if clean in settings.owner_emails:
         raise HTTPException(400, "owner_permissions_are_permanent")
     changes = req.model_dump(exclude_none=True)
-    if changes.get("can_use_advanced_filters") or changes.get("can_sync_market"):
+    if changes.get("can_use_advanced_filters") or changes.get("can_sync_market") or int(changes.get("custom_filter_limit") or 0)>0:
         changes["can_view_market"] = True
     if changes.get("can_write_portfolio"):
         changes["can_view_portfolio"] = True
@@ -378,6 +403,7 @@ def update_access_user(
     if changes.get("can_view_market") is False:
         changes["can_use_advanced_filters"] = False
         changes["can_sync_market"] = False
+        changes["custom_filter_limit"] = 0
     if changes.get("can_view_portfolio") is False:
         changes["can_write_portfolio"] = False
     if changes.get("can_view_backtests") is False:
@@ -387,6 +413,88 @@ def update_access_user(
         raise HTTPException(404, "user_not_found")
     db.commit()
     return policy_dict(row)
+
+
+def _saved_filter_dict(row):
+    return {
+        "id": str(row.id), "name": row.name, "asset_type": row.asset_type,
+        "filters": row.filters_json or {}, "created_at": row.created_at, "updated_at": row.updated_at,
+    }
+
+
+def _validated_saved_filters(asset_type: str, payload: dict) -> dict:
+    model = StockFilterSet if asset_type == "stock" else FiiFilterSet
+    return model(**(payload or {})).model_dump()
+
+
+def _require_custom_filter_access(access: dict):
+    if int(access.get("custom_filter_limit") or 0) <= 0:
+        raise HTTPException(403, detail={"permission_required": "custom_filter_limit"})
+
+
+@app.get("/screen/custom-filters")
+def list_saved_filters(
+    asset_type: Literal["stock", "fii"] | None = None,
+    access=Depends(require_permission("can_view_market")),
+    db: Session = Depends(get_db),
+):
+    _require_custom_filter_access(access)
+    rows = SavedScreeningFilterRepository(db).list_for_owner(access["email"], asset_type)
+    return {
+        "items": [_saved_filter_dict(row) for row in rows],
+        "limit": int(access.get("custom_filter_limit") or 0),
+        "used": SavedScreeningFilterRepository(db).count_for_owner(access["email"]),
+    }
+
+
+@app.post("/screen/custom-filters")
+def create_saved_filter(
+    req: SavedScreeningFilterCreateRequest,
+    access=Depends(require_permission("can_view_market")),
+    db: Session = Depends(get_db),
+):
+    _require_custom_filter_access(access)
+    repo = SavedScreeningFilterRepository(db)
+    limit = int(access.get("custom_filter_limit") or 0)
+    if repo.count_for_owner(access["email"]) >= limit:
+        raise HTTPException(409, detail={"custom_filter_limit_reached": limit})
+    row = repo.create(
+        owner_email=access["email"], asset_type=req.asset_type,
+        filters=_validated_saved_filters(req.asset_type, req.filters), name=req.name,
+        display_name=access.get("display_name") or access["email"].split("@", 1)[0],
+    )
+    db.commit()
+    return _saved_filter_dict(row)
+
+
+@app.put("/screen/custom-filters/{filter_id}")
+def update_saved_filter(
+    filter_id: UUID, req: SavedScreeningFilterUpdateRequest,
+    access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db),
+):
+    _require_custom_filter_access(access)
+    repo = SavedScreeningFilterRepository(db)
+    row = repo.get(filter_id, access["email"])
+    if row is None:
+        raise HTTPException(404, "custom_filter_not_found")
+    filters = _validated_saved_filters(row.asset_type, req.filters) if req.filters is not None else None
+    repo.update(row, name=req.name, filters=filters)
+    db.commit()
+    return _saved_filter_dict(row)
+
+
+@app.delete("/screen/custom-filters/{filter_id}")
+def delete_saved_filter(
+    filter_id: UUID, access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db),
+):
+    _require_custom_filter_access(access)
+    repo = SavedScreeningFilterRepository(db)
+    row = repo.get(filter_id, access["email"])
+    if row is None:
+        raise HTTPException(404, "custom_filter_not_found")
+    repo.delete(row)
+    db.commit()
+    return {"status": "deleted", "id": str(filter_id)}
 
 
 def _refresh_intelligence_scores(db: Session, asset_type: str) -> int:
@@ -593,19 +701,12 @@ def ingest_prices(ticker: str, _access=Depends(require_permission("can_sync_mark
     except Exception as exc:
         db.rollback(); raise HTTPException(502,detail={"price_ingestion_failed":str(exc)})
 
-@app.get("/screen/db/stocks/{strategy_id}")
-def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, _access=Depends(require_permission("can_view_market")), db: Session=Depends(get_db)):
-    strategy=STOCK_STRATEGIES.get(strategy_id)
-    if not strategy: raise HTTPException(404,"strategy_not_found")
-    rows=AssetRepository(db).screen_latest_stocks(strategy.filters,limit=limit,offset=offset)
+
+def _stock_screen_result(rows):
     return [{"ticker":a.ticker,"name":a.name,"price":_num(f.price),"pe":_num(f.pe),"pbv":_num(f.pbv),"dy":_num(f.dividend_yield_pct),"roe":_num(f.roe_pct),"alb_score":_num(sc.alb_score) if sc else None,"quality_score":_num(sc.quality_score) if sc else None,"value_score":_num(sc.value_score) if sc else None,"growth_score":_num(sc.growth_score) if sc else None,"technical_score":_num(sc.technical_score) if sc else None,"risk_score":_num(sc.risk_score) if sc else None,"liquidity_score":_num(sc.liquidity_score) if sc else None,"data_quality_score":_num(sc.data_quality_score) if sc else None} for a,f,sc in rows]
 
-@app.get("/screen/db/fiis/{strategy_id}")
-def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, _access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
-    strategy = FII_STRATEGIES.get(strategy_id)
-    if not strategy:
-        raise HTTPException(404, "strategy_not_found")
-    rows = AssetRepository(db).screen_latest_fiis(strategy.filters, limit=limit, offset=offset)
+
+def _fii_screen_result(rows):
     return [{
         "ticker": a.ticker, "name": a.name, "segment": a.segment,
         "price": _num(f.price), "pbv": _num(f.pbv), "dy": _num(f.dividend_yield_pct),
@@ -620,6 +721,38 @@ def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, _access=D
         "liquidity_score": _num(sc.liquidity_score) if sc else None,
         "data_quality_score": _num(sc.data_quality_score) if sc else None,
     } for a, f, sc in rows]
+
+@app.get("/screen/db/stocks/{strategy_id}")
+def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, _access=Depends(require_permission("can_view_market")), db: Session=Depends(get_db)):
+    strategy=STOCK_STRATEGIES.get(strategy_id)
+    if not strategy: raise HTTPException(404,"strategy_not_found")
+    rows=AssetRepository(db).screen_latest_stocks(strategy.filters,limit=limit,offset=offset)
+    return _stock_screen_result(rows)
+
+@app.get("/screen/db/fiis/{strategy_id}")
+def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, _access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
+    strategy = FII_STRATEGIES.get(strategy_id)
+    if not strategy:
+        raise HTTPException(404, "strategy_not_found")
+    rows = AssetRepository(db).screen_latest_fiis(strategy.filters, limit=limit, offset=offset)
+    return _fii_screen_result(rows)
+
+
+@app.get("/screen/db/custom/{filter_id}")
+def screen_db_custom(
+    filter_id: UUID, limit: int = 50, offset: int = 0,
+    access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db),
+):
+    _require_custom_filter_access(access)
+    row = SavedScreeningFilterRepository(db).get(filter_id, access["email"])
+    if row is None:
+        raise HTTPException(404, "custom_filter_not_found")
+    repo = AssetRepository(db)
+    if row.asset_type == "stock":
+        filters = StockFilterSet(**(row.filters_json or {}))
+        return _stock_screen_result(repo.screen_latest_stocks(filters, limit=limit, offset=offset))
+    filters = FiiFilterSet(**(row.filters_json or {}))
+    return _fii_screen_result(repo.screen_latest_fiis(filters, limit=limit, offset=offset))
 
 @app.post("/screen/advanced")
 def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permission("can_use_advanced_filters")), db: Session = Depends(get_db)):
@@ -708,37 +841,37 @@ def _portfolio_snapshot(db: Session, portfolio):
 
 
 @app.get("/portfolios")
-def list_portfolios(_access=Depends(require_permission("can_view_portfolio")), db: Session = Depends(get_db)):
-    return [_portfolio_header(p) for p in PortfolioRepository(db).list_portfolios()]
+def list_portfolios(access=Depends(require_permission("can_view_portfolio")), db: Session = Depends(get_db)):
+    return [_portfolio_header(p) for p in PortfolioRepository(db).list_portfolios(access["email"])]
 
 
 @app.post("/portfolios")
-def create_portfolio(req: PortfolioCreateRequest, _access=Depends(require_permission("can_write_portfolio")), db: Session = Depends(get_db)):
+def create_portfolio(req: PortfolioCreateRequest, access=Depends(require_permission("can_write_portfolio")), db: Session = Depends(get_db)):
     repo = PortfolioRepository(db)
-    p = repo.create_portfolio(name=req.name, base_currency=req.base_currency, cash_balance=req.cash_balance,
+    p = repo.create_portfolio(owner_email=access["email"], name=req.name, base_currency=req.base_currency, cash_balance=req.cash_balance,
                               target_cash_pct=req.target_cash_pct, notes=req.notes)
     db.commit()
     return _portfolio_snapshot(db, p)
 
 
 @app.patch("/portfolios/{portfolio_id}")
-def update_portfolio(portfolio_id: UUID, req: PortfolioUpdateRequest, _access=Depends(require_permission("can_write_portfolio")), db: Session = Depends(get_db)):
-    repo = PortfolioRepository(db); p = repo.get_portfolio(portfolio_id)
+def update_portfolio(portfolio_id: UUID, req: PortfolioUpdateRequest, access=Depends(require_permission("can_write_portfolio")), db: Session = Depends(get_db)):
+    repo = PortfolioRepository(db); p = repo.get_portfolio(portfolio_id, access["email"])
     if p is None: raise HTTPException(404, "portfolio_not_found")
     repo.update_portfolio(p, name=req.name, cash_balance=req.cash_balance, target_cash_pct=req.target_cash_pct, notes=req.notes)
     db.commit(); return _portfolio_snapshot(db, p)
 
 
 @app.get("/portfolios/{portfolio_id}")
-def portfolio_detail(portfolio_id: UUID, _access=Depends(require_permission("can_view_portfolio")), db: Session = Depends(get_db)):
-    p = PortfolioRepository(db).get_portfolio(portfolio_id)
+def portfolio_detail(portfolio_id: UUID, access=Depends(require_permission("can_view_portfolio")), db: Session = Depends(get_db)):
+    p = PortfolioRepository(db).get_portfolio(portfolio_id, access["email"])
     if p is None: raise HTTPException(404, "portfolio_not_found")
     return _portfolio_snapshot(db, p)
 
 
 @app.put("/portfolios/{portfolio_id}/positions/{ticker}")
-def upsert_portfolio_position(portfolio_id: UUID, ticker: str, req: PortfolioPositionRequest, _access=Depends(require_permission("can_write_portfolio")), db: Session = Depends(get_db)):
-    prepo = PortfolioRepository(db); p = prepo.get_portfolio(portfolio_id)
+def upsert_portfolio_position(portfolio_id: UUID, ticker: str, req: PortfolioPositionRequest, access=Depends(require_permission("can_write_portfolio")), db: Session = Depends(get_db)):
+    prepo = PortfolioRepository(db); p = prepo.get_portfolio(portfolio_id, access["email"])
     if p is None: raise HTTPException(404, "portfolio_not_found")
     arepo = AssetRepository(db); asset = arepo.get_by_ticker(ticker.upper())
     if asset is None:
@@ -748,9 +881,29 @@ def upsert_portfolio_position(portfolio_id: UUID, ticker: str, req: PortfolioPos
     db.commit(); return _portfolio_snapshot(db, p)
 
 
+@app.post("/portfolios/{portfolio_id}/positions/{ticker}/purchase")
+def add_portfolio_purchase(portfolio_id: UUID, ticker: str, req: PortfolioPurchaseRequest,
+                           access=Depends(require_permission("can_write_portfolio")), db: Session = Depends(get_db)):
+    prepo = PortfolioRepository(db); p = prepo.get_portfolio(portfolio_id, access["email"])
+    if p is None: raise HTTPException(404, "portfolio_not_found")
+    arepo = AssetRepository(db); asset = arepo.get_by_ticker(ticker.upper())
+    if asset is None:
+        asset = arepo.upsert_asset(ticker=ticker.upper(), asset_type=req.asset_type)
+    try:
+        row = prepo.add_purchase(
+            p, asset, quantity=req.quantity, unit_price=req.unit_price, stage=req.stage,
+            target_weight_pct=req.target_weight_pct,
+            classification_override=req.classification_override, notes=req.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    db.commit()
+    return {"ticker": asset.ticker, "quantity": _num(row.quantity), "average_price": _num(row.average_price), "snapshot": _portfolio_snapshot(db, p)}
+
+
 @app.delete("/portfolios/{portfolio_id}/positions/{ticker}")
-def delete_portfolio_position(portfolio_id: UUID, ticker: str, _access=Depends(require_permission("can_write_portfolio")), db: Session = Depends(get_db)):
-    prepo = PortfolioRepository(db); p = prepo.get_portfolio(portfolio_id)
+def delete_portfolio_position(portfolio_id: UUID, ticker: str, access=Depends(require_permission("can_write_portfolio")), db: Session = Depends(get_db)):
+    prepo = PortfolioRepository(db); p = prepo.get_portfolio(portfolio_id, access["email"])
     if p is None: raise HTTPException(404, "portfolio_not_found")
     asset = AssetRepository(db).get_by_ticker(ticker.upper())
     if asset is None or not prepo.delete_position(p.id, asset.id): raise HTTPException(404, "position_not_found")
@@ -758,8 +911,8 @@ def delete_portfolio_position(portfolio_id: UUID, ticker: str, _access=Depends(r
 
 
 @app.post("/portfolios/{portfolio_id}/refresh-prices")
-def refresh_portfolio_prices(portfolio_id: UUID, _access=Depends(require_permission("can_write_portfolio")), db: Session = Depends(get_db)):
-    prepo = PortfolioRepository(db); p = prepo.get_portfolio(portfolio_id)
+def refresh_portfolio_prices(portfolio_id: UUID, access=Depends(require_permission("can_write_portfolio")), db: Session = Depends(get_db)):
+    prepo = PortfolioRepository(db); p = prepo.get_portfolio(portfolio_id, access["email"])
     if p is None: raise HTTPException(404, "portfolio_not_found")
     svc = PriceIngestionService(db); results = []
     for pos, asset in prepo.positions(p.id):
