@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.7.2
+# Formação do Investidor • Investment Engine V1.7.3
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -91,3 +91,7 @@ A V1.7.1 corrige os botões de quantidade para usar callbacks compatíveis com o
 ## V1.7.2
 
 A V1.7.2 elimina o seletor de passo da Carteira. Abaixo de cada campo de quantidade ficam somente os botões fixos `(+100)`, `(-100)`, `(+50)`, `(-50)`, `(+10)`, `(-10)`, `(+5)`, `(-5)`, `(+1)` e `(-1)`. Os controles nativos `+` e `-` da própria caixa avançam de 100 em 100.
+
+## V1.7.3
+
+A V1.7.3 transforma os controles de quantidade em fragmentos independentes do Streamlit. Cada clique atualiza somente a caixa e seus botões; catálogo, carteira, cotações, gráficos e demais cálculos deixam de ser recarregados. O aplicativo completo e o banco são atualizados apenas ao salvar a compra ou a edição.

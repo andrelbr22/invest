@@ -282,6 +282,18 @@ def _quantity_adjustment_buttons(quantity_key,key_prefix,*,disabled=False):
         )
 
 
+@st.fragment
+def _quantity_control(label,quantity_key,key_prefix,*,initial_value=100,reset_key=None,disabled=False):
+    """Fast local quantity editor: button clicks rerun only this fragment."""
+    if reset_key and st.session_state.pop(reset_key,False):
+        st.session_state[quantity_key]=int(initial_value)
+    if quantity_key not in st.session_state:
+        st.session_state[quantity_key]=int(initial_value)
+    st.number_input(label,min_value=0,step=100,format="%d",key=quantity_key,disabled=disabled)
+    _quantity_adjustment_buttons(quantity_key,key_prefix,disabled=disabled)
+    return int(st.session_state.get(quantity_key,0) or 0)
+
+
 def _custom_filter_editor(asset_type,prefix,initial=None):
     initial=initial or {}
     values={}
@@ -687,12 +699,10 @@ def render_portfolio():
             ptype=st.selectbox("Tipo",type_options,index=type_options.index(type_rev.get(detected_type,"Ação")),key="pf_purchase_type")
             qty_key=f"pf_purchase_qty_{pid}_{purchase_ticker or 'new'}"
             reset_key=f"{qty_key}_reset_pending"
-            if st.session_state.pop(reset_key,False):
-                st.session_state[qty_key]=100
-            if qty_key not in st.session_state:
-                st.session_state[qty_key]=100
-            purchase_qty=st.number_input("Quantidade desta compra",min_value=0,step=100,format="%d",key=qty_key)
-            _quantity_adjustment_buttons(qty_key,f"purchase_adjust_{pid}_{purchase_ticker or 'new'}",disabled=not can("can_write_portfolio"))
+            purchase_qty=_quantity_control(
+                "Quantidade desta compra",qty_key,f"purchase_adjust_{pid}_{purchase_ticker or 'new'}",
+                initial_value=100,reset_key=reset_key,disabled=not can("can_write_portfolio"),
+            )
             purchase_price_text=st.text_input("Preço unitário desta compra (R$)",value="",placeholder="Ex.: 27,45",key=f"pf_purchase_price_{pid}_{purchase_ticker}")
             automatic=purchase_metadata.get("classification") or purchase_existing.get("classification") or "Não localizado no cadastro"
             st.text_input("Setor / segmento / categoria (automático)",value=automatic,disabled=True,key=f"pf_purchase_class_{pid}_{purchase_ticker}")
@@ -720,10 +730,10 @@ def render_portfolio():
                 edit_ticker=st.selectbox("Posição",sorted(existing_map),format_func=lambda x:f"{x} — {existing_map[x].get('name') or ''}",key="pf_edit_existing_v170")
                 existing=existing_map[edit_ticker]
                 edit_qty_key=f"pf_edit_qty_{pid}_{edit_ticker}"
-                if edit_qty_key not in st.session_state:
-                    st.session_state[edit_qty_key]=int(float(existing.get("quantity") or 0))
-                edit_qty=st.number_input("Quantidade total da posição",min_value=0,step=100,format="%d",key=edit_qty_key)
-                _quantity_adjustment_buttons(edit_qty_key,f"edit_adjust_{pid}_{edit_ticker}",disabled=not can("can_write_portfolio"))
+                edit_qty=_quantity_control(
+                    "Quantidade total da posição",edit_qty_key,f"edit_adjust_{pid}_{edit_ticker}",
+                    initial_value=int(float(existing.get("quantity") or 0)),disabled=not can("can_write_portfolio"),
+                )
                 e1,e2=st.columns(2)
                 default_stage=stage_rev.get(existing.get("stage"),"Posição atual")
                 edit_stage=e1.selectbox("Situação",stage_options,index=stage_options.index(default_stage),key=f"pf_edit_stage_{pid}_{edit_ticker}")
@@ -1472,4 +1482,4 @@ elif module=="Carteira":render_portfolio()
 elif module=="Backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.7.2. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.7.3. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
