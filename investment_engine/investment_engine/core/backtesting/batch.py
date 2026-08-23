@@ -59,7 +59,26 @@ class BacktestBatchService:
             select(BacktestBatchJobORM).order_by(BacktestBatchJobORM.created_at.desc()).limit(limit)
         ))
 
+    def get_job(self, job_id):
+        return self.session.get(BacktestBatchJobORM, job_id)
+
+    def mark_failed(self, job, *, code: str, message: str, details: dict | None = None):
+        if job.status in {"completed", "completed_with_errors"}:
+            return job
+        error = {"code": str(code)[:80], "message": str(message)[:500]}
+        if details:
+            error["details"] = details
+        job.status = "failed"
+        job.finished_at = datetime.now(timezone.utc)
+        job.error_json = [*(job.error_json or []), error][-200:]
+        self.session.flush()
+        return job
+
     def run_job(self, job) -> dict:
+        if job.status in {"completed", "completed_with_errors"}:
+            return self.job_dict(job)
+        if job.status == "running":
+            raise ValueError("batch_job_already_running")
         configurations = official_grid(job.max_combinations)
         tickers = list(job.requested_tickers_json or [])[:MAX_BATCH_ASSETS]
         job.status = "running"

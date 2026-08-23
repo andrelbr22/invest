@@ -36,8 +36,8 @@ from ..data.providers.b3_indices import B3IndexProvider
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.10.2",
-    version="0.11.2",
+    title="Investment Engine V1.10.3",
+    version="0.11.3",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -315,6 +315,17 @@ class BacktestBasketRequest(BaseModel):
     filters: BacktestFiltersRequest = Field(default_factory=BacktestFiltersRequest)
 
 
+class BacktestBatchCreateRequest(BaseModel):
+    tickers: list[str] = Field(min_length=1, max_length=100)
+    max_combinations: int = Field(default=200, ge=1, le=200)
+
+
+class BacktestBatchFailureRequest(BaseModel):
+    code: str = Field(default="external_failure", max_length=80)
+    message: str = Field(max_length=500)
+    details: dict = Field(default_factory=dict)
+
+
 class NumericRangeRequest(BaseModel):
     min: float | None = None
     max: float | None = None
@@ -378,7 +389,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.11.2", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.11.3", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -1274,3 +1285,38 @@ def backtest_batch_jobs(
     limit: int = Query(default=20, ge=1, le=100), _access=Depends(require_owner), db: Session = Depends(get_db),
 ):
     return [BacktestBatchService.job_dict(job) for job in BacktestBatchService(db).list_jobs(limit)]
+
+
+@app.post("/backtests/batch/jobs")
+def create_backtest_batch_job(
+    request: BacktestBatchCreateRequest,
+    access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    try:
+        service = BacktestBatchService(db)
+        job = service.create_job(
+            requested_by=access["email"], source="site", tickers=request.tickers,
+            max_combinations=request.max_combinations,
+        )
+        db.commit()
+        return service.job_dict(job)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc))
+
+
+@app.patch("/backtests/batch/jobs/{job_id}/failed")
+def fail_backtest_batch_job(
+    job_id: UUID,
+    request: BacktestBatchFailureRequest,
+    _access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    service = BacktestBatchService(db)
+    job = service.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "backtest_batch_job_not_found")
+    service.mark_failed(job, code=request.code, message=request.message, details=request.details)
+    db.commit()
+    return service.job_dict(job)

@@ -14,7 +14,7 @@ O aplicativo e a migração funcionam assim que a V1.9.0 for publicada. Para ati
 Crie o segredo abaixo:
 
 - Nome: `DATABASE_ADMIN_URL`
-- Valor: a URL direta, sem `-pooler`, exibida pelo Neon.
+- Valor: a URL direta, sem `-pooler`, exibida pelo Neon. Ela deve começar com `postgresql://`; não use o endereço `https://` do painel.
 
 Opcionalmente, crie também `DATABASE_URL` usando a URL com `-pooler`. Nunca coloque essas URLs em arquivos publicados no GitHub.
 
@@ -30,4 +30,4 @@ Para um grupo extraordinário, informe até 100 tickers separados por vírgula. 
 
 ## 4. Acompanhar
 
-O andamento aparece no GitHub Actions e também em **Usuários e permissões → Catálogo oficial de backtests**. O agendamento ocorre aos sábados às 00h01 de Brasília; o GitHub pode iniciar alguns minutos depois em períodos de fila.
+O andamento aparece no GitHub Actions e também em **Administração → Backtests oficiais**. O agendamento ocorre aos sábados às 00h01 de Brasília; o GitHub pode iniciar alguns minutos depois em períodos de fila.

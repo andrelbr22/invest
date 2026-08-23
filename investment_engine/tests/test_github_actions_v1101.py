@@ -73,5 +73,5 @@ def test_dispatch_handles_network_failure_without_leaking_token():
 def test_workflow_runs_batch_as_a_module():
     workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "backtests-semanais.yml"
     contents = workflow.read_text(encoding="utf-8")
-    assert contents.count("python -m scripts.run_weekly_backtests") == 2
+    assert contents.count("python -m scripts.run_weekly_backtests") == 3
     assert "python scripts/run_weekly_backtests.py" not in contents

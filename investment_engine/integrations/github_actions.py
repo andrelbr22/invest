@@ -36,6 +36,7 @@ def dispatch_official_backtests(
     workflow: str = DEFAULT_WORKFLOW,
     ref: str = DEFAULT_REF,
     max_combinations: int = 200,
+    job_id: str | None = None,
     http=requests,
 ) -> dict:
     """Solicita o lote oficial sem expor a credencial ao navegador."""
@@ -53,6 +54,13 @@ def dispatch_official_backtests(
     clean_tickers = normalize_tickers(tickers)
     combinations = max(1, min(int(max_combinations), 200))
     url = f"https://api.github.com/repos/{clean_repository}/actions/workflows/{clean_workflow}/dispatches"
+    inputs = {
+        "tickers": ",".join(clean_tickers),
+        "max_combinations": str(combinations),
+    }
+    clean_job_id = str(job_id or "").strip()
+    if clean_job_id:
+        inputs["job_id"] = clean_job_id
     try:
         response = http.post(
             url,
@@ -63,10 +71,7 @@ def dispatch_official_backtests(
             },
             json={
                 "ref": clean_ref,
-                "inputs": {
-                    "tickers": ",".join(clean_tickers),
-                    "max_combinations": str(combinations),
-                },
+                "inputs": inputs,
             },
             timeout=30,
         )
@@ -84,5 +89,67 @@ def dispatch_official_backtests(
         "submitted": True,
         "tickers": clean_tickers,
         "max_combinations": combinations,
+        "job_id": clean_job_id or None,
         "actions_url": f"https://github.com/{clean_repository}/actions/workflows/{clean_workflow}",
     }
+
+
+def list_workflow_runs(
+    *,
+    token: str,
+    repository: str = DEFAULT_REPOSITORY,
+    workflow: str = DEFAULT_WORKFLOW,
+    branch: str = DEFAULT_REF,
+    limit: int = 20,
+    http=requests,
+) -> list[dict]:
+    """Consulta o andamento recente sem expor a credencial ao navegador."""
+
+    clean_token = str(token or "").strip()
+    if not clean_token:
+        raise GitHubActionsError("A integração com o GitHub ainda não foi configurada.")
+    clean_repository = str(repository or "").strip().strip("/")
+    if clean_repository.count("/") != 1:
+        raise GitHubActionsError("O repositório configurado para os backtests é inválido.")
+    clean_workflow = str(workflow or "").strip()
+    if not clean_workflow:
+        raise GitHubActionsError("O workflow do GitHub não foi configurado.")
+    url = f"https://api.github.com/repos/{clean_repository}/actions/workflows/{clean_workflow}/runs"
+    try:
+        response = http.get(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {clean_token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            params={
+                "event": "workflow_dispatch",
+                "branch": str(branch or DEFAULT_REF).strip(),
+                "per_page": max(1, min(int(limit), 50)),
+            },
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise GitHubActionsError("O GitHub não respondeu à consulta de andamento.") from exc
+    if response.status_code != 200:
+        messages = {
+            401: "A credencial do GitHub é inválida ou expirou.",
+            403: "A credencial não possui permissão para consultar o workflow.",
+            404: "O repositório ou o workflow não foi encontrado pelo GitHub.",
+        }
+        raise GitHubActionsError(messages.get(response.status_code, f"O GitHub recusou a consulta (HTTP {response.status_code})."))
+    try:
+        rows = response.json().get("workflow_runs") or []
+    except (AttributeError, ValueError) as exc:
+        raise GitHubActionsError("O GitHub devolveu uma resposta de andamento inválida.") from exc
+    return [{
+        "id": row.get("id"),
+        "run_number": row.get("run_number"),
+        "display_title": row.get("display_title") or row.get("name"),
+        "status": row.get("status"),
+        "conclusion": row.get("conclusion"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "html_url": row.get("html_url"),
+    } for row in rows]

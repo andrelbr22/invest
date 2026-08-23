@@ -1,4 +1,5 @@
 name: Backtests oficiais semanais
+run-name: Backtests oficiais • ${{ inputs.job_id || 'agendado' }}
 
 on:
   schedule:
@@ -14,6 +15,10 @@ on:
         description: "Combinações por ativo (máximo 200)"
         required: true
         default: "200"
+      job_id:
+        description: "Identificador do pedido registrado no painel"
+        required: false
+        default: ""
 
 concurrency:
   group: backtests-oficiais
@@ -35,6 +40,8 @@ jobs:
           cache: pip
       - name: Instalar dependências
         run: python -m pip install -r requirements.txt
+      - name: Validar conexão PostgreSQL
+        run: python -m scripts.run_weekly_backtests --validate-database-only
       - name: Atualização agendada
         if: github.event_name == 'schedule'
         run: python -m scripts.run_weekly_backtests --source scheduled --max-combinations 200
@@ -43,4 +50,10 @@ jobs:
         env:
           MANUAL_TICKERS: ${{ inputs.tickers }}
           MANUAL_MAX_COMBINATIONS: ${{ inputs.max_combinations }}
-        run: python -m scripts.run_weekly_backtests --source manual --max-combinations "$MANUAL_MAX_COMBINATIONS" --tickers "$MANUAL_TICKERS"
+          MANUAL_JOB_ID: ${{ inputs.job_id }}
+        run: |
+          args=(--source manual --max-combinations "$MANUAL_MAX_COMBINATIONS" --tickers "$MANUAL_TICKERS")
+          if [ -n "$MANUAL_JOB_ID" ]; then
+            args+=(--job-id "$MANUAL_JOB_ID")
+          fi
+          python -m scripts.run_weekly_backtests "${args[@]}"

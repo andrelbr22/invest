@@ -16,6 +16,7 @@ from investment_engine.core.screening.universe import (
 from investment_engine.integrations.github_actions import (
     GitHubActionsError,
     dispatch_official_backtests,
+    list_workflow_runs,
 )
 
 st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
@@ -2061,25 +2062,89 @@ def _render_official_backtest_admin():
                 )
             st.session_state[selection_key]=selected
             if submitted:
-                try:
-                    dispatched=dispatch_official_backtests(
-                        token=github_token,tickers=selected,repository=github_repository,
-                        workflow=github_workflow,ref=github_ref,max_combinations=200,
-                    )
-                except (GitHubActionsError,ValueError) as exc:
-                    st.error(str(exc))
+                job,job_error=api_post("/backtests/batch/jobs",{
+                    "tickers":selected,"max_combinations":200,
+                })
+                if job_error:
+                    st.error(f"O pedido não pôde ser registrado no banco: {job_error}")
                 else:
-                    st.success(f"Pedido enviado. O GitHub começou a preparar os backtests de {len(dispatched['tickers'])} ativo(s). Você já pode fechar esta página.")
-                    st.link_button("Acompanhar processamento no GitHub",dispatched["actions_url"],use_container_width=True)
+                    try:
+                        dispatched=dispatch_official_backtests(
+                            token=github_token,tickers=selected,repository=github_repository,
+                            workflow=github_workflow,ref=github_ref,max_combinations=200,
+                            job_id=job["id"],
+                        )
+                    except (GitHubActionsError,ValueError) as exc:
+                        api_patch(f"/backtests/batch/jobs/{job['id']}/failed",{
+                            "code":"github_dispatch_failed","message":str(exc),
+                        })
+                        st.error(f"O pedido {job['id'][:8]} foi registrado, mas o GitHub não o aceitou: {exc}")
+                    else:
+                        st.success(
+                            f"Pedido {job['id'][:8]} registrado e enviado. "
+                            f"Acompanhe abaixo os backtests de {len(dispatched['tickers'])} ativo(s)."
+                        )
+                        st.link_button("Acompanhar processamento no GitHub",dispatched["actions_url"],use_container_width=True)
         st.caption("A credencial fica guardada apenas nos Secrets do Streamlit e nunca é mostrada aos usuários.")
 
     st.markdown("#### Histórico dos lotes oficiais")
     jobs,jobs_error=api_get("/backtests/batch/jobs",{"limit":20})
+    github_runs=[]
+    github_runs_error=None
+    if github_token:
+        try:
+            github_runs=list_workflow_runs(
+                token=github_token,repository=github_repository,workflow=github_workflow,
+                branch=github_ref,limit=20,
+            )
+        except GitHubActionsError as exc:
+            github_runs_error=str(exc)
+    if github_runs_error:
+        st.warning(f"Não foi possível consultar o andamento no GitHub: {github_runs_error}")
+    elif github_runs:
+        status_labels={
+            "queued":"Na fila","in_progress":"Executando","completed":"Finalizado",
+        }
+        conclusion_labels={
+            "success":"Concluído","failure":"Falhou","cancelled":"Cancelado",
+            "timed_out":"Tempo esgotado","action_required":"Exige intervenção",
+            "skipped":"Ignorado","neutral":"Neutro","stale":"Interrompido",
+        }
+        run_rows=[]
+        for run in github_runs[:10]:
+            situation=(conclusion_labels.get(run.get("conclusion")) if run.get("conclusion") else status_labels.get(run.get("status"))) or (run.get("status") or "Desconhecido")
+            run_rows.append({
+                "Execução":f"#{run.get('run_number')}","Pedido":run.get("display_title"),
+                "Situação":situation,"Solicitado em":br_datetime(run.get("created_at")),
+                "Atualizado em":br_datetime(run.get("updated_at")),"Detalhes":run.get("html_url"),
+            })
+        st.caption("Andamento informado diretamente pelo GitHub")
+        st.dataframe(
+            pd.DataFrame(run_rows),hide_index=True,use_container_width=True,
+            column_config={"Detalhes":st.column_config.LinkColumn("Detalhes",display_text="Abrir")},
+        )
     if jobs_error:st.warning(f"Não foi possível consultar as execuções em lote: {jobs_error}")
     elif not jobs:st.info("Nenhuma execução oficial foi registrada ainda.")
     else:
+        terminal_failures={"failure","cancelled","timed_out","action_required","stale"}
+        for item in jobs:
+            matched=next((run for run in github_runs if str(item.get("id")) in str(run.get("display_title") or "")),None)
+            if matched and matched.get("conclusion") in terminal_failures and item.get("status") in {"queued","running"}:
+                updated,_=api_patch(f"/backtests/batch/jobs/{item['id']}/failed",{
+                    "code":"github_workflow_failed",
+                    "message":f"O processamento no GitHub terminou como {matched.get('conclusion')}.",
+                    "details":{"run_url":matched.get("html_url"),"run_number":matched.get("run_number")},
+                })
+                if updated:item.update(updated)
+        batch_status_labels={
+            "queued":"Na fila","running":"Executando","completed":"Concluído",
+            "completed_with_errors":"Concluído com falhas","failed":"Falhou",
+        }
+        source_labels={"site":"Painel administrativo","manual":"GitHub manual","scheduled":"Agendado"}
         job_rows=[{
-            "Criado em":br_datetime(item.get("created_at")),"Origem":item.get("source"),"Situação":item.get("status"),
+            "Pedido":str(item.get("id"))[:8],"Criado em":br_datetime(item.get("created_at")),
+            "Origem":source_labels.get(item.get("source"),item.get("source")),
+            "Situação":batch_status_labels.get(item.get("status"),item.get("status")),
             "Ativos":len(item.get("tickers") or []),"Combinações/ativo":item.get("max_combinations"),
             "Concluídos":item.get("completed_runs"),"Falhas":item.get("failed_runs"),
             "Início":br_datetime(item.get("started_at")),"Fim":br_datetime(item.get("finished_at")),
@@ -2200,4 +2265,4 @@ elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.10.2. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.10.3. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
