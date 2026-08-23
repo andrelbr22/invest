@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import requests
 import streamlit as st
-from investment_engine.ui_helpers import format_brl_price_input, merge_purchase_position, parse_brl_price_input
+from investment_engine.ui_helpers import format_brl_price_input, parse_brl_price_input
 
 st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
@@ -264,6 +264,21 @@ def _set_quantity_state(key, *, delta=0, minimum=0, exact=None):
     """Update a quantity from a Streamlit callback, before widgets are rendered."""
     current=int(float(st.session_state.get(key,minimum) or 0))
     st.session_state[key]=max(int(minimum),int(exact) if exact is not None else current+int(delta))
+
+
+def _merge_purchase_position(existing_quantity,existing_average_price,purchase_quantity,purchase_price):
+    """Consolidate a purchase without depending on a newly deployed helper module."""
+    old_quantity=float(existing_quantity or 0)
+    bought_quantity=float(purchase_quantity or 0)
+    bought_price=float(purchase_price or 0)
+    if old_quantity<0 or bought_quantity<=0 or bought_price<=0:
+        raise ValueError("Quantidade e preço da compra devem ser maiores que zero.")
+    new_quantity=old_quantity+bought_quantity
+    if old_quantity>0 and existing_average_price is not None:
+        new_average=((old_quantity*float(existing_average_price))+(bought_quantity*bought_price))/new_quantity
+    else:
+        new_average=bought_price
+    return new_quantity,new_average
 
 
 def _quantity_adjustment_buttons(quantity_key,key_prefix,*,disabled=False):
@@ -716,7 +731,7 @@ def render_portfolio():
                 except ValueError as exc:
                     st.error(str(exc))
                 else:
-                    new_quantity,new_average=merge_purchase_position(
+                    new_quantity,new_average=_merge_purchase_position(
                         purchase_existing.get("quantity"),purchase_existing.get("average_price"),
                         purchase_qty,purchase_price,
                     )
@@ -1492,4 +1507,4 @@ elif module=="Carteira":render_portfolio()
 elif module=="Backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.7.4. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.7.5. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
