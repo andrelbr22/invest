@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.10.3
+# Formação do Investidor • Investment Engine V1.10.4
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -7,6 +7,15 @@
 > externo e as credenciais devem ser configuradas no painel Secrets.
 
 Backend Python/FastAPI/PostgreSQL + Streamlit para triagem fundamentalista/técnica, valuation, carteira e backtests.
+
+## Novidades da V1.10.4
+
+- os ativos visíveis na tabela de Mercado e análise são reaproveitados automaticamente no lote oficial;
+- novo botão leva a seleção filtrada diretamente para Administração → Backtests oficiais;
+- universo, Padrão/CNPI/ALB/personalizado, porte, IBOV, setor e limite exibido passam a ser respeitados na transferência;
+- resultados do screener avançado também podem ser enviados diretamente;
+- a origem e a quantidade da seleção ficam visíveis antes do processamento;
+- permanece o limite de 100 ativos por lote e não há migração de banco.
 
 ## Novidades da V1.10.3
 

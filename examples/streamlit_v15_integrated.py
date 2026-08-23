@@ -265,6 +265,37 @@ def _change_market_asset_class():
 def _navigate_to(module):
     st.session_state["main_navigation"]=module
 
+
+def _remember_market_backtest_selection(tickers,label):
+    clean=[]
+    for ticker in tickers or []:
+        value=str(ticker or "").strip().upper()
+        if value and value not in clean:clean.append(value)
+    source_label=str(label or "Mercado e análise")
+    st.session_state["market_backtest_selection_stock"]={
+        "tickers":clean[:100],"total":len(clean),"label":source_label,
+        "signature":source_label+"|"+",".join(clean[:100]),
+    }
+    return clean
+
+
+def _send_market_selection_to_official_batch(tickers,label):
+    clean=[]
+    for ticker in tickers or []:
+        value=str(ticker or "").strip().upper()
+        if value and value not in clean:clean.append(value)
+    st.session_state["official_batch_selected_tickers"]=clean[:100]
+    st.session_state["official_batch_selection_source"]={
+        "label":str(label or "Mercado e análise"),"count":len(clean),
+    }
+    st.session_state["official_batch_market_signature_applied"]=str(label or "Mercado e análise")+"|"+",".join(clean[:100])
+    st.session_state["main_navigation"]="access"
+
+
+def _set_official_batch_selection(tickers,label):
+    _send_market_selection_to_official_batch(tickers,label)
+    st.session_state["main_navigation"]="access"
+
 def br_money(v):
     if v is None or (isinstance(v,float) and math.isnan(v)):return "N/D"
     return f"R$ {float(v):,.2f}".replace(",","X").replace(".",",").replace("X",".")
@@ -467,6 +498,8 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
             else:
                 st.code(f"python scripts/ingest_prices.py --all --type {asset_type} --range 3y")
         if not rows:
+            if asset_type=="stock" and PERMISSIONS.get("is_owner"):
+                _remember_market_backtest_selection([],f"Screener avançado • {universe_label}")
             st.info("Nenhum ativo satisfez simultaneamente todos os filtros ativados.")
         else:
             df=pd.DataFrame(rows)
@@ -477,6 +510,18 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
             preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","ROIC %","FFO Yield %","Cap Rate %","Vacância %","Liquidez diária","ALB","Quality","Value","Technical","Risk","Liquidity","Tend. Dia","Tend. Sem.","Tend. Mês","Média Dia","Média Sem.","Média Mês","RSI 14","S3","S2","S1","PP","R1","R2","R3","Faixa Pivot","Referência Pivot"] if c in view.columns]
             st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=520)
             st.caption("Tendência = preço atual acima/abaixo da média simples do período escolhido. Sem histórico suficiente, o filtro técnico ativo reprova o ativo em vez de assumir zero.")
+            if asset_type=="stock" and PERMISSIONS.get("is_owner"):
+                advanced_tickers=_remember_market_backtest_selection(
+                    [row.get("ticker") for row in rows],f"Screener avançado • {universe_label}",
+                )
+                if advanced_tickers:
+                    st.button(
+                        f"🧪 Gerar backtests oficiais destes {min(len(advanced_tickers),100)} ativo(s)",
+                        key="advanced_to_official_backtests",type="primary",use_container_width=True,
+                        on_click=_send_market_selection_to_official_batch,
+                        args=(advanced_tickers,f"Screener avançado • {universe_label}"),
+                    )
+                    if len(advanced_tickers)>100:st.caption("O lote administrativo aceita no máximo 100 ativos; serão levados os 100 primeiros desta tabela.")
 
 
 def _optional_filter_number(label,key,initial=None,default=0.0,min_value=-1000000000.0,max_value=1000000000.0,step=0.5):
@@ -951,6 +996,8 @@ def render_market():
 
     st.subheader(f"{scope_label} • {strategy_label}")
     if df.empty:
+        if asset_type=="stock" and PERMISSIONS.get("is_owner"):
+            _remember_market_backtest_selection([],f"{scope_label} • {strategy_label}")
         if not catalog:
             st.warning("Não há ativos deste mercado cadastrados no banco. Abra ‘Dados usados pelos filtros’ acima e carregue o mercado.")
         elif not allowed_tickers:
@@ -962,6 +1009,21 @@ def render_market():
         view=df.rename(columns=rename)
         preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","Liquidez","Sinal técnico","RSI 14","SMA 20","SMA 50","SMA 200","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
         st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=460)
+
+        if asset_type=="stock" and PERMISSIONS.get("is_owner"):
+            market_tickers=_remember_market_backtest_selection(
+                [str(value).upper() for value in df["ticker"].dropna().tolist()],
+                f"{scope_label} • {strategy_label}",
+            )
+            if market_tickers:
+                transfer_label=f"🧪 Gerar backtests oficiais destes {min(len(market_tickers),100)} ativo(s)"
+                st.button(
+                    transfer_label,key="market_to_official_backtests",type="primary",use_container_width=True,
+                    on_click=_send_market_selection_to_official_batch,
+                    args=(market_tickers,f"{scope_label} • {strategy_label}"),
+                )
+                st.caption("A seleção enviada será exatamente a que aparece na tabela acima, na mesma ordem.")
+                if len(market_tickers)>100:st.caption("O lote administrativo aceita no máximo 100 ativos; serão levados os 100 primeiros desta tabela.")
 
     if can("can_view_backtests") and not df.empty and "ticker" in df:
         st.markdown("#### Três backtests oficiais mais efetivos por ativo")
@@ -2043,24 +2105,54 @@ def _render_official_backtest_admin():
             available=sorted(catalog)
             defaults=[ticker for ticker in default_tickers if ticker in catalog][:50]
             selection_key="official_batch_selected_tickers"
+            market_selection=st.session_state.get("market_backtest_selection_stock") or {}
+            market_tickers=[ticker for ticker in (market_selection.get("tickers") or []) if ticker in catalog][:100]
+            market_signature=str(market_selection.get("signature") or "")
+            if market_signature and st.session_state.get("official_batch_market_signature_applied")!=market_signature:
+                st.session_state[selection_key]=market_tickers
+                st.session_state["official_batch_selection_source"]={
+                    "label":market_selection.get("label") or "Mercado e análise","count":len(market_tickers),
+                }
+                st.session_state["official_batch_market_signature_applied"]=market_signature
             if selection_key not in st.session_state:
-                st.session_state[selection_key]=defaults
+                st.session_state[selection_key]=market_tickers or defaults
+                st.session_state["official_batch_selection_source"]={
+                    "label":market_selection.get("label") if market_tickers else "Filtro Padrão",
+                    "count":len(market_tickers or defaults),
+                }
             current_selection=[ticker for ticker in st.session_state.get(selection_key,defaults) if ticker in catalog][:100]
-            st.caption(f"Filtro Padrão encontrado: {len(defaults)} ativo(s). O limite por pedido é de 100.")
+            st.session_state[selection_key]=current_selection
+            source=st.session_state.get("official_batch_selection_source") or {}
+            source_label=source.get("label") or "Seleção manual"
+            st.success(f"Seleção carregada: **{source_label}** • **{len(current_selection)} ativo(s)**")
+            b1,b2=st.columns(2)
+            if market_tickers:
+                b1.button(
+                    f"Usar os {len(market_tickers)} da tela Mercado e análise",
+                    key="official_use_market_selection",use_container_width=True,
+                    on_click=_set_official_batch_selection,
+                    args=(market_tickers,market_selection.get("label") or "Mercado e análise"),
+                )
+            else:
+                b1.button("Abra Mercado e análise para trazer a lista filtrada",disabled=True,use_container_width=True)
+            b2.button(
+                f"Restaurar filtro Padrão ({len(defaults)})",key="official_use_default_selection",
+                use_container_width=True,on_click=_set_official_batch_selection,args=(defaults,"Filtro Padrão"),
+            )
+            st.caption("O limite por pedido é de 100 ativos. Você ainda pode retirar ou acrescentar códigos manualmente abaixo.")
             with st.form("official_batch_dispatch_form"):
                 selected=st.multiselect(
                     "Ativos que serão processados",
                     available,
-                    default=current_selection,
+                    key=selection_key,
                     max_selections=100,
                     format_func=lambda ticker:f"{ticker} — {catalog[ticker].get('name') or 'Sem nome'}",
-                    help="Começa com as ações do filtro Padrão. Você pode retirar ou acrescentar códigos antes de enviar.",
+                    help="Recebe a tabela filtrada de Mercado e análise. Você pode retirar ou acrescentar códigos antes de enviar.",
                 )
                 submitted=st.form_submit_button(
                     "▶ Gerar backtests dos ativos selecionados",
-                    type="primary",use_container_width=True,disabled=not bool(github_token),
+                    type="primary",use_container_width=True,disabled=not bool(github_token) or not bool(selected),
                 )
-            st.session_state[selection_key]=selected
             if submitted:
                 job,job_error=api_post("/backtests/batch/jobs",{
                     "tickers":selected,"max_combinations":200,
@@ -2265,4 +2357,4 @@ elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.10.3. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.10.4. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
