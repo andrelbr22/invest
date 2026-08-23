@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.7.3
+# Formação do Investidor • Investment Engine V1.7.4
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -95,3 +95,7 @@ A V1.7.2 elimina o seletor de passo da Carteira. Abaixo de cada campo de quantid
 ## V1.7.3
 
 A V1.7.3 transforma os controles de quantidade em fragmentos independentes do Streamlit. Cada clique atualiza somente a caixa e seus botões; catálogo, carteira, cotações, gráficos e demais cálculos deixam de ser recarregados. O aplicativo completo e o banco são atualizados apenas ao salvar a compra ou a edição.
+
+## V1.7.4
+
+A V1.7.4 torna o cadastro de compras compatível com a rota estável de posições já disponível nas instalações anteriores. A interface soma a quantidade, calcula o preço médio ponderado, preserva alvo, classificação e observações existentes e envia o resultado consolidado ao salvar, eliminando o erro genérico `Not Found`.

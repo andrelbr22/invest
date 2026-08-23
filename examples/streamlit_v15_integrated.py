@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import requests
 import streamlit as st
-from investment_engine.ui_helpers import format_brl_price_input, parse_brl_price_input
+from investment_engine.ui_helpers import format_brl_price_input, merge_purchase_position, parse_brl_price_input
 
 st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
@@ -716,11 +716,21 @@ def render_portfolio():
                 except ValueError as exc:
                     st.error(str(exc))
                 else:
-                    payload={"asset_type":type_map[ptype],"quantity":int(purchase_qty),"unit_price":purchase_price,"stage":"position","notes":purchase_notes or None}
-                    result,e=api_post(f"/portfolios/{pid}/positions/{purchase_ticker}/purchase",payload)
+                    new_quantity,new_average=merge_purchase_position(
+                        purchase_existing.get("quantity"),purchase_existing.get("average_price"),
+                        purchase_qty,purchase_price,
+                    )
+                    payload={
+                        "asset_type":type_map[ptype],"stage":"position","quantity":new_quantity,
+                        "average_price":round(new_average,6),
+                        "target_weight_pct":float(purchase_existing.get("target_weight_pct") or 0),
+                        "classification_override":purchase_existing.get("classification_override"),
+                        "notes":purchase_notes or purchase_existing.get("notes"),
+                    }
+                    result,e=api_put(f"/portfolios/{pid}/positions/{purchase_ticker}",payload)
                     if e:st.error(e)
                     else:
-                        st.success(f"Compra adicionada. Nova posição: {result.get('quantity',0):.0f} ação(ões), preço médio {br_money(result.get('average_price'))}.")
+                        st.success(f"Compra adicionada. Nova posição: {new_quantity:.0f} ação(ões), preço médio {br_money(new_average)}.")
                         st.session_state[reset_key]=True; st.rerun()
 
         with edit_tab:
@@ -1482,4 +1492,4 @@ elif module=="Carteira":render_portfolio()
 elif module=="Backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.7.3. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.7.4. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

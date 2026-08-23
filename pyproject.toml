@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
-version = "0.8.3"
-description = "Formação do Investidor V1.7.3 with fragment-based instant quantity controls and isolated portfolios."
+version = "0.8.4"
+description = "Formação do Investidor V1.7.4 with compatible portfolio purchase saving and fast quantity controls."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
