@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.7.0
+# Formação do Investidor • Investment Engine V1.7.1
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -83,3 +83,7 @@ A V1.6.2 libera a autenticação para contas Google externas com perfil inicial 
 ## V1.7.0
 
 A V1.7.0 separa cada Carteira por conta Google, distingue novas compras de correções da posição, recalcula o preço médio ponderado e adiciona filtros personalizados persistentes. O proprietário define individualmente um limite de zero a três filtros por usuário. A atualização do banco é automática na primeira inicialização. Consulte `V1_7_0.md`.
+
+## V1.7.1
+
+A V1.7.1 corrige os botões de quantidade para usar callbacks compatíveis com o estado de sessão do Streamlit Cloud. Os botões de compra, redução, aumento, zeragem e restauração do lote padrão deixam de alterar um campo depois de ele ter sido desenhado.
