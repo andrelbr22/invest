@@ -19,7 +19,7 @@ os.environ.setdefault("INVESTMENT_API_URL", "http://127.0.0.1:8765")
 os.environ.setdefault("SHOW_API_SELECTOR", "false")
 os.environ.setdefault("APP_AUTH_REQUIRED", "true")
 os.environ.setdefault("APP_ENVIRONMENT", "streamlit-cloud")
-os.environ["EXPECTED_EMBEDDED_API_VERSION"] = "0.10.0"
+os.environ["EXPECTED_EMBEDDED_API_VERSION"] = "0.11.0"
 
 from investment_engine.cloud_runtime import ensure_cloud_runtime
 

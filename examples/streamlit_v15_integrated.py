@@ -108,15 +108,6 @@ def br_num(v,digits=1,suffix=""):
     if v is None or (isinstance(v,float) and math.isnan(v)):return "N/D"
     return f"{float(v):.{digits}f}".replace(".",",")+suffix
 
-def br_datetime(value):
-    if not value:return "N/D"
-    try:
-        timestamp=pd.Timestamp(value)
-        if timestamp.tzinfo is None:timestamp=timestamp.tz_localize("UTC")
-        return timestamp.tz_convert("America/Sao_Paulo").strftime("%d/%m/%Y %H:%M")
-    except Exception:
-        return str(value)
-
 def score_label(v):
     if v is None:return "N/D"
     if v>=85:return "Excelente"
@@ -718,41 +709,6 @@ def render_market():
         preferred=[c for c in ["Ticker","Nome","Porte","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
         st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=460)
 
-    if can("can_view_backtests") and not df.empty and "ticker" in df:
-        st.markdown("#### Três backtests oficiais mais efetivos por ativo")
-        st.caption("O ranking combina retorno, risco, drawdown, profit factor, quantidade de operações e os 30% finais do período. Resultados com pouca amostra recebem penalidade.")
-        displayed_tickers=[str(value).upper() for value in df["ticker"].dropna().tolist()][:200]
-        leaderboard,leaderboard_error=api_get("/backtests/leaderboard",{
-            "tickers":",".join(displayed_tickers),"per_asset":3,
-        })
-        if leaderboard_error:
-            st.warning(f"Não foi possível consultar os backtests oficiais: {leaderboard_error}")
-        else:
-            leaders=(leaderboard or {}).get("items") or {}
-            signal_labels={"buy":"🟢 Comprar","sell":"🔴 Vender","neutral":"⚪ Neutro"}
-            leaderboard_rows=[]
-            for current_ticker in displayed_tickers:
-                row={"Ativo":current_ticker}
-                for position,item in enumerate(leaders.get(current_ticker) or [],start=1):
-                    row[f"{position}º backtest"]=f"{item.get('strategy_name')} • {br_num(item.get('ranking_score'),1)}"
-                    row[f"Sinal {position}"]=signal_labels.get(item.get("current_signal"),"⚪ Neutro")
-                row["Atualizado em"]=str(next(iter(leaders.get(current_ticker) or []),{}).get("signal_as_of") or "")[:10] or "N/D"
-                leaderboard_rows.append(row)
-            st.dataframe(pd.DataFrame(leaderboard_rows),hide_index=True,use_container_width=True,height=420)
-            if not any(leaders.values()):
-                st.info("O catálogo oficial ainda não foi processado. O primeiro lote será criado pela atualização semanal ou por uma execução manual do proprietário.")
-            refreshable=[ticker for ticker in displayed_tickers if leaders.get(ticker)]
-            if can("can_refresh_backtest_signals") and refreshable:
-                u1,u2=st.columns([3,1])
-                refresh_ticker=u1.selectbox("Ativo para atualizar os três sinais",refreshable,key=f"market_signal_refresh_{asset_type}")
-                if u2.button("Atualizar sinais",key=f"market_signal_refresh_button_{asset_type}",use_container_width=True):
-                    with st.spinner(f"Atualizando os sinais de {refresh_ticker}..."):
-                        refreshed,refresh_error=api_post(f"/backtests/signals/{refresh_ticker}/refresh",{},timeout=900)
-                    if refresh_error:st.error(f"Atualização não concluída: {refresh_error}")
-                    else:
-                        st.success("Sinais atualizados. Configurações idênticas já calculadas hoje foram reutilizadas.")
-                        st.rerun()
-
     if int(PERMISSIONS.get("custom_filter_limit") or 0)>0:
         render_custom_filter_manager(asset_type,custom_payload)
 
@@ -1228,21 +1184,11 @@ def _render_filter_audit(result):
 
 def _render_backtest_result(result):
     metrics=result.get("metrics") or {}
-    if result.get("cached"):
-        st.info("Resultado recuperado do histórico de hoje. O motor não repetiu um backtest idêntico.")
     alias=result.get("ticker_alias")
     if alias:
         st.info(f"Código atualizado automaticamente: {alias.get('requested')} → {alias.get('ticker')}. {alias.get('reason')}.")
     st.subheader(f"{result.get('ticker')} • {result.get('strategy',{}).get('name','Estratégia')}")
     st.caption(f"Período efetivo: {str(result.get('actual_start',''))[:10]} a {str(result.get('actual_end',''))[:10]} • sinais sem antecipação (posição no pregão seguinte).")
-    signal=result.get("current_signal") or {}
-    signal_labels={"buy":"🟢 Comprar","sell":"🔴 Vender","neutral":"⚪ Neutro"}
-    s1,s2,s3=st.columns(3)
-    s1.metric("Sinal no último pregão",signal_labels.get(signal.get("status"),"⚪ Neutro"))
-    s2.metric("Nota de robustez",br_num(result.get("ranking_score"),1," / 100"))
-    sample_labels={"adequate":"Amostra adequada","limited":"Amostra limitada","insufficient":"Amostra insuficiente"}
-    s3.metric("Confiabilidade",sample_labels.get(result.get("sample_status"),"Não classificada"))
-    if signal.get("as_of"):st.caption(f"Sinal calculado com dados concluídos até {str(signal.get('as_of'))[:10]}. {signal.get('reason','')}")
     r1=st.columns(6)
     r1[0].metric("Retorno",_pct(metrics.get("total_return_pct")))
     r1[1].metric("CAGR",_pct(metrics.get("cagr_pct")))
@@ -1527,27 +1473,6 @@ def render_backtests():
 
     filters=_backtest_filters_ui(type_map[type_label])
 
-    st.markdown("#### Cinco melhores backtests oficiais")
-    signal_labels={"buy":"🟢 Comprar","sell":"🔴 Vender","neutral":"⚪ Neutro"}
-    top_rows,top_error=api_get("/backtests/top",{"limit":5})
-    if top_error:
-        st.warning(f"O ranking oficial ainda não pôde ser carregado: {top_error}")
-    elif not top_rows:
-        st.info("O ranking aparecerá após a primeira atualização semanal ou manual do catálogo oficial.")
-    else:
-        top_table=[]
-        for position,item in enumerate(top_rows,start=1):
-            metrics=item.get("metrics") or {}
-            top_table.append({
-                "Posição":position,"Ativo":item.get("ticker"),"Setor":item.get("sector"),
-                "Estratégia":item.get("strategy_name"),"Nota":item.get("ranking_score"),
-                "Sinal":signal_labels.get(item.get("current_signal"),"⚪ Neutro"),
-                "CAGR %":metrics.get("cagr_pct"),"Sharpe":metrics.get("sharpe_ratio"),
-                "Max DD %":metrics.get("max_drawdown_pct"),"Trades":metrics.get("closed_trades",metrics.get("trades")),
-                "Amostra":item.get("sample_status"),"Atualização":item.get("signal_as_of"),
-            })
-        st.dataframe(pd.DataFrame(top_table),hide_index=True,use_container_width=True)
-
     run_tab,basket_tab,compare_tab,history_tab=st.tabs(["Executar estratégia","Testar cesta","Comparar estratégias","Histórico salvo"])
     with run_tab:
         sid=st.selectbox("Estratégia",list(by_id),format_func=lambda x:by_id[x]["name"],key="bt_strategy")
@@ -1675,80 +1600,29 @@ def render_backtests():
             st.caption("A comparação não escolhe automaticamente a ‘melhor’ estratégia: retorno, drawdown, estabilidade, número de operações e robustez precisam ser avaliados em conjunto.")
 
     with history_tab:
-        st.markdown("#### 100 backtests mais recentes")
-        st.caption("A conta vê seu histórico particular e o catálogo oficial. Somente o proprietário pode consultar históricos particulares de outras contas.")
-        h1,h2,h3=st.columns(3)
-        history_ticker=h1.text_input("Filtrar por ação",value="",placeholder="Ex.: BBAS3",key="bt_history_ticker").strip().upper()
-        history_sector=h2.text_input("Filtrar por setor",value="",placeholder="Ex.: Energia",key="bt_history_sector").strip()
-        scope_labels={"":"Pessoal + oficial","personal":"Somente pessoais","official":"Somente oficiais"}
-        history_scope=h3.selectbox("Origem",list(scope_labels),format_func=lambda value:scope_labels[value],key="bt_history_scope")
-        query={"limit":100}
-        if history_ticker:query["ticker"]=history_ticker
-        if history_sector:query["sector"]=history_sector
-        if history_scope:query["scope"]=history_scope
-        filtered_top_query={"limit":5}
-        if history_ticker:filtered_top_query["ticker"]=history_ticker
-        if history_sector:filtered_top_query["sector"]=history_sector
-        filtered_top,filtered_top_error=api_get("/backtests/top",filtered_top_query)
-        if not filtered_top_error and filtered_top:
-            st.markdown("##### Cinco melhores oficiais dentro destes filtros")
-            filtered_rows=[]
-            for position,item in enumerate(filtered_top,start=1):
-                metrics=item.get("metrics") or {}
-                filtered_rows.append({
-                    "Posição":position,"Ativo":item.get("ticker"),"Setor":item.get("sector"),
-                    "Estratégia":item.get("strategy_name"),"Nota":item.get("ranking_score"),
-                    "Sinal":signal_labels.get(item.get("current_signal"),"⚪ Neutro"),
-                    "CAGR %":metrics.get("cagr_pct"),"Sharpe":metrics.get("sharpe_ratio"),
-                    "Max DD %":metrics.get("max_drawdown_pct"),"Trades":metrics.get("closed_trades",metrics.get("trades")),
-                })
-            st.dataframe(pd.DataFrame(filtered_rows),hide_index=True,use_container_width=True)
-        runs,e=api_get("/backtests/runs",query)
+        runs,e=api_get("/backtests/runs",{"ticker":ticker,"limit":50})
         if e:st.error(e)
-        elif not runs:st.info("Nenhum backtest salvo atende aos filtros escolhidos.")
+        elif not runs:st.info("Nenhum backtest salvo para este ticker.")
         else:
             rows=[]
             for r in runs:
                 m=r.get("metrics") or {}
-                signal_labels={"buy":"Comprar","sell":"Vender","neutral":"Neutro"}
-                rows.append({
-                    "ID":r["id"],"Data e horário":br_datetime(r.get("created_at")),"Origem":"Oficial" if r.get("scope")=="official" else "Pessoal",
-                    "Ativo":r.get("ticker"),"Setor":r.get("sector"),"Estratégia":r.get("strategy_name"),
-                    "Sinal":signal_labels.get(r.get("current_signal"),"Neutro"),"Nota":r.get("ranking_score"),
-                    "Amostra":r.get("sample_status"),"Início":r.get("actual_start"),"Fim":r.get("actual_end"),
-                    "Retorno %":m.get("total_return_pct"),"CAGR %":m.get("cagr_pct"),"Sharpe":m.get("sharpe_ratio"),
-                    "Max DD %":m.get("max_drawdown_pct"),"Trades encerrados":m.get("closed_trades",m.get("trades")),
-                    "Posições abertas":m.get("open_trades",0),"Versão":r.get("engine_version"),
-                })
+                rows.append({"ID":r["id"],"Data":r.get("created_at"),"Estratégia":r.get("strategy_name"),"Início":r.get("actual_start"),"Fim":r.get("actual_end"),"Retorno %":m.get("total_return_pct"),"CAGR %":m.get("cagr_pct"),"Sharpe":m.get("sharpe_ratio"),"Max DD %":m.get("max_drawdown_pct"),"Trades encerrados":m.get("closed_trades",m.get("trades")),"Posições abertas":m.get("open_trades",0)})
             hdf=pd.DataFrame(rows); st.dataframe(hdf,hide_index=True,use_container_width=True,height=360)
-            rid=st.selectbox("Abrir execução salva",[r["id"] for r in runs],format_func=lambda x:next((f"{r['ticker']} • {r['strategy_name']} • {br_datetime(r.get('created_at'))}" for r in runs if r["id"]==x),x))
+            rid=st.selectbox("Abrir execução salva",[r["id"] for r in runs],format_func=lambda x:next((f"{r['strategy_name']} • {str(r.get('created_at',''))[:19]}" for r in runs if r["id"]==x),x))
             if st.button("Abrir resultado salvo"):
                 detail,e=api_get(f"/backtests/runs/{rid}")
                 if e:st.error(e)
                 else:
-                    if not detail.get("strategy"):
-                        detail["strategy"]={"name":detail.get("strategy_name"),"rules":"Execução histórica salva; consulte os parâmetros abaixo."}
-                    detail.setdefault("assumptions",{"fee_pct":detail.get("fee_pct"),"slippage_pct":detail.get("slippage_pct"),"risk_free_rate_pct":detail.get("risk_free_rate_pct")})
+                    # Reuse the renderer shape.
+                    detail["strategy"]={"name":detail.get("strategy_name"),"rules":"Execução histórica salva; consulte os parâmetros abaixo."}
+                    detail["assumptions"]={"fee_pct":detail.get("fee_pct"),"slippage_pct":detail.get("slippage_pct"),"risk_free_rate_pct":detail.get("risk_free_rate_pct")}
                     _render_backtest_result(detail)
 
 
 def render_access_admin():
     st.title("🔐 Usuários e permissões")
     st.caption("Somente a conta proprietária pode alterar estas liberações. Novas contas entram como visitantes: Mercado básico em modo somente leitura.")
-    with st.expander("🗓️ Catálogo oficial de backtests",expanded=False):
-        st.write("A atualização automática ocorre aos sábados, às 00h01 de Brasília, sobre as 50 ações do filtro Padrão.")
-        st.caption("Para uma execução extraordinária, abra GitHub → Actions → Backtests oficiais semanais → Run workflow. Deixe os tickers vazios para o grupo padrão ou informe até 100 códigos separados por vírgula.")
-        jobs,jobs_error=api_get("/backtests/batch/jobs",{"limit":20})
-        if jobs_error:st.warning(f"Não foi possível consultar as execuções em lote: {jobs_error}")
-        elif not jobs:st.info("Nenhuma execução oficial foi registrada ainda.")
-        else:
-            job_rows=[{
-                "Criado em":br_datetime(item.get("created_at")),"Origem":item.get("source"),"Situação":item.get("status"),
-                "Ativos":len(item.get("tickers") or []),"Combinações/ativo":item.get("max_combinations"),
-                "Concluídos":item.get("completed_runs"),"Falhas":item.get("failed_runs"),
-                "Início":br_datetime(item.get("started_at")),"Fim":br_datetime(item.get("finished_at")),
-            } for item in jobs]
-            st.dataframe(pd.DataFrame(job_rows),hide_index=True,use_container_width=True)
     users,err=api_get("/access/users")
     if err:
         st.error(f"Não foi possível carregar os usuários: {err}"); return
@@ -1764,7 +1638,6 @@ def render_access_admin():
             "Filtros pessoais":user.get("custom_filter_limit",0),
             "Ver carteira":user.get("can_view_portfolio"),"Alterar carteira":user.get("can_write_portfolio"),
             "Ver backtests":user.get("can_view_backtests"),"Executar backtests":user.get("can_run_backtests"),
-            "Atualizar sinais":user.get("can_refresh_backtest_signals"),
             "Atualizar banco":user.get("can_sync_market"),"Último acesso":user.get("last_seen_at"),
         })
     st.dataframe(pd.DataFrame(table),hide_index=True,use_container_width=True)
@@ -1791,7 +1664,6 @@ def render_access_admin():
         write_portfolio=c1.checkbox("Alterar e salvar Carteira",value=bool(current.get("can_write_portfolio")))
         view_backtests=c2.checkbox("Ver Backtests e históricos",value=bool(current.get("can_view_backtests")))
         run_backtests=c2.checkbox("Executar novos Backtests",value=bool(current.get("can_run_backtests")))
-        refresh_signals=c2.checkbox("Atualizar os sinais dos backtests oficiais",value=bool(current.get("can_refresh_backtest_signals")))
         sync_market=c2.checkbox("Atualizar dados do Mercado no banco",value=bool(current.get("can_sync_market")))
         custom_filter_limit=c2.selectbox(
             "Quantidade de filtros personalizados",[0,1,2,3],
@@ -1804,8 +1676,7 @@ def render_access_admin():
         payload={
             "status":status,"role":role,"can_view_market":view_market,"can_use_advanced_filters":advanced,
             "can_view_portfolio":view_portfolio,"can_write_portfolio":write_portfolio,
-            "can_view_backtests":view_backtests,"can_run_backtests":run_backtests,
-            "can_refresh_backtest_signals":refresh_signals,"can_sync_market":sync_market,
+            "can_view_backtests":view_backtests,"can_run_backtests":run_backtests,"can_sync_market":sync_market,
             "custom_filter_limit":custom_filter_limit,
         }
         _,save_err=api_put(f"/access/users/{selected}",payload)
@@ -1853,4 +1724,4 @@ elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.9.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.8.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

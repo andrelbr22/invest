@@ -107,7 +107,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Publica Investment Engine V1.9.0 no Streamlit Cloud"
+    & $gitPath commit -m "Publica Investment Engine V1.10.0 no Streamlit Cloud"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }

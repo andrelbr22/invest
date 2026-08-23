@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
-version = "0.10.0"
-description = "Formação do Investidor V1.9.0 with private backtest history and an official weekly strategy catalog."
+version = "0.9.1"
+description = "Formação do Investidor V1.8.1 with company-size and live B3 Ibovespa universes."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

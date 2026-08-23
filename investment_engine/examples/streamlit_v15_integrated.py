@@ -5,7 +5,13 @@ import pandas as pd
 import requests
 import streamlit as st
 from investment_engine.ui_helpers import format_brl_price_input, parse_brl_price_input
-from investment_engine.core.screening.universe import BESST_LABELS, COMPANY_SIZE_LABELS, filter_rows_by_tickers, universe_tickers
+from investment_engine.core.screening.universe import (
+    BESST_LABELS,
+    COMPANY_SIZE_LABELS,
+    apply_universe_subfilters,
+    filter_rows_by_tickers,
+    universe_tickers,
+)
 
 st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
@@ -28,6 +34,7 @@ st.markdown("""
 CURRENT_USER_EMAIL=""
 CURRENT_USER_NAME=""
 PERMISSIONS={}
+MARKET_ASSET_TYPES={"Ações":"stock","FIIs":"fii","Demais Ativos B3":"other_b3"}
 
 def _env_flag(name,default=False):
     return os.getenv(name,"true" if default else "false").strip().lower() in {"1","true","yes","on"}
@@ -90,15 +97,42 @@ def _reset_market_refinements(asset_type,reason="O universo de ativos foi altera
     st.session_state[f"market_scope_notice_{asset_type}"]=reason
 
 
+def _clear_market_subfilters(asset_type):
+    """Restore every dependent subfilter without changing the base universe."""
+    st.session_state[f"market_subfilter_size_enabled_{asset_type}"]=False
+    st.session_state[f"market_subfilter_size_values_{asset_type}"]=[]
+    st.session_state[f"market_subfilter_ibov_enabled_{asset_type}"]=False
+    st.session_state[f"market_subfilter_ibov_value_{asset_type}"]="inside"
+    st.session_state[f"market_subfilter_class_enabled_{asset_type}"]=False
+
+
+def _change_market_base_universe(asset_type):
+    _clear_market_subfilters(asset_type)
+    _reset_market_refinements(
+        asset_type,
+        "O universo principal foi alterado; os subfiltros e refinamentos anteriores foram removidos.",
+    )
+
+
 def _restore_full_market(asset_type):
     st.session_state[f"market_universe_mode_{asset_type}"]="all"
+    _clear_market_subfilters(asset_type)
     _reset_market_refinements(asset_type,"O universo completo foi restaurado e os refinamentos anteriores foram removidos.")
 
 
 def _change_market_asset_class():
-    asset_type="stock" if st.session_state.get("market_asset_class","Ações")=="Ações" else "fii"
+    asset_type=MARKET_ASSET_TYPES.get(st.session_state.get("market_asset_class","Ações"),"stock")
     st.session_state[f"market_universe_mode_{asset_type}"]="all"
-    _reset_market_refinements(asset_type,"O tipo de ativo foi alterado; o universo completo e sem refinamentos foi restaurado.")
+    _clear_market_subfilters(asset_type)
+    st.session_state[f"market_strategy_ref_{asset_type}"]="preset:default"
+    st.session_state[f"market_table_ticker_{asset_type}"]=""
+    st.session_state["advanced_screen_result"]=None
+    st.session_state["analysis_payload_v14"]=None
+    st.session_state[f"market_scope_notice_{asset_type}"]="O tipo de ativo foi alterado; a lista Padrão deste mercado foi carregada."
+
+
+def _navigate_to(module):
+    st.session_state["main_navigation"]=module
 
 def br_money(v):
     if v is None or (isinstance(v,float) and math.isnan(v)):return "N/D"
@@ -146,7 +180,7 @@ def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Uni
     st.markdown("---")
     st.header("🧰 Screener configurável — Fundamentalista + Técnico")
     st.caption(f"Universo atual: {universe_label}. Ative somente as regras que quiser. Filtros ativos são combinados por E (AND): o ativo precisa satisfazer todos eles. N/D nunca passa por um filtro ativo.")
-    market_name="Ações" if asset_type=="stock" else "FIIs"
+    market_name={"stock":"Ações","fii":"FIIs","other_b3":"Demais Ativos B3"}.get(asset_type,"Ativos")
     if "advanced_screen_result" not in st.session_state:st.session_state.advanced_screen_result=None
 
     with st.form(f"advanced_screen_form_{asset_type}"):
@@ -184,7 +218,7 @@ def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Uni
                 "net_debt_to_ebitda":_active_range(use_ndebt,None,ndebt_max), "current_ratio":_active_range(use_cr,cr_min,None),
                 "revenue_cagr_5y_pct":_active_range(use_rev,rev_min,None), "earnings_cagr_5y_pct":_active_range(use_earn,earn_min,None),
             }
-        else:
+        elif asset_type=="fii":
             c1,c2,c3,c4=st.columns(4)
             use_pbv=c1.checkbox("Usar P/VP"); pbv_min=c1.number_input("P/VP mínimo",value=0.5,step=0.05); pbv_max=c1.number_input("P/VP máximo",value=1.1,step=0.05)
             use_dy=c2.checkbox("Usar Dividend Yield"); dy_min=c2.number_input("DY mínimo (%)",value=7.0,step=0.5)
@@ -203,14 +237,23 @@ def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Uni
                 "ltv_pct":_active_range(use_ltv,None,ltv_max), "wale_years":_active_range(use_wale,wale_min,None),
                 "daily_liquidity":_active_range(use_liq,liq_min,None),
             }
+        else:
+            st.info("Para ETFs, BDRs e futuros, os filtros empresariais e imobiliários incompatíveis ficam ocultos. Esta tela usa somente liquidez e indicadores técnicos comparáveis.")
+            use_liq=st.checkbox("Usar liquidez diária")
+            liq_min=st.number_input("Liquidez diária mínima (R$)",value=500000.0,step=100000.0,format="%.0f")
+            fundamental={"daily_liquidity":_active_range(use_liq,liq_min,None)}
         fundamental={k:v for k,v in fundamental.items() if v is not None}
 
         st.markdown("#### 2. Valuation e scores")
-        v1,v2,v3=st.columns(3)
-        below_graham=v1.checkbox("Preço abaixo do Graham",disabled=asset_type!="stock")
-        below_barsi=v2.checkbox("Preço abaixo do Teto Bazin/Barsi (6%)")
-        score_enabled=v3.checkbox("Filtrar também por scores")
         score_filters={}
+        if asset_type=="other_b3":
+            below_graham=False; below_barsi=False; score_enabled=False
+            st.caption("Oculto nesta categoria: Graham, Bazin/Barsi, ALB, Quality, Value e Growth. Esses modelos dependem de fundamentos de empresa ou FII.")
+        else:
+            v1,v2,v3=st.columns(3)
+            below_graham=v1.checkbox("Preço abaixo do Graham",disabled=asset_type!="stock")
+            below_barsi=v2.checkbox("Preço abaixo do Teto Bazin/Barsi (6%)")
+            score_enabled=v3.checkbox("Filtrar também por scores")
         if score_enabled:
             q1,q2,q3,q4=st.columns(4)
             alb=q1.number_input("ALB mínimo",min_value=0.0,max_value=100.0,value=55.0,step=5.0)
@@ -225,7 +268,8 @@ def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Uni
 
         st.markdown("#### 3. Filtros técnicos combináveis")
         t1,t2,t3,t4=st.columns(4)
-        trend_period=t1.selectbox("Período das médias",[21,20],help="21 é o padrão desta tela. Use 20 se quiser maior compatibilidade com snapshots TradingView já existentes.")
+        trend_choices=[20,21] if asset_type=="other_b3" else [21,20]
+        trend_period=t1.selectbox("Período das médias",trend_choices,help="Para Demais Ativos B3, 20 aproveita o snapshot técnico do catálogo. Com histórico local, 21 também pode ser usado.")
         trend_labels={"any":"Sem filtro","up":"🟢 Alta","down":"🔴 Baixa"}
         daily=t2.selectbox("Tendência diária",list(trend_labels),format_func=lambda x:trend_labels[x])
         weekly=t3.selectbox("Tendência semanal",list(trend_labels),format_func=lambda x:trend_labels[x])
@@ -283,20 +327,23 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
         meta=result.get("meta") or {}; rows=result.get("rows") or []
         st.caption(f"Resultado calculado dentro de: **{universe_label}**.")
         a,b,c,d=st.columns(4)
-        a.metric("Universo",meta.get("universe_count",0)); b.metric("Após fundamentos/scores",meta.get("fundamental_candidates",0)); c.metric("Resultado final",meta.get("returned",0)); d.metric("Sem histórico técnico",meta.get("technical_history_missing",0))
+        initial_filter_label="Após liquidez" if asset_type=="other_b3" else "Após fundamentos/scores"
+        a.metric("Universo",meta.get("universe_count",0)); b.metric(initial_filter_label,meta.get("fundamental_candidates",0)); c.metric("Resultado final",meta.get("returned",0)); d.metric("Sem histórico técnico",meta.get("technical_history_missing",0))
         if meta.get("technical_filter_active") and meta.get("technical_history_missing",0)>0:
-            cmd=f"python scripts/ingest_prices.py --all --type {asset_type} --range 3y"
             st.warning("Alguns ativos não possuem histórico local suficiente para filtros técnicos/pivôs. Para ampliar a cobertura, carregue o histórico do universo.")
-            st.code(cmd)
+            if asset_type=="other_b3":
+                st.caption("Para ETF ou BDR, abra a Análise individual e use ‘Carregar histórico deste ativo’. Futuros exigem uma série contínua própria.")
+            else:
+                st.code(f"python scripts/ingest_prices.py --all --type {asset_type} --range 3y")
         if not rows:
             st.info("Nenhum ativo satisfez simultaneamente todos os filtros ativados.")
         else:
             df=pd.DataFrame(rows)
             rename={
-                "ticker":"Ticker","name":"Nome","company_size_label":"Porte","sector_label":"Setor","segment_label":"Segmento","classification":"Categoria","price":"Preço","pe":"P/L","pbv":"P/VP","dividend_yield_pct":"DY %","roe_pct":"ROE %","roic_pct":"ROIC %","ebit_margin_pct":"Margem EBIT %","net_margin_pct":"Margem Líquida %","ev_ebitda":"EV/EBITDA","gross_debt_to_equity":"Dív. Bruta/PL","net_debt_to_ebitda":"Dív. Líq./EBITDA","current_ratio":"Liq. Corrente","revenue_cagr_5y_pct":"CAGR Receita %","earnings_cagr_5y_pct":"CAGR Lucro %","ffo_yield_pct":"FFO Yield %","cap_rate_pct":"Cap Rate %","vacancy_pct":"Vacância %","ltv_pct":"LTV %","wale_years":"WALE","daily_liquidity":"Liquidez diária","alb_score":"ALB","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","data_quality_score":"Data Quality","trend_daily":"Tend. Dia","trend_weekly":"Tend. Sem.","trend_monthly":"Tend. Mês","sma_daily":"Média Dia","sma_weekly":"Média Sem.","sma_monthly":"Média Mês","rsi14_screen":"RSI 14","pp":"PP","s1":"S1","s2":"S2","s3":"S3","r1":"R1","r2":"R2","r3":"R3","pivot_zone":"Faixa Pivot","pivot_reference":"Referência Pivot",
+                "ticker":"Ticker","name":"Nome","asset_type_label":"Tipo","company_size_label":"Porte","sector_label":"Setor","segment_label":"Segmento","classification":"Categoria","price":"Preço","pe":"P/L","pbv":"P/VP","dividend_yield_pct":"DY %","roe_pct":"ROE %","roic_pct":"ROIC %","ebit_margin_pct":"Margem EBIT %","net_margin_pct":"Margem Líquida %","ev_ebitda":"EV/EBITDA","gross_debt_to_equity":"Dív. Bruta/PL","net_debt_to_ebitda":"Dív. Líq./EBITDA","current_ratio":"Liq. Corrente","revenue_cagr_5y_pct":"CAGR Receita %","earnings_cagr_5y_pct":"CAGR Lucro %","ffo_yield_pct":"FFO Yield %","cap_rate_pct":"Cap Rate %","vacancy_pct":"Vacância %","ltv_pct":"LTV %","wale_years":"WALE","daily_liquidity":"Liquidez diária","alb_score":"ALB","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","data_quality_score":"Data Quality","trend_daily":"Tend. Dia","trend_weekly":"Tend. Sem.","trend_monthly":"Tend. Mês","sma_daily":"Média Dia","sma_weekly":"Média Sem.","sma_monthly":"Média Mês","rsi14_screen":"RSI 14","pp":"PP","s1":"S1","s2":"S2","s3":"S3","r1":"R1","r2":"R2","r3":"R3","pivot_zone":"Faixa Pivot","pivot_reference":"Referência Pivot",
             }
             view=df.rename(columns=rename)
-            preferred=[c for c in ["Ticker","Nome","Porte","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","ROIC %","FFO Yield %","Cap Rate %","Vacância %","ALB","Quality","Value","Technical","Risk","Liquidity","Tend. Dia","Tend. Sem.","Tend. Mês","Média Dia","Média Sem.","Média Mês","RSI 14","S3","S2","S1","PP","R1","R2","R3","Faixa Pivot","Referência Pivot"] if c in view.columns]
+            preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","ROIC %","FFO Yield %","Cap Rate %","Vacância %","Liquidez diária","ALB","Quality","Value","Technical","Risk","Liquidity","Tend. Dia","Tend. Sem.","Tend. Mês","Média Dia","Média Sem.","Média Mês","RSI 14","S3","S2","S1","PP","R1","R2","R3","Faixa Pivot","Referência Pivot"] if c in view.columns]
             st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=520)
             st.caption("Tendência = preço atual acima/abaixo da média simples do período escolhido. Sem histórico suficiente, o filtro técnico ativo reprova o ativo em vez de assumir zero.")
 
@@ -430,16 +477,25 @@ def render_market():
     st.title("📊 Mercado e Análise Individual")
     st.caption("Escolha primeiro onde procurar e depois aplique a análise. Assim, cada filtro trabalha somente com os ativos do universo selecionado.")
     market=st.radio(
-        "Tipo de ativo",["Ações","FIIs"],horizontal=True,key="market_asset_class",
+        "Tipo de ativo",list(MARKET_ASSET_TYPES),horizontal=True,key="market_asset_class",
         on_change=_change_market_asset_class,
     )
-    asset_type="stock" if market=="Ações" else "fii"
-    all_market_label="Todas as ações" if asset_type=="stock" else "Todos os FIIs"
-    catalog,catalog_err=api_get("/assets",{"asset_type":asset_type,"limit":1200,"offset":0}); catalog=catalog or []
+    asset_type=MARKET_ASSET_TYPES[market]
+    all_market_label={"stock":"Todas as ações","fii":"Todos os FIIs","other_b3":"Todos os Demais Ativos B3"}[asset_type]
+    if asset_type=="other_b3":
+        catalog=[]; catalog_errors=[]
+        for subtype in ("etf","bdr","future"):
+            rows,subtype_error=api_get("/assets",{"asset_type":subtype,"limit":1200,"offset":0})
+            catalog.extend(rows or [])
+            if subtype_error:catalog_errors.append(f"{subtype}: {subtype_error}")
+        catalog_err=" | ".join(catalog_errors) or None
+        catalog.sort(key=lambda item:str(item.get("ticker") or ""))
+    else:
+        catalog,catalog_err=api_get("/assets",{"asset_type":asset_type,"limit":1200,"offset":0}); catalog=catalog or []
     catalog_map={str(item.get("ticker") or "").upper():item for item in catalog}
 
     custom_payload={"items":[],"limit":int(PERMISSIONS.get("custom_filter_limit") or 0),"used":0}
-    if custom_payload["limit"]>0:
+    if custom_payload["limit"]>0 and asset_type in {"stock","fii"}:
         loaded,custom_err=api_get("/screen/custom-filters",{"asset_type":asset_type})
         if not custom_err and loaded:custom_payload=loaded
     custom_items=custom_payload.get("items") or []
@@ -454,7 +510,10 @@ def render_market():
         elif not catalog:
             st.warning("O banco online ainda não possui o catálogo deste mercado. Sem esses dados, nenhum filtro pode retornar ações.")
         else:
-            st.caption("Use a atualização quando o banco for novo ou quando quiser renovar fundamentos, nomes, setores e indicadores técnicos.")
+            if asset_type=="other_b3":
+                st.caption("A atualização renova ETFs, BDRs e os futuros/derivativos disponibilizados pela fonte técnica. Filtros empresariais não são aplicados a esta categoria.")
+            else:
+                st.caption("Use a atualização quando o banco for novo ou quando quiser renovar fundamentos, nomes, setores e indicadores técnicos.")
         if can("can_sync_market") and st.button(f"🔄 Carregar / atualizar dados de {market}",type="primary" if not catalog else "secondary",key=f"sync_market_{asset_type}"):
             with st.spinner(f"Buscando e organizando os dados de {market}. Isso pode levar alguns minutos..."):
                 sync_result,sync_err=api_post("/data/sync-market",{"asset_type":asset_type},timeout=360)
@@ -479,31 +538,25 @@ def render_market():
         "all":all_market_label,
         "portfolio":"Minha carteira",
         "besst":"Método BESST",
-        "company_size":"Tamanho da empresa",
-        "ibov":"Ibovespa (IBOV)",
-        "classification":"Setor / categoria",
         "specific":"Ativos específicos",
     }
     scope_options=["all"]
     if can("can_view_portfolio"):scope_options.append("portfolio")
-    if asset_type=="stock":scope_options.extend(["besst","company_size","ibov"])
-    scope_options.extend(["classification","specific"])
+    if asset_type=="stock":scope_options.append("besst")
+    scope_options.append("specific")
     if st.session_state[scope_key] not in scope_options:st.session_state[scope_key]="all"
 
     with st.container(border=True):
         st.subheader("1. Universo de ativos")
-        st.caption("Esta escolha define quais ativos podem aparecer. Ao trocar o universo, os refinamentos anteriores são limpos para que 100% do novo grupo fique inicialmente disponível.")
+        st.caption("Primeiro escolha o grupo principal. Ao trocá-lo, os subfiltros e a análise anterior são limpos para que 100% do novo grupo fique disponível.")
         universe_mode=st.radio(
             "Onde deseja procurar?",scope_options,horizontal=True,
             format_func=lambda value:scope_labels[value],key=scope_key,
-            on_change=_reset_market_refinements,args=(asset_type,),
+            on_change=_change_market_base_universe,args=(asset_type,),
         )
 
         selected_scope_tickers=None
         besst_group="all"
-        classification=None
-        classification_field="classification"
-        company_size=None
         scope_detail=""
         if universe_mode=="portfolio":
             portfolios,portfolio_err=api_get("/portfolios")
@@ -520,7 +573,7 @@ def render_market():
                 portfolio_choice=st.selectbox(
                     "Carteira usada como universo",list(portfolio_labels),
                     format_func=lambda value:portfolio_labels[value],key=f"market_portfolio_scope_{asset_type}",
-                    on_change=_reset_market_refinements,args=(asset_type,),
+                    on_change=_change_market_base_universe,args=(asset_type,),
                 )
                 selected_portfolios=portfolios if portfolio_choice=="all" else [item for item in portfolios if str(item["id"])==portfolio_choice]
                 selected_scope_tickers=[]
@@ -536,86 +589,139 @@ def render_market():
         elif universe_mode=="besst":
             besst_group=st.selectbox(
                 "Grupo BESST",list(BESST_LABELS),format_func=lambda value:BESST_LABELS[value],
-                key=f"market_besst_group_{asset_type}",on_change=_reset_market_refinements,args=(asset_type,),
+                key=f"market_besst_group_{asset_type}",on_change=_change_market_base_universe,args=(asset_type,),
             )
             scope_detail=BESST_LABELS[besst_group]
-        elif universe_mode=="company_size":
-            company_size=st.selectbox(
-                "Tamanho da empresa",list(COMPANY_SIZE_LABELS),format_func=lambda value:COMPANY_SIZE_LABELS[value],
-                key=f"market_company_size_{asset_type}",on_change=_reset_market_refinements,args=(asset_type,),
-            )
-            scope_detail=COMPANY_SIZE_LABELS[company_size]
-            st.caption("Classificação objetiva pelo valor de mercado: Blue Chip/Large Cap ≥ R$ 20 bi; Mid Cap entre R$ 2 bi e R$ 20 bi; Small Cap abaixo de R$ 2 bi.")
-        elif universe_mode=="ibov":
-            ibov_choice_labels={"inside":"Está no IBOV","outside":"Não está no IBOV"}
-            ibov_choice=st.radio(
-                "Participação no índice",list(ibov_choice_labels),horizontal=True,
-                format_func=lambda value:ibov_choice_labels[value],key=f"market_ibov_membership_{asset_type}",
-                on_change=_reset_market_refinements,args=(asset_type,),
-            )
-            ibov_data,ibov_err=api_get("/market/index-members/IBOV")
-            if ibov_err:
-                st.error(f"Não foi possível consultar a composição atual do IBOV na B3: {ibov_err}")
-                selected_scope_tickers=[]
-            else:
-                ibov_members={str(item.get("ticker") or "").upper() for item in (ibov_data or {}).get("members") or []}
-                if ibov_choice=="inside":selected_scope_tickers=[ticker for ticker in catalog_map if ticker in ibov_members]
-                else:selected_scope_tickers=[ticker for ticker in catalog_map if ticker not in ibov_members]
-                reference=(ibov_data or {}).get("as_of") or "carteira vigente"
-                stale_text=" • última consulta disponível" if (ibov_data or {}).get("stale") else ""
-                st.caption(f"Fonte: B3 • referência: {reference}{stale_text}.")
-            scope_detail=ibov_choice_labels[ibov_choice]
-        elif universe_mode=="classification":
-            dimension_labels={
-                "classification":"Categoria consolidada","sector_label":"Setor",
-                "segment_label":"Segmento",
-            }
-            available_dimensions=[field for field in dimension_labels if any(str(item.get(field) or "").strip() for item in catalog)]
-            classification_field=st.selectbox(
-                "Como deseja agrupar?",available_dimensions,format_func=lambda value:dimension_labels[value],
-                key=f"market_classification_dimension_{asset_type}",on_change=_reset_market_refinements,args=(asset_type,),
-            ) if available_dimensions else "classification"
-            classifications=sorted({str(item.get(classification_field) or "").strip() for item in catalog if str(item.get(classification_field) or "").strip()},key=str.casefold)
-            if classifications:
-                classification=st.selectbox(
-                    dimension_labels[classification_field],classifications,key=f"market_classification_{asset_type}_{classification_field}",
-                    on_change=_reset_market_refinements,args=(asset_type,),
-                )
-                scope_detail=f"{dimension_labels[classification_field]}: {classification}"
-            else:
-                st.info("Ainda não há setor ou categoria cadastrada para este mercado.")
         elif universe_mode=="specific":
             ticker_labels={item["ticker"]:f"{item['ticker']} — {item.get('name') or 'nome ainda não cadastrado'}" for item in catalog}
             selected_scope_tickers=st.multiselect(
                 "Escolha um ou mais ativos",list(ticker_labels),format_func=lambda value:ticker_labels[value],
-                key=f"market_specific_tickers_{asset_type}",on_change=_reset_market_refinements,args=(asset_type,),
+                key=f"market_specific_tickers_{asset_type}",on_change=_change_market_base_universe,args=(asset_type,),
             )
             scope_detail="Seleção manual"
 
-        resolver_mode="index" if universe_mode=="ibov" else universe_mode
-        allowed_tickers=universe_tickers(
-            catalog,resolver_mode,selected_tickers=selected_scope_tickers,
-            besst_group=besst_group,classification=classification,classification_field=classification_field,
-            company_size=company_size,
+        base_tickers=universe_tickers(
+            catalog,universe_mode,selected_tickers=selected_scope_tickers,
+            besst_group=besst_group,
         )
+        base_set=set(base_tickers)
+        base_catalog=[item for item in catalog if str(item.get("ticker") or "").upper() in base_set]
+
+        st.markdown("##### Subfiltros do universo escolhido")
+        st.caption("Porte, IBOV e Setor refinam o grupo acima e podem ser usados juntos. Eles nunca acrescentam ativos de fora do universo principal.")
+        subfilter_labels=[]
+        sf1,sf2,sf3=st.columns(3)
+
+        size_enabled=False
+        selected_sizes=[]
+        if asset_type=="stock":
+            size_enabled=sf1.checkbox(
+                "Filtrar por Tamanho da Empresa",key=f"market_subfilter_size_enabled_{asset_type}",
+                on_change=_reset_market_refinements,args=(asset_type,"O subfiltro Tamanho da Empresa foi alterado."),
+            )
+            if size_enabled:
+                selected_sizes=sf1.multiselect(
+                    "Portes aceitos",list(COMPANY_SIZE_LABELS),default=[],
+                    format_func=lambda value:COMPANY_SIZE_LABELS[value],key=f"market_subfilter_size_values_{asset_type}",
+                    on_change=_reset_market_refinements,args=(asset_type,"Os portes aceitos foram alterados."),
+                )
+                sf1.caption("Large Cap ≥ R$ 20 bi; Mid Cap de R$ 2 bi a R$ 20 bi; Small Cap abaixo de R$ 2 bi.")
+                if selected_sizes:subfilter_labels.append("Porte: "+", ".join(COMPANY_SIZE_LABELS[value] for value in selected_sizes))
+            else:
+                sf1.caption("Desativado: todos os portes.")
+        else:
+            sf1.caption("Tamanho da Empresa é um subfiltro exclusivo de ações.")
+
+        ibov_enabled=False
+        ibov_choice="inside"
+        ibov_members=set()
+        if asset_type=="stock":
+            ibov_enabled=sf2.checkbox(
+                "Filtrar por IBOV",key=f"market_subfilter_ibov_enabled_{asset_type}",
+                on_change=_reset_market_refinements,args=(asset_type,"O subfiltro IBOV foi alterado."),
+            )
+            if ibov_enabled:
+                ibov_choice_labels={"inside":"Está no IBOV","outside":"Não está no IBOV"}
+                ibov_choice=sf2.radio(
+                    "Participação",list(ibov_choice_labels),horizontal=False,
+                    format_func=lambda value:ibov_choice_labels[value],key=f"market_subfilter_ibov_value_{asset_type}",
+                    on_change=_reset_market_refinements,args=(asset_type,"A participação no IBOV foi alterada."),
+                )
+                ibov_data,ibov_err=api_get("/market/index-members/IBOV")
+                if ibov_err:
+                    sf2.error(f"IBOV indisponível: {ibov_err}")
+                else:
+                    ibov_members={str(item.get("ticker") or "").upper() for item in (ibov_data or {}).get("members") or []}
+                    reference=(ibov_data or {}).get("as_of") or "carteira vigente"
+                    sf2.caption(f"Fonte B3 • {reference}")
+                subfilter_labels.append(ibov_choice_labels[ibov_choice])
+            else:
+                sf2.caption("Desativado: dentro e fora do IBOV.")
+        else:
+            sf2.caption("IBOV é um subfiltro exclusivo de ações.")
+
+        class_enabled=sf3.checkbox(
+            "Filtrar por Setor / Categoria",key=f"market_subfilter_class_enabled_{asset_type}",
+            on_change=_reset_market_refinements,args=(asset_type,"O subfiltro Setor / Categoria foi alterado."),
+        )
+        selected_classes=[]
+        classification_field="sector_label"
+        dimension_labels={"sector_label":"Setor","segment_label":"Segmento","classification":"Categoria consolidada"}
+        if class_enabled:
+            available_dimensions=[field for field in dimension_labels if any(str(item.get(field) or "").strip() for item in base_catalog)]
+            if available_dimensions:
+                classification_field=sf3.selectbox(
+                    "Agrupar por",available_dimensions,format_func=lambda value:dimension_labels[value],
+                    key=f"market_subfilter_class_dimension_{asset_type}",
+                    on_change=_reset_market_refinements,args=(asset_type,"O agrupamento do subfiltro foi alterado."),
+                )
+                classifications=sorted({str(item.get(classification_field) or "").strip() for item in base_catalog if str(item.get(classification_field) or "").strip()},key=str.casefold)
+                selected_classes=sf3.multiselect(
+                    dimension_labels[classification_field],classifications,default=[],
+                    key=f"market_subfilter_class_values_{asset_type}_{classification_field}",
+                    on_change=_reset_market_refinements,args=(asset_type,"Os setores ou categorias aceitos foram alterados."),
+                )
+                if selected_classes:subfilter_labels.append(f"{dimension_labels[classification_field]}: "+", ".join(selected_classes))
+            else:
+                sf3.info("O banco ainda não possui classificação para este grupo.")
+        else:
+            sf3.caption("Desativado: todos os setores e categorias.")
+
+        allowed_tickers=apply_universe_subfilters(
+            base_catalog,base_tickers,
+            company_sizes=selected_sizes if size_enabled else None,
+            ibov_members=ibov_members if ibov_enabled else None,
+            ibov_inside=ibov_choice=="inside",
+            classification_field=classification_field if class_enabled else None,
+            classification_values=selected_classes if class_enabled else None,
+        )
+
         allowed_set=set(allowed_tickers)
         scoped_catalog=[item for item in catalog if str(item.get("ticker") or "").upper() in allowed_set]
         scope_label=scope_labels[universe_mode]+(f" • {scope_detail}" if scope_detail else "")
+        if subfilter_labels:scope_label += " • "+" • ".join(subfilter_labels)
+        subfilters_active=size_enabled or ibov_enabled or class_enabled
         left,right=st.columns([4,1])
         left.success(f"Universo atual: **{scope_label}** • **{len(allowed_tickers)} ativo(s)**")
         right.button(
-            f"↩ {all_market_label}",key=f"restore_all_{asset_type}",use_container_width=True,
-            disabled=universe_mode=="all",on_click=_restore_full_market,args=(asset_type,),
+            "↩ Limpar universo e subfiltros",key=f"restore_all_{asset_type}",use_container_width=True,
+            disabled=universe_mode=="all" and not subfilters_active,on_click=_restore_full_market,args=(asset_type,),
         )
 
     notice=st.session_state.pop(f"market_scope_notice_{asset_type}",None)
     if notice:
         st.info(f"{notice} Agora você pode aplicar novamente Padrão, CNPI, ALB, um filtro personalizado ou o screener avançado somente dentro dos {len(allowed_tickers)} ativo(s) deste universo.")
 
-    preset_labels={
-        "preset:all":"Sem filtros — mostrar 100% do universo",
-        "preset:default":"Padrão","preset:cnpi":"CNPI","preset:alb":"ALB",
-    }
+    if asset_type=="other_b3":
+        preset_labels={
+            "preset:all":"Sem filtros — mostrar 100% do universo",
+            "preset:default":"Padrão técnico — priorizar os 50 mais líquidos",
+        }
+    else:
+        preset_labels={
+            "preset:all":"Sem filtros — mostrar 100% do universo",
+            "preset:default":"Padrão","preset:cnpi":"CNPI","preset:alb":"ALB",
+        }
     strategy_options=list(preset_labels)+[f"custom:{item['id']}" for item in custom_items]
     custom_by_id={str(item["id"]):item for item in custom_items}
     def strategy_name(value):
@@ -623,8 +729,8 @@ def render_market():
         item=custom_by_id.get(value.split(":",1)[1])
         return f"Personalizado — {item['name']}" if item else "Personalizado indisponível"
     strategy_key=f"market_strategy_ref_{asset_type}"
-    st.session_state.setdefault(strategy_key,"preset:all")
-    if st.session_state[strategy_key] not in strategy_options:st.session_state[strategy_key]="preset:all"
+    st.session_state.setdefault(strategy_key,"preset:default")
+    if st.session_state[strategy_key] not in strategy_options:st.session_state[strategy_key]="preset:default"
 
     with st.container(border=True):
         st.subheader("2. Refinar o universo")
@@ -641,7 +747,7 @@ def render_market():
             format_func=lambda value:ticker_labels[value],key=f"market_table_ticker_{asset_type}",
         )
 
-    if strategy_ref=="preset:all":
+    if strategy_ref=="preset:all" or asset_type=="other_b3":
         endpoint=f"/screen/db/universe/{asset_type}"
     elif strategy_ref.startswith("custom:"):
         endpoint=f"/screen/db/custom/{strategy_ref.split(':',1)[1]}"
@@ -651,6 +757,8 @@ def render_market():
     raw_rows,err=api_get(endpoint,{"limit":1200}) if allowed_tickers else ([],None)
     if err:
         st.error(f"Não foi possível carregar o filtro: {err}"); raw_rows=[]
+    if asset_type=="other_b3" and strategy_ref=="preset:default":
+        raw_rows=sorted(raw_rows or [],key=lambda row:float(row.get("daily_liquidity") or 0),reverse=True)
     refined_rows=filter_rows_by_tickers(raw_rows or [],allowed_tickers)
     visible_rows=refined_rows[:limit]
     visible_rows=[{**catalog_map.get(str(row.get("ticker") or "").upper(),{}),**row} for row in visible_rows]
@@ -669,6 +777,7 @@ def render_market():
             df=pd.DataFrame([{
                 "ticker":asset_one.get("ticker"),
                 "name":asset_one.get("name"),
+                "asset_type_label":{"stock":"Ação","fii":"FII","etf":"ETF","bdr":"BDR","future":"Futuro / derivativo"}.get(asset_one.get("asset_type"),"Outro"),
                 "sector":asset_one.get("sector"),
                 "sector_label":asset_one.get("sector_label"),
                 "industry":asset_one.get("industry"),
@@ -676,7 +785,7 @@ def render_market():
                 "segment_label":asset_one.get("segment_label"),
                 "classification":asset_one.get("classification"),
                 "company_size_label":asset_one.get("company_size_label"),
-                "price":fund_one.get("price"),
+                "price":fund_one.get("price") if fund_one.get("price") is not None else (detail_one.get("technical") or {}).get("close"),
                 "pe":fund_one.get("pe"),
                 "pbv":fund_one.get("pbv"),
                 "dy":fund_one.get("dividend_yield_pct"),
@@ -684,7 +793,12 @@ def render_market():
                 "ffo_yield":fund_one.get("ffo_yield_pct"),
                 "cap_rate":fund_one.get("cap_rate_pct"),
                 "vacancy":fund_one.get("vacancy_pct"),
-                "daily_liquidity":fund_one.get("daily_liquidity"),
+                "daily_liquidity":fund_one.get("daily_liquidity") if fund_one.get("daily_liquidity") is not None else (detail_one.get("technical") or {}).get("daily_liquidity"),
+                "signal_tv":(detail_one.get("technical") or {}).get("signal_tv"),
+                "rsi14_screen":(detail_one.get("technical") or {}).get("rsi14"),
+                "sma20":(detail_one.get("technical") or {}).get("sma20"),
+                "sma50":(detail_one.get("technical") or {}).get("sma50"),
+                "sma200":(detail_one.get("technical") or {}).get("sma200"),
                 "quality_score":intel_one.get("quality_score"),
                 "value_score":intel_one.get("value_score"),
                 "growth_score":intel_one.get("growth_score"),
@@ -713,9 +827,9 @@ def render_market():
         else:
             st.info(f"Nenhum dos {len(allowed_tickers)} ativo(s) passou por {strategy_label}. Escolha ‘Sem filtros’ para recuperar 100% deste universo ou ajuste o refinamento.")
     else:
-        rename={"ticker":"Ticker","name":"Nome","company_size_label":"Porte","sector_label":"Setor","classification":"Categoria","segment_label":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dy":"DY %","roe":"ROE %","ffo_yield":"FFO Yield %","cap_rate":"Cap Rate %","vacancy":"Vacância %","daily_liquidity":"Liquidez","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","alb_score":"ALB","data_quality_score":"Data Quality"}
+        rename={"ticker":"Ticker","name":"Nome","asset_type_label":"Tipo","company_size_label":"Porte","sector_label":"Setor","classification":"Categoria","segment_label":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dy":"DY %","roe":"ROE %","ffo_yield":"FFO Yield %","cap_rate":"Cap Rate %","vacancy":"Vacância %","daily_liquidity":"Liquidez","signal_tv":"Sinal técnico","rsi14_screen":"RSI 14","sma20":"SMA 20","sma50":"SMA 50","sma200":"SMA 200","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","alb_score":"ALB","data_quality_score":"Data Quality"}
         view=df.rename(columns=rename)
-        preferred=[c for c in ["Ticker","Nome","Porte","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
+        preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","Liquidez","Sinal técnico","RSI 14","SMA 20","SMA 50","SMA 200","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
         st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=460)
 
     if can("can_view_backtests") and not df.empty and "ticker" in df:
@@ -753,8 +867,10 @@ def render_market():
                         st.success("Sinais atualizados. Configurações idênticas já calculadas hoje foram reutilizadas.")
                         st.rerun()
 
-    if int(PERMISSIONS.get("custom_filter_limit") or 0)>0:
+    if int(PERMISSIONS.get("custom_filter_limit") or 0)>0 and asset_type in {"stock","fii"}:
         render_custom_filter_manager(asset_type,custom_payload)
+    elif asset_type=="other_b3":
+        st.caption("Filtros personalizados fundamentalistas ficam ocultos em Demais Ativos B3; use o screener técnico abaixo.")
 
     if can("can_use_advanced_filters"):
         render_advanced_screener(asset_type,allowed_tickers=allowed_tickers,universe_label=scope_label)
@@ -768,13 +884,17 @@ def render_market():
         default_ticker=selected_table_ticker if selected_table_ticker in options else ("BBAS3" if "BBAS3" in options else options[0])
         default_index=options.index(default_ticker)
         ticker=st.selectbox("Buscar / selecionar ticker",options,index=default_index,format_func=lambda t:labels.get(t,t),key=f"v14_ticker_{asset_type}")
-    elif not catalog:ticker=st.text_input("Ticker",value="BBAS3").strip().upper()
+    elif not catalog:ticker=st.text_input("Ticker",value="BOVA11" if asset_type=="other_b3" else "BBAS3").strip().upper()
     else:
         ticker=""
         st.info("Não há ativo disponível no universo atual para análise individual.")
     if st.button("Analisar ativo",type="primary",disabled=not bool(ticker)):
-        with st.spinner(f"Calculando inteligência V1.4 para {ticker}..."):
-            detail,e1=api_get(f"/assets/{ticker}"); intel,e2=api_get(f"/assets/{ticker}/intelligence"); prices,e3=api_get(f"/assets/{ticker}/prices",{"limit":260}); hist,e4=api_get(f"/assets/{ticker}/scores/history",{"limit":120}); vals,e5=api_get(f"/assets/{ticker}/valuations",{"limit":120})
+        with st.spinner(f"Calculando análise para {ticker}..."):
+            detail,e1=api_get(f"/assets/{ticker}"); prices,e3=api_get(f"/assets/{ticker}/prices",{"limit":260})
+            if asset_type=="other_b3":
+                intel={}; hist=[]; vals=[]; e2=e4=e5=None
+            else:
+                intel,e2=api_get(f"/assets/{ticker}/intelligence"); hist,e4=api_get(f"/assets/{ticker}/scores/history",{"limit":120}); vals,e5=api_get(f"/assets/{ticker}/valuations",{"limit":120})
         st.session_state.analysis_payload_v14={"ticker":ticker,"detail":detail,"intel":intel,"prices":prices or [],"hist":hist or [],"vals":vals or [],"errors":{"Ativo":e1,"Inteligência":e2,"Preços":e3,"Scores":e4,"Valuation":e5}}
 
     p=st.session_state.analysis_payload_v14
@@ -784,6 +904,36 @@ def render_market():
         else:
             detail=p["detail"]; intel=p["intel"] or {}; asset=detail.get("asset") or {}; fund=detail.get("fundamentals") or {}; tech=detail.get("technical") or {}
             st.subheader(f"{asset.get('ticker')} — {asset.get('name') or 'Nome não disponível'}")
+            if asset.get("asset_type") in {"etf","bdr","future"}:
+                type_label={"etf":"ETF","bdr":"BDR","future":"Futuro / derivativo"}.get(asset.get("asset_type"),"Outro ativo B3")
+                st.info(f"Análise técnica de **{type_label}**. Indicadores fundamentalistas de empresas e FIIs foram ocultados por não serem comparáveis.")
+                m1,m2,m3,m4=st.columns(4)
+                m1.metric("Preço",br_money(tech.get("close")))
+                m2.metric("RSI 14",br_num(tech.get("rsi14"),1))
+                m3.metric("Sinal técnico",str(tech.get("signal_tv") or "N/D").replace("_"," ").title())
+                m4.metric("Liquidez diária",br_money(tech.get("daily_liquidity")))
+                identity,indicators=st.columns(2)
+                with identity:
+                    st.markdown("#### Identidade")
+                    st.dataframe(pd.DataFrame([
+                        {"Campo":"Tipo","Valor":type_label},{"Campo":"Categoria","Valor":asset.get("classification")},
+                        {"Campo":"Setor","Valor":asset.get("sector_label") or asset.get("sector")},
+                        {"Campo":"Segmento","Valor":asset.get("segment_label") or asset.get("segment")},
+                    ]),hide_index=True,use_container_width=True)
+                with indicators:
+                    st.markdown("#### Indicadores técnicos")
+                    fields=["sma20","sma50","sma200","rsi14","bb_lower","bb_upper","macd","atr14","volatility_annual_pct","max_drawdown_1y_pct","return_1m_pct","return_3m_pct","return_12m_pct"]
+                    st.dataframe(pd.DataFrame([{"Indicador":field.upper(),"Valor":tech.get(field) if tech.get(field) is not None else "N/D"} for field in fields]),hide_index=True,use_container_width=True)
+                if p["prices"]:
+                    ph=pd.DataFrame(p["prices"]); ph["timestamp"]=pd.to_datetime(ph["timestamp"]); ph=ph.set_index("timestamp").sort_index(); st.line_chart(ph[["close"]])
+                else:
+                    st.info("O snapshot atual está disponível, mas o histórico local ainda não foi carregado para este ativo.")
+                    if can("can_sync_market") and asset.get("asset_type") in {"etf","bdr"} and st.button("Carregar histórico deste ativo",key=f"load_other_history_{asset.get('ticker')}"):
+                        _,history_error=api_post(f"/assets/{asset.get('ticker')}/prices/ingest",{},timeout=300)
+                        if history_error:st.error(f"Histórico não carregado: {history_error}")
+                        else:
+                            st.success("Histórico carregado. Clique novamente em Analisar ativo para atualizar o gráfico.")
+                return
             profile=intel.get("profile") or {}
             st.info(f"Modelo aplicado: **{profile.get('label','N/D')}**. {profile.get('notes','')}")
             if errors:
@@ -941,7 +1091,7 @@ def render_portfolio():
     portfolio_catalog=portfolio_catalog or []
     catalog_map={a["ticker"]:a for a in portfolio_catalog}
     type_options=["Ação","FII","ETF","BDR","Renda Fixa","Cripto","Outro"]
-    type_map={"Ação":"stock","FII":"fii","ETF":"etf","BDR":"bdr","Renda Fixa":"fixed_income","Cripto":"crypto","Outro":"other"}
+    type_map={"Ação":"stock","FII":"fii","ETF":"etf","BDR":"bdr","Futuro / derivativo":"future","Renda Fixa":"fixed_income","Cripto":"crypto","Outro":"other"}
     type_rev={v:k for k,v in type_map.items()}
     stage_options=["Posição atual","Alvo","Em análise"]
     stage_map={"Posição atual":"position","Alvo":"target","Em análise":"analysis"}
@@ -1400,6 +1550,9 @@ def _backtest_filters_ui(asset_type):
 
         st.divider()
         st.markdown("#### Fundamentos")
+        if asset_type not in {"stock","fii"}:
+            st.info("Filtros fundamentalistas ocultos para ETF, BDR e outros ativos sem demonstrações empresariais/FII comparáveis. Tendência, ADX, volume, RSI e ATR continuam disponíveis acima.")
+            return cfg
         st.warning("Estes filtros só são executados se o banco possuir histórico fundamentalista suficiente ao longo do período. O motor recusa usar o P/VP ou outros números de hoje no passado para evitar look-ahead bias.")
         buy, sell = st.tabs(["Condição para COMPRA","Condição para VENDA"])
         entry={}; exit_={}
@@ -1732,23 +1885,45 @@ def render_backtests():
                     _render_backtest_result(detail)
 
 
-def render_access_admin():
-    st.title("🔐 Usuários e permissões")
+def _render_official_backtest_admin():
+    st.subheader("🧪 Backtests manuais e catálogo oficial")
+    st.write("Esta área é exclusiva do proprietário e concentra as execuções administrativas.")
+    individual,batch=st.tabs(["Backtest individual","Lote oficial completo"])
+    with individual:
+        st.write("Use a tela normal de Backtests para executar uma estratégia, comparar estratégias ou testar uma cesta. O resultado fica salvo no seu histórico.")
+        st.button("Ir para Backtests individuais",type="primary",key="admin_go_backtests",on_click=_navigate_to,args=("backtests",))
+    with batch:
+        st.write("O lote oficial testa as configurações do catálogo em até 100 ativos. Ele roda no GitHub para continuar funcionando mesmo que a página seja fechada.")
+        st.info("Execução automática: todos os sábados, às 00h01 de Brasília, usando as 50 ações do filtro Padrão.")
+        st.link_button(
+            "▶ Abrir execução manual no GitHub",
+            "https://github.com/andrelbr22/invest/actions/workflows/backtests-semanais.yml",
+            type="primary",use_container_width=True,
+        )
+        st.markdown("""
+1. Na página que abrir, clique em **Run workflow**.
+2. Deixe **tickers** vazio para usar as 50 ações do Padrão, ou informe até 100 códigos separados por vírgula.
+3. Mantenha **max_combinations = 200** para o lote completo e confirme em **Run workflow**.
+4. Volte a esta tela para acompanhar a situação registrada no banco.
+""")
+
+    st.markdown("#### Histórico dos lotes oficiais")
+    jobs,jobs_error=api_get("/backtests/batch/jobs",{"limit":20})
+    if jobs_error:st.warning(f"Não foi possível consultar as execuções em lote: {jobs_error}")
+    elif not jobs:st.info("Nenhuma execução oficial foi registrada ainda.")
+    else:
+        job_rows=[{
+            "Criado em":br_datetime(item.get("created_at")),"Origem":item.get("source"),"Situação":item.get("status"),
+            "Ativos":len(item.get("tickers") or []),"Combinações/ativo":item.get("max_combinations"),
+            "Concluídos":item.get("completed_runs"),"Falhas":item.get("failed_runs"),
+            "Início":br_datetime(item.get("started_at")),"Fim":br_datetime(item.get("finished_at")),
+        } for item in jobs]
+        st.dataframe(pd.DataFrame(job_rows),hide_index=True,use_container_width=True)
+
+
+def _render_users_admin():
+    st.subheader("🔐 Usuários e permissões")
     st.caption("Somente a conta proprietária pode alterar estas liberações. Novas contas entram como visitantes: Mercado básico em modo somente leitura.")
-    with st.expander("🗓️ Catálogo oficial de backtests",expanded=False):
-        st.write("A atualização automática ocorre aos sábados, às 00h01 de Brasília, sobre as 50 ações do filtro Padrão.")
-        st.caption("Para uma execução extraordinária, abra GitHub → Actions → Backtests oficiais semanais → Run workflow. Deixe os tickers vazios para o grupo padrão ou informe até 100 códigos separados por vírgula.")
-        jobs,jobs_error=api_get("/backtests/batch/jobs",{"limit":20})
-        if jobs_error:st.warning(f"Não foi possível consultar as execuções em lote: {jobs_error}")
-        elif not jobs:st.info("Nenhuma execução oficial foi registrada ainda.")
-        else:
-            job_rows=[{
-                "Criado em":br_datetime(item.get("created_at")),"Origem":item.get("source"),"Situação":item.get("status"),
-                "Ativos":len(item.get("tickers") or []),"Combinações/ativo":item.get("max_combinations"),
-                "Concluídos":item.get("completed_runs"),"Falhas":item.get("failed_runs"),
-                "Início":br_datetime(item.get("started_at")),"Fim":br_datetime(item.get("finished_at")),
-            } for item in jobs]
-            st.dataframe(pd.DataFrame(job_rows),hide_index=True,use_container_width=True)
     users,err=api_get("/access/users")
     if err:
         st.error(f"Não foi possível carregar os usuários: {err}"); return
@@ -1813,6 +1988,14 @@ def render_access_admin():
         else:st.success("Permissões atualizadas."); st.rerun()
 
 
+def render_access_admin():
+    st.title("⚙️ Administração")
+    st.caption("Central exclusiva do proprietário. Novas funções administrativas poderão ser acrescentadas aqui nas próximas versões.")
+    backtests_tab,users_tab=st.tabs(["🧪 Backtests oficiais","🔐 Usuários e permissões"])
+    with backtests_tab:_render_official_backtest_admin()
+    with users_tab:_render_users_admin()
+
+
 health,err=api_get("/health")
 if err:
     st.error("Não consegui falar com o Investment Engine. Ligue a API primeiro.")
@@ -1834,7 +2017,7 @@ module_labels={
     "market":"📊 Mercado e análise",
     "portfolio":"💼 Minha carteira",
     "backtests":"🧪 Backtests",
-    "access":"🔐 Usuários e permissões",
+    "access":"⚙️ Administração",
 }
 modules=[]
 if can("can_view_market"):modules.append("market")
@@ -1845,7 +2028,8 @@ if not modules:
     st.title("Acesso aguardando autorização")
     st.info("Sua conta Google foi identificada, mas ainda não possui menus liberados. Solicite ao proprietário a autorização necessária.")
     st.stop()
-module=st.sidebar.radio("Escolha uma área",modules,index=0,format_func=lambda value:module_labels[value],label_visibility="collapsed")
+if st.session_state.get("main_navigation") not in modules:st.session_state["main_navigation"]=modules[0]
+module=st.sidebar.radio("Escolha uma área",modules,index=0,format_func=lambda value:module_labels[value],label_visibility="collapsed",key="main_navigation")
 st.sidebar.caption(f"Você está em: {module_labels[module]}")
 st.sidebar.markdown("---")
 if module=="market":render_market()
@@ -1853,4 +2037,4 @@ elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.9.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.10.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

@@ -36,8 +36,8 @@ from ..data.providers.b3_indices import B3IndexProvider
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.9.0",
-    version="0.10.0",
+    title="Investment Engine V1.10.0",
+    version="0.11.0",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -213,7 +213,7 @@ class PortfolioUpdateRequest(BaseModel):
 
 
 class PortfolioPositionRequest(BaseModel):
-    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|fixed_income|crypto|other)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|fixed_income|crypto|other)$")
     stage: str = Field(default="position", pattern="^(position|target|analysis)$")
     quantity: float = Field(default=0.0, ge=0)
     average_price: float | None = Field(default=None, ge=0)
@@ -223,7 +223,7 @@ class PortfolioPositionRequest(BaseModel):
 
 
 class PortfolioPurchaseRequest(BaseModel):
-    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|fixed_income|crypto|other)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|fixed_income|crypto|other)$")
     quantity: float = Field(gt=0)
     unit_price: float = Field(gt=0)
     stage: str = Field(default="position", pattern="^(position|target|analysis)$")
@@ -266,7 +266,7 @@ class BacktestFiltersRequest(BaseModel):
 
 class BacktestRequest(BaseModel):
     ticker: str
-    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|other)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other)$")
     strategy_id: str
     period: str = Field(default="1y", pattern="^(6m|1y|2y|3y|5y|10y|15y|20y|custom)$")
     start: datetime | None = None
@@ -284,7 +284,7 @@ class BacktestRequest(BaseModel):
 
 class BacktestCompareRequest(BaseModel):
     ticker: str
-    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|other)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other)$")
     strategy_ids: list[str] = Field(min_length=1, max_length=20)
     period: str = Field(default="1y", pattern="^(6m|1y|2y|3y|5y|10y|15y|20y|custom)$")
     start: datetime | None = None
@@ -300,7 +300,7 @@ class BacktestCompareRequest(BaseModel):
 
 class BacktestBasketRequest(BaseModel):
     tickers: list[str] = Field(min_length=2, max_length=30)
-    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|other)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other)$")
     strategy_id: str
     period: str = Field(default="5y", pattern="^(6m|1y|2y|3y|5y|10y|15y|20y|custom)$")
     start: datetime | None = None
@@ -331,7 +331,7 @@ class AdvancedTechnicalFiltersRequest(BaseModel):
 
 
 class AdvancedScreenRequest(BaseModel):
-    asset_type: str = Field(default="stock", pattern="^(stock|fii)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|other_b3)$")
     fundamental_filters: dict[str, NumericRangeRequest] = Field(default_factory=dict)
     score_filters: dict[str, NumericRangeRequest] = Field(default_factory=dict)
     valuation_flags: dict[str, bool] = Field(default_factory=dict)
@@ -344,7 +344,7 @@ class AdvancedScreenRequest(BaseModel):
 
 
 class MarketSyncRequest(BaseModel):
-    asset_type: Literal["stock", "fii"] = "stock"
+    asset_type: Literal["stock", "fii", "other_b3"] = "stock"
 
 
 class AccessRegisterRequest(BaseModel):
@@ -378,7 +378,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.10.0", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.11.0", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -602,6 +602,7 @@ def sync_market(req: MarketSyncRequest, _access=Depends(require_permission("can_
                 "received": result.rows_received,
                 "saved": result.rows_valid,
                 "rejected": result.rows_rejected,
+                "warnings": result.warnings,
             }
         except Exception as exc:
             db.rollback()
@@ -609,19 +610,28 @@ def sync_market(req: MarketSyncRequest, _access=Depends(require_permission("can_
 
     if req.asset_type == "stock":
         run_step("fundamentals", pipeline.ingest_stocks)
-    else:
+        run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals("stock"))
+    elif req.asset_type == "fii":
         run_step("fundamentals", pipeline.ingest_fiis)
-    run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals(req.asset_type))
+        run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals("fii"))
+    else:
+        run_step("catalog_and_technicals", pipeline.ingest_other_b3)
 
-    try:
-        score_count = _refresh_intelligence_scores(db, req.asset_type)
-        db.commit()
-        steps["scores"] = {"status": "ok", "saved": score_count}
-    except Exception as exc:
-        db.rollback()
-        steps["scores"] = {"status": "error", "message": str(exc)}
+    if req.asset_type in {"stock", "fii"}:
+        try:
+            score_count = _refresh_intelligence_scores(db, req.asset_type)
+            db.commit()
+            steps["scores"] = {"status": "ok", "saved": score_count}
+        except Exception as exc:
+            db.rollback()
+            steps["scores"] = {"status": "error", "message": str(exc)}
+    else:
+        steps["scores"] = {"status": "ok", "saved": 0, "note": "not_applicable_to_other_b3"}
 
-    catalog_count = len(AssetRepository(db).list_assets(asset_type=req.asset_type, limit=5000))
+    if req.asset_type == "other_b3":
+        catalog_count = sum(len(AssetRepository(db).list_assets(asset_type=value, limit=5000)) for value in ("etf", "bdr", "future"))
+    else:
+        catalog_count = len(AssetRepository(db).list_assets(asset_type=req.asset_type, limit=5000))
     if catalog_count == 0:
         raise HTTPException(502, detail={"market_sync_failed": steps})
     return {"asset_type": req.asset_type, "catalog_count": catalog_count, "steps": steps}
@@ -643,7 +653,7 @@ def market_index_members(
 
 @app.get("/assets")
 def assets(
-    asset_type: str | None = Query(default=None, pattern="^(stock|fii|etf|bdr|fixed_income|crypto|other)$"),
+    asset_type: str | None = Query(default=None, pattern="^(stock|fii|etf|bdr|future|fixed_income|crypto|other)$"),
     limit: int = Query(default=100, ge=1, le=1200),
     offset: int = Query(default=0, ge=0),
     _access=Depends(require_permission("can_view_market")),
@@ -828,9 +838,31 @@ def _fii_screen_result(rows):
     return [_fii_screen_row(asset, fundamental, score) for asset, fundamental, score in rows]
 
 
+def _other_b3_screen_row(asset, technical, score):
+    metadata=asset.metadata_json if isinstance(asset.metadata_json,dict) else {}
+    category_labels={"etf":"ETF","bdr":"BDR","future":"Futuro / derivativo"}
+    return {
+        **_screen_identity(asset),
+        "asset_type":asset.asset_type,
+        "asset_type_label":category_labels.get(asset.asset_type,"Outro ativo B3"),
+        "classification":category_labels.get(asset.asset_type) or metadata.get("b3_category") or asset.segment,
+        "price":_num(technical.close) if technical else None,
+        "daily_liquidity":_num(technical.daily_liquidity) if technical else None,
+        "signal_tv":technical.signal_tv if technical else None,
+        "rsi14_screen":_num(technical.rsi14) if technical else None,
+        "sma20":_num(technical.sma20) if technical else None,
+        "sma50":_num(technical.sma50) if technical else None,
+        "sma200":_num(technical.sma200) if technical else None,
+        **_screen_scores(score),
+    }
+
+
 def _universe_screen_result(rows, asset_type: str):
-    converter = _stock_screen_row if asset_type == "stock" else _fii_screen_row
-    return [converter(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
+    if asset_type == "stock":
+        return [_stock_screen_row(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
+    if asset_type == "fii":
+        return [_fii_screen_row(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
+    return [_other_b3_screen_row(asset, technical, score) for asset, _fundamental, technical, score in rows]
 
 @app.get("/screen/db/stocks/{strategy_id}")
 def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, _access=Depends(require_permission("can_view_market")), db: Session=Depends(get_db)):
@@ -855,7 +887,7 @@ def screen_db_universe(
     _access=Depends(require_permission("can_view_market")),
     db: Session = Depends(get_db),
 ):
-    if asset_type not in {"stock", "fii"}:
+    if asset_type not in {"stock", "fii", "other_b3"}:
         raise HTTPException(422, "invalid_asset_type")
     rows = AssetRepository(db).latest_universe(asset_type=asset_type, limit=limit)
     return _universe_screen_result(rows, asset_type)

@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.9.0
+# Formação do Investidor • Investment Engine V1.10.0
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -7,6 +7,15 @@
 > externo e as credenciais devem ser configuradas no painel Secrets.
 
 Backend Python/FastAPI/PostgreSQL + Streamlit para triagem fundamentalista/técnica, valuation, carteira e backtests.
+
+## Novidades da V1.10.0
+
+- A tela Mercado abre com o filtro Padrão e exibe no máximo 50 ativos.
+- Tamanho da Empresa, IBOV e Setor/Categoria passaram a ser subfiltros cumulativos do universo principal.
+- Nova categoria Demais Ativos B3, separando ETF, BDR e Futuro/derivativo.
+- Filtros incompatíveis de empresas/FIIs ficam ocultos em Demais Ativos B3; permanecem liquidez e filtros técnicos.
+- Nova área Administração, exclusiva do proprietário, com acesso aos backtests manuais, lotes oficiais e permissões.
+- Não há migração adicional de banco nesta versão.
 
 ## Novidades da V1.9.0
 

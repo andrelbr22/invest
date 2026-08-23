@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.9.0
+# Formação do Investidor • Investment Engine V1.8.1
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -7,19 +7,6 @@
 > externo e as credenciais devem ser configuradas no painel Secrets.
 
 Backend Python/FastAPI/PostgreSQL + Streamlit para triagem fundamentalista/técnica, valuation, carteira e backtests.
-
-## Novidades da V1.9.0
-
-- histórico de backtests isolado por conta Google, com reaproveitamento de testes idênticos no mesmo dia;
-- resultado completo auditável, incluindo data/hora, versão do motor, parâmetros, filtros, operações e sinal atual;
-- catálogo oficial semanal para as 50 ações do filtro Padrão, com seleção manual de até 100 ativos pelo proprietário;
-- grade oficial limitada a 200 combinações por ativo e distribuída entre todas as estratégias disponíveis;
-- ranking robusto com validação nos 30% finais, drawdown, Sharpe, Sortino, Profit Factor e penalidade por amostra pequena;
-- três melhores backtests e sinais Comprar/Vender/Neutro dentro do Universo de ativos;
-- cinco melhores resultados oficiais e os 100 testes mais recentes na aba Backtests;
-- automação de sábado às 00h01 de Brasília pelo GitHub Actions.
-
-Consulte `V1_9_0.md` e `ATIVAR_BACKTESTS_SEMANAIS.md`.
 
 ## Principais módulos
 
