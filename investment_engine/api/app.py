@@ -18,18 +18,19 @@ from ..core.screening.advanced import advanced_screen
 from ..core.repositories.assets import AssetRepository
 from ..core.repositories.portfolio import PortfolioRepository
 from ..core.repositories.backtests import BacktestRepository
-from ..core.portfolio.service import build_portfolio_snapshot
+from ..core.portfolio.service import build_portfolio_snapshot, classification_for
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
 from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
 from ..infrastructure.db.models import AssetORM
 from ..infrastructure.db.session import get_session_factory
 from ..core.services_v14 import calculate_asset_intelligence
 from ..data.ingestion.prices import PriceIngestionService
+from ..data.ingestion.pipeline import MarketIngestionPipeline
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.6.0",
-    version="0.7.0",
+    title="Investment Engine V1.6.1",
+    version="0.7.1",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -238,9 +239,13 @@ class AdvancedScreenRequest(BaseModel):
     limit: int = Field(default=100, ge=1, le=300)
 
 
+class MarketSyncRequest(BaseModel):
+    asset_type: Literal["stock", "fii"] = "stock"
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.7.0", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.7.1", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -261,6 +266,93 @@ def debug_db_counts(db: Session = Depends(get_db)):
     return counts
 
 
+def _refresh_intelligence_scores(db: Session, asset_type: str) -> int:
+    """Recalculate the cards shown by the UI after a market synchronization."""
+    repo = AssetRepository(db)
+    processed = 0
+    for asset in repo.list_assets(asset_type=asset_type, limit=5000):
+        fundamental = repo.latest_fundamentals(asset.id)
+        if fundamental is None:
+            continue
+        technical = repo.latest_technical(asset.id, source="internal") or repo.latest_technical(asset.id)
+        result = calculate_asset_intelligence(asset, fundamental, technical)
+        scores = {
+            "quality_score": result["quality"].score,
+            "value_score": result["value"].score,
+            "growth_score": result["growth"].score if result["growth"] else None,
+            "technical_score": result["technical"].score,
+            "risk_score": result["risk"].score,
+            "liquidity_score": result["liquidity"].score,
+            "alb_score": result["alb_score"],
+        }
+        details = {
+            "profile": {
+                "key": result["profile"].key,
+                "label": result["profile"].label,
+                "notes": result["profile"].notes,
+                "weights": result["profile"].alb_weights,
+            },
+            "quality": result["quality"].as_dict(),
+            "value": result["value"].as_dict(),
+            "growth": result["growth"].as_dict() if result["growth"] else None,
+            "technical": result["technical"].as_dict(),
+            "risk": result["risk"].as_dict(),
+            "liquidity": result["liquidity"].as_dict(),
+            "explanation": result["explanation"],
+        }
+        repo.upsert_scores(
+            asset,
+            as_of=fundamental.reference_date,
+            model_version=result["model_version"],
+            scores=scores,
+            coverage_pct=result["coverage"],
+            data_quality_score=result["data_quality"].score,
+            details=details,
+        )
+        processed += 1
+    return processed
+
+
+@app.post("/data/sync-market")
+def sync_market(req: MarketSyncRequest, db: Session = Depends(get_db)):
+    """Populate a new cloud database without requiring shell access."""
+    pipeline = MarketIngestionPipeline(db)
+    steps: dict[str, dict] = {}
+
+    def run_step(name, operation):
+        try:
+            result = operation()
+            db.commit()
+            steps[name] = {
+                "status": "ok",
+                "received": result.rows_received,
+                "saved": result.rows_valid,
+                "rejected": result.rows_rejected,
+            }
+        except Exception as exc:
+            db.rollback()
+            steps[name] = {"status": "error", "message": str(exc)}
+
+    if req.asset_type == "stock":
+        run_step("fundamentals", pipeline.ingest_stocks)
+    else:
+        run_step("fundamentals", pipeline.ingest_fiis)
+    run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals(req.asset_type))
+
+    try:
+        score_count = _refresh_intelligence_scores(db, req.asset_type)
+        db.commit()
+        steps["scores"] = {"status": "ok", "saved": score_count}
+    except Exception as exc:
+        db.rollback()
+        steps["scores"] = {"status": "error", "message": str(exc)}
+
+    catalog_count = len(AssetRepository(db).list_assets(asset_type=req.asset_type, limit=5000))
+    if catalog_count == 0:
+        raise HTTPException(502, detail={"market_sync_failed": steps})
+    return {"asset_type": req.asset_type, "catalog_count": catalog_count, "steps": steps}
+
+
 @app.get("/assets")
 def assets(
     asset_type: str | None = Query(default=None, pattern="^(stock|fii|etf|bdr|fixed_income|crypto|other)$"),
@@ -275,6 +367,7 @@ def assets(
             "id": str(a.id), "ticker": a.ticker, "name": a.name, "asset_type": a.asset_type,
             "exchange": a.exchange, "currency": a.currency, "sector": a.sector, "industry": a.industry,
             "segment": a.segment, "market_cap_category": a.market_cap_category, "is_active": a.is_active,
+            "classification": classification_for(a.asset_type, a.sector, a.segment, industry=a.industry, category=a.market_cap_category),
         }
         for a in rows
     ]
@@ -293,6 +386,7 @@ def asset_detail(ticker: str, db: Session = Depends(get_db)):
             "id": str(asset.id), "ticker": asset.ticker, "name": asset.name, "asset_type": asset.asset_type,
             "exchange": asset.exchange, "currency": asset.currency, "sector": asset.sector, "industry": asset.industry,
             "segment": asset.segment, "market_cap_category": asset.market_cap_category, "is_active": asset.is_active,
+            "classification": classification_for(asset.asset_type, asset.sector, asset.segment, industry=asset.industry, category=asset.market_cap_category),
             "metadata": asset.metadata_json,
         },
         "fundamentals": _fundamental_dict(fundamentals),
@@ -491,6 +585,7 @@ def _portfolio_snapshot(db: Session, portfolio):
         raw.append({
             "position_id": str(pos.id), "asset_id": str(asset.id), "ticker": asset.ticker, "name": asset.name,
             "asset_type": asset.asset_type, "sector": asset.sector, "industry": asset.industry, "segment": asset.segment,
+            "market_cap_category": asset.market_cap_category,
             "stage": pos.stage, "quantity": _num(pos.quantity), "average_price": _num(pos.average_price),
             "target_weight_pct": _num(pos.target_weight_pct), "classification_override": pos.classification_override, "notes": pos.notes,
             "current_price": price_info["price"], "current_price_as_of": price_info["as_of"], "price_source": price_info["source"],

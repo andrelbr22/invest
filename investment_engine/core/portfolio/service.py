@@ -23,6 +23,55 @@ STAGE_LABELS = {
 }
 
 
+# TradingView returns part of the Brazilian catalog in English even when the
+# request language is Portuguese.  Keep the original metadata in the database
+# (the scoring models use it) and translate only the user-facing classification.
+CLASSIFICATION_TRANSLATIONS = {
+    "basic materials": "Materiais básicos",
+    "communication services": "Comunicações",
+    "consumer cyclical": "Consumo cíclico",
+    "consumer defensive": "Consumo não cíclico",
+    "consumer durables": "Bens de consumo duráveis",
+    "consumer non-durables": "Bens de consumo não duráveis",
+    "consumer services": "Serviços ao consumidor",
+    "commercial services": "Serviços comerciais",
+    "distribution services": "Distribuição",
+    "electronic technology": "Tecnologia eletrônica",
+    "energy minerals": "Energia e minerais",
+    "finance": "Financeiro",
+    "financial services": "Serviços financeiros",
+    "health services": "Serviços de saúde",
+    "health technology": "Tecnologia em saúde",
+    "healthcare": "Saúde",
+    "industrials": "Bens industriais",
+    "industrial services": "Serviços industriais",
+    "miscellaneous": "Diversos",
+    "non-energy minerals": "Minerais não energéticos",
+    "process industries": "Indústrias de transformação",
+    "producer manufacturing": "Bens de capital",
+    "real estate": "Imobiliário",
+    "retail trade": "Comércio varejista",
+    "technology": "Tecnologia",
+    "technology services": "Serviços de tecnologia",
+    "transportation": "Transportes",
+    "utilities": "Utilidade pública",
+    "large cap": "Grande capitalização",
+    "mid cap": "Média capitalização",
+    "small cap": "Pequena capitalização",
+    "micro cap": "Microcapitalização",
+}
+
+
+def localize_classification(value: str | None) -> str | None:
+    """Return a Portuguese label while preserving already localized values."""
+    if value is None:
+        return None
+    clean = str(value).strip()
+    if not clean:
+        return None
+    return CLASSIFICATION_TRANSLATIONS.get(clean.casefold(), clean)
+
+
 def _f(value, default=0.0):
     if value is None:
         return default
@@ -38,16 +87,25 @@ def _pct(numerator: float, denominator: float) -> float | None:
     return numerator / denominator * 100.0
 
 
-def classification_for(asset_type: str | None, sector: str | None, segment: str | None, override: str | None = None) -> str:
+def classification_for(
+    asset_type: str | None,
+    sector: str | None,
+    segment: str | None,
+    override: str | None = None,
+    industry: str | None = None,
+    category: str | None = None,
+) -> str:
     """Classification used for the within-class allocation view.
 
     For FIIs, segment is economically more useful than a generic Real Estate sector.
     """
     if override:
-        return override
+        return localize_classification(override) or "Não classificado"
     if (asset_type or "").lower() == "fii":
-        return segment or sector or "Não classificado"
-    return sector or segment or "Não classificado"
+        raw = segment or sector or industry or category
+    else:
+        raw = sector or segment or industry or category
+    return localize_classification(raw) or "Não classificado"
 
 
 def build_portfolio_snapshot(positions: Iterable[dict], *, cash_balance: float = 0.0, target_cash_pct: float = 0.0) -> dict:
@@ -117,7 +175,14 @@ def build_portfolio_snapshot(positions: Iterable[dict], *, cash_balance: float =
             "stage_label": STAGE_LABELS.get(stage, stage),
             "asset_class": asset_type,
             "asset_class_label": ASSET_CLASS_LABELS.get(asset_type, asset_type.upper()),
-            "classification": classification_for(asset_type, p.get("sector"), p.get("segment"), p.get("classification_override")),
+            "classification": classification_for(
+                asset_type,
+                p.get("sector"),
+                p.get("segment"),
+                p.get("classification_override"),
+                p.get("industry"),
+                p.get("market_cap_category"),
+            ),
             "quantity": quantity,
             "average_price": avg_price_f,
             "current_price": current_price_f,

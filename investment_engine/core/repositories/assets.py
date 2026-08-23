@@ -302,7 +302,8 @@ class AssetRepository:
         stmt = self._apply_max(stmt, f.gross_debt_to_equity, filters.gross_debt_to_equity_max)
         stmt = self._apply_min(stmt, f.current_ratio, filters.current_ratio_min)
         if filters.daily_liquidity_min is not None:
-            stmt = stmt.where(t.daily_liquidity.is_not(None), t.daily_liquidity >= filters.daily_liquidity_min)
+            liquidity = func.coalesce(t.daily_liquidity, f.daily_liquidity)
+            stmt = stmt.where(liquidity.is_not(None), liquidity >= filters.daily_liquidity_min)
 
         # Graham Number condition can be reduced algebraically to P/L * P/VP < 22.5
         # for positive price, positive P/L and positive P/VP. This avoids per-row Python valuation.

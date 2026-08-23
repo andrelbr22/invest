@@ -33,6 +33,7 @@ class FundamentusStockProvider(StockFundamentalsProvider):
                 "net_margin_pct": parse_br_number(c[13]),
                 "current_ratio": parse_br_number(c[14]),
                 "roe_pct": parse_br_number(c[16]),
+                "daily_liquidity": parse_br_number(c[17]),
                 "gross_debt_to_equity": parse_br_number(c[19]),
                 "revenue_cagr_5y_pct": parse_br_number(c[20]),
             })

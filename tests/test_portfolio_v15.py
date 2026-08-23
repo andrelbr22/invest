@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from investment_engine.core.portfolio.service import build_portfolio_snapshot
+from investment_engine.core.portfolio.service import build_portfolio_snapshot, classification_for
 from investment_engine.core.repositories.assets import AssetRepository
 from investment_engine.core.repositories.portfolio import PortfolioRepository
 from investment_engine.infrastructure.db.base import Base
@@ -72,3 +72,14 @@ def test_analysis_stage_does_not_change_target_allocation_even_if_weight_was_typ
     assert idea["effective_target_weight_pct"] == 0
     assert idea["target_value"] == 0
     assert snap["summary"]["target_total_pct"] == 100
+
+
+def test_portfolio_classification_is_automatically_localized_to_portuguese():
+    assert classification_for("stock", "Finance", None) == "Financeiro"
+    assert classification_for("stock", "Utilities", None) == "Utilidade pública"
+    assert classification_for("fii", "Real Estate", "Logística") == "Logística"
+    assert classification_for("etf", None, None, industry="Technology Services") == "Serviços de tecnologia"
+
+
+def test_manual_classification_still_has_priority():
+    assert classification_for("stock", "Finance", None, "Minha categoria") == "Minha categoria"

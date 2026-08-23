@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import requests
 import streamlit as st
+from investment_engine.ui_helpers import format_brl_price_input, parse_brl_price_input
 
 st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
@@ -264,6 +265,33 @@ def render_market():
         st.error(f"Não foi possível carregar o screener: {err}"); st.stop()
     df=pd.DataFrame(rows or [])
 
+    sync_message=st.session_state.pop("market_sync_message",None)
+    if sync_message:
+        st.success(sync_message)
+    with st.expander("🗄️ Dados usados pelos filtros",expanded=not bool(catalog)):
+        st.write(f"Ativos cadastrados neste mercado: **{len(catalog)}**.")
+        if catalog_err:
+            st.error(f"Não foi possível consultar o catálogo: {catalog_err}")
+        elif not catalog:
+            st.warning("O banco online ainda não possui o catálogo deste mercado. Sem esses dados, nenhum filtro pode retornar ações.")
+        else:
+            st.caption("Use a atualização quando o banco for novo ou quando quiser renovar fundamentos, nomes, setores e indicadores técnicos.")
+        if st.button(f"🔄 Carregar / atualizar dados de {market}",type="primary" if not catalog else "secondary",key=f"sync_market_{asset_type}"):
+            with st.spinner(f"Buscando e organizando os dados de {market}. Isso pode levar alguns minutos..."):
+                sync_result,sync_err=api_post("/data/sync-market",{"asset_type":asset_type},timeout=360)
+            if sync_err:
+                st.error(f"A atualização não foi concluída: {sync_err}")
+            else:
+                steps=(sync_result or {}).get("steps") or {}
+                failed=[name for name,value in steps.items() if value.get("status")!="ok"]
+                count=(sync_result or {}).get("catalog_count",0)
+                if failed:
+                    st.warning(f"Catálogo carregado com {count} ativos, mas uma etapa precisa ser repetida: {', '.join(failed)}.")
+                    st.json(steps)
+                else:
+                    st.session_state.market_sync_message=f"Dados atualizados: {count} ativo(s) disponíveis para os filtros."
+                    st.rerun()
+
     # V1.4.1: o filtro por ticker é independente da estratégia.
     # Ao selecionar um ativo específico, ele é buscado diretamente na API e
     # aparece sozinho na tabela, mesmo que não passe pelo setup atual.
@@ -318,7 +346,11 @@ def render_market():
         c4.metric("Data Quality médio",br_num(pd.to_numeric(df.get("data_quality_score"),errors="coerce").mean(),1,"%"))
 
     st.subheader(f"{market} • Estratégia {strategy_label}")
-    if df.empty:st.info("Nenhum ativo corresponde aos filtros atuais.")
+    if df.empty:
+        if not catalog:
+            st.warning("Não há ações cadastradas neste banco. Abra ‘Dados usados pelos filtros’ acima e carregue o mercado.")
+        else:
+            st.info(f"O catálogo contém {len(catalog)} ativo(s), mas nenhum passou pela estratégia {strategy_label}. Tente a estratégia Padrão ou atualize os dados do mercado.")
     else:
         rename={"ticker":"Ticker","name":"Nome","segment":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dy":"DY %","roe":"ROE %","ffo_yield":"FFO Yield %","cap_rate":"Cap Rate %","vacancy":"Vacância %","daily_liquidity":"Liquidez","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","alb_score":"ALB","data_quality_score":"Data Quality"}
         view=df.rename(columns=rename)
@@ -503,34 +535,74 @@ def render_portfolio():
         existing_map={p["ticker"]:p for p in positions}
         edit_ticker=st.selectbox("Editar posição existente (opcional)",[""]+sorted(existing_map),format_func=lambda x:"Novo ativo" if x=="" else f"Editar {x}",key="pf_edit_existing")
         existing=existing_map.get(edit_ticker) or {}
+        portfolio_catalog,catalog_error=api_get("/assets",{"limit":500,"offset":0})
+        portfolio_catalog=portfolio_catalog or []
+        catalog_map={a["ticker"]:a for a in portfolio_catalog}
+
+        if existing:
+            ticker=existing.get("ticker","")
+            st.text_input("Ticker",value=ticker,disabled=True,key=f"pf_fixed_ticker_{ticker}")
+        else:
+            known_options=[""]+sorted(catalog_map)
+            known_ticker=st.selectbox(
+                "Selecionar ativo do cadastro",
+                known_options,
+                format_func=lambda value:"Digitar outro ticker" if value=="" else f"{value} — {catalog_map[value].get('name') or 'nome não cadastrado'}",
+                key="pf_catalog_ticker",
+            )
+            if known_ticker:
+                ticker=known_ticker
+            else:
+                ticker=st.text_input("Ticker",placeholder="Ex.: BBAS3, HGLG11, BOVA11",key="pf_manual_ticker").strip().upper()
+
+        asset_metadata=catalog_map.get(ticker) or {}
+        automatic_classification=asset_metadata.get("classification") or existing.get("classification") or "Não localizado no cadastro"
+        if catalog_error:
+            st.caption("A classificação automática ficará disponível quando o catálogo puder ser consultado.")
         type_options=["Ação","FII","ETF","BDR","Renda Fixa","Cripto","Outro"]
         type_map={"Ação":"stock","FII":"fii","ETF":"etf","BDR":"bdr","Renda Fixa":"fixed_income","Cripto":"crypto","Outro":"other"}
         type_rev={v:k for k,v in type_map.items()}
         stage_options=["Posição atual","Alvo","Em análise"]
         stage_map={"Posição atual":"position","Alvo":"target","Em análise":"analysis"}
         stage_rev={v:k for k,v in stage_map.items()}
-        form_key=f"portfolio_position_form_{edit_ticker or 'new'}"
+        form_key=f"portfolio_position_form_{edit_ticker or ticker or 'new'}"
         with st.form(form_key):
-            a,b,c=st.columns(3)
-            ticker=a.text_input("Ticker",value=existing.get("ticker","") if existing else "",placeholder="Ex.: BBAS3, HGLG11, BOVA11",disabled=bool(existing)).strip().upper()
-            default_type=type_rev.get(existing.get("asset_class") or existing.get("asset_type"),"Ação")
+            b,c=st.columns(2)
+            detected_type=asset_metadata.get("asset_type")
+            default_type=type_rev.get(existing.get("asset_class") or existing.get("asset_type") or detected_type,"Ação")
             type_label=b.selectbox("Tipo",type_options,index=type_options.index(default_type) if default_type in type_options else 0)
             default_stage=stage_rev.get(existing.get("stage"),"Posição atual")
             stage_label=c.selectbox("Situação",stage_options,index=stage_options.index(default_stage))
-            d,e,f=st.columns(3)
-            qty=d.number_input("Quantidade",min_value=0.0,value=float(existing.get("quantity") or 0.0),step=1.0,format="%.8f")
-            avg=e.number_input("Preço médio de compra (R$)",min_value=0.0,value=float(existing.get("average_price") or 0.0),step=0.01)
-            target=f.number_input("Percentual alvo da carteira (%)",min_value=0.0,max_value=100.0,value=float(existing.get("target_weight_pct") or 0.0),step=0.5)
-            classification_override=st.text_input("Setor / segmento / categoria manual (opcional)",value=existing.get("classification_override") or "",placeholder="Útil para ETFs. Ex.: Índice Brasil, Tecnologia, Logística")
+            d,e=st.columns(2)
+            quantity_step=d.radio("Passo dos botões +/− da quantidade",[100,10,1],horizontal=True,index=0,help="Escolha 100 para lote padrão ou use 10 e 1 para ajuste fino.")
+            qty=d.number_input("Quantidade",min_value=0.0,value=float(existing.get("quantity") or 0.0),step=float(quantity_step),format="%.0f")
+            current_avg=format_brl_price_input(existing.get("average_price"))
+            avg_text=e.text_input(
+                "Novo preço médio de compra (R$)",
+                value="",
+                placeholder=(f"Atual: {current_avg}. Digite somente para substituir" if current_avg else "Ex.: 27,45"),
+                help="O campo começa vazio para você digitar diretamente, sem precisar apagar 0,00. Aceita vírgula ou ponto e salva com duas casas decimais.",
+            )
+            target=e.number_input("Percentual alvo da carteira (%)",min_value=0.0,max_value=100.0,value=float(existing.get("target_weight_pct") or 0.0),step=0.5)
+            st.text_input("Setor / segmento / categoria (automático)",value=automatic_classification,disabled=True)
+            classification_override=st.text_input("Ajuste manual da classificação (opcional)",value=existing.get("classification_override") or "",placeholder="Preencha apenas se quiser substituir a classificação automática")
             pnotes=st.text_input("Observação / tese curta",value=existing.get("notes") or "",placeholder="Ex.: aumentar posição se valuation continuar atrativo")
             save=st.form_submit_button("Salvar ativo",type="primary")
         if save:
             if not ticker:st.error("Informe o ticker.")
             else:
-                payload={"asset_type":type_map[type_label],"stage":stage_map[stage_label],"quantity":qty,"average_price":avg if avg>0 else None,"target_weight_pct":target,"classification_override":classification_override or None,"notes":pnotes or None}
-                _,e=api_put(f"/portfolios/{pid}/positions/{ticker}",payload)
-                if e:st.error(e)
-                else:st.success(f"{ticker} salvo na carteira."); st.rerun()
+                try:
+                    typed_avg=parse_brl_price_input(avg_text)
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    average_price=typed_avg
+                    if typed_avg is None and existing:
+                        average_price=existing.get("average_price")
+                    payload={"asset_type":type_map[type_label],"stage":stage_map[stage_label],"quantity":qty,"average_price":average_price,"target_weight_pct":target,"classification_override":classification_override or None,"notes":pnotes or None}
+                    _,e=api_put(f"/portfolios/{pid}/positions/{ticker}",payload)
+                    if e:st.error(e)
+                    else:st.success(f"{ticker} salvo na carteira."); st.rerun()
     with right:
         st.subheader("Cotações")
         st.caption("Atualiza pelo Yahoo e grava o histórico no banco. Útil também para ETFs.")
@@ -1177,4 +1249,4 @@ if module=="Mercado & Análise":render_market()
 elif module=="Carteira":render_portfolio()
 else:render_backtests()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.6.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.6.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
