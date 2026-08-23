@@ -5,8 +5,25 @@ import pandas as pd
 import requests
 import streamlit as st
 from investment_engine.ui_helpers import format_brl_price_input, parse_brl_price_input
+from investment_engine.core.screening.universe import BESST_LABELS, filter_rows_by_tickers, universe_tickers
 
 st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
+
+st.markdown("""
+<style>
+    .block-container {padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1500px;}
+    section[data-testid="stSidebar"] {border-right: 1px solid rgba(128,128,128,.20);}
+    section[data-testid="stSidebar"] div[role="radiogroup"] {gap: .35rem;}
+    section[data-testid="stSidebar"] div[role="radiogroup"] label {
+        border: 1px solid rgba(128,128,128,.22); border-radius: .65rem; padding: .55rem .65rem;
+    }
+    div[data-testid="stMetric"] {
+        border: 1px solid rgba(128,128,128,.20); border-radius: .75rem; padding: .75rem 1rem;
+        background: rgba(128,128,128,.035);
+    }
+    div[data-testid="stDataFrame"] {border-radius: .75rem; overflow: hidden;}
+</style>
+""",unsafe_allow_html=True)
 
 CURRENT_USER_EMAIL=""
 CURRENT_USER_NAME=""
@@ -64,6 +81,25 @@ def api_delete(path,timeout=120):return _request("DELETE",path,timeout=timeout)
 
 def can(permission):return bool(PERMISSIONS.get(permission,False))
 
+
+def _reset_market_refinements(asset_type,reason="O universo de ativos foi alterado."):
+    """Clear dependent filters before Streamlit rebuilds their widgets."""
+    st.session_state[f"market_strategy_ref_{asset_type}"]="preset:all"
+    st.session_state[f"market_table_ticker_{asset_type}"]=""
+    st.session_state["advanced_screen_result"]=None
+    st.session_state[f"market_scope_notice_{asset_type}"]=reason
+
+
+def _restore_full_market(asset_type):
+    st.session_state[f"market_universe_mode_{asset_type}"]="all"
+    _reset_market_refinements(asset_type,"O universo completo foi restaurado e os refinamentos anteriores foram removidos.")
+
+
+def _change_market_asset_class():
+    asset_type="stock" if st.session_state.get("market_asset_class","Ações")=="Ações" else "fii"
+    st.session_state[f"market_universe_mode_{asset_type}"]="all"
+    _reset_market_refinements(asset_type,"O tipo de ativo foi alterado; o universo completo e sem refinamentos foi restaurado.")
+
 def br_money(v):
     if v is None or (isinstance(v,float) and math.isnan(v)):return "N/D"
     return f"R$ {float(v):,.2f}".replace(",","X").replace(".",",").replace("X",".")
@@ -97,10 +133,10 @@ def _active_range(enabled, min_value=None, max_value=None):
     return out
 
 
-def render_advanced_screener(asset_type):
+def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Universo completo"):
     st.markdown("---")
     st.header("🧰 Screener configurável — Fundamentalista + Técnico")
-    st.caption("Ative somente as regras que quiser. Filtros ativos são combinados por E (AND): o ativo precisa satisfazer todos eles. N/D nunca passa por um filtro ativo.")
+    st.caption(f"Universo atual: {universe_label}. Ative somente as regras que quiser. Filtros ativos são combinados por E (AND): o ativo precisa satisfazer todos eles. N/D nunca passa por um filtro ativo.")
     market_name="Ações" if asset_type=="stock" else "FIIs"
     if "advanced_screen_result" not in st.session_state:st.session_state.advanced_screen_result=None
 
@@ -226,6 +262,7 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
             "valuation_flags":{"below_graham":bool(below_graham),"below_barsi_6pct":bool(below_barsi)},
             "technical_filters":tech,"trend_period":trend_period,"pivot_timeframe":pivot_tf,
             "include_technical_columns":True,"limit":limit,
+            "allowed_tickers":list(allowed_tickers) if allowed_tickers is not None else None,
         }
         with st.spinner("Aplicando fundamentos, scores, tendências e pivôs..."):
             result,e=api_post("/screen/advanced",payload,timeout=240)
@@ -235,6 +272,7 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
     result=st.session_state.get("advanced_screen_result")
     if result:
         meta=result.get("meta") or {}; rows=result.get("rows") or []
+        st.caption(f"Resultado calculado dentro de: **{universe_label}**.")
         a,b,c,d=st.columns(4)
         a.metric("Universo",meta.get("universe_count",0)); b.metric("Após fundamentos/scores",meta.get("fundamental_candidates",0)); c.metric("Resultado final",meta.get("returned",0)); d.metric("Sem histórico técnico",meta.get("technical_history_missing",0))
         if meta.get("technical_filter_active") and meta.get("technical_history_missing",0)>0:
@@ -246,10 +284,10 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
         else:
             df=pd.DataFrame(rows)
             rename={
-                "ticker":"Ticker","name":"Nome","sector":"Setor","segment":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dividend_yield_pct":"DY %","roe_pct":"ROE %","roic_pct":"ROIC %","ebit_margin_pct":"Margem EBIT %","net_margin_pct":"Margem Líquida %","ev_ebitda":"EV/EBITDA","gross_debt_to_equity":"Dív. Bruta/PL","net_debt_to_ebitda":"Dív. Líq./EBITDA","current_ratio":"Liq. Corrente","revenue_cagr_5y_pct":"CAGR Receita %","earnings_cagr_5y_pct":"CAGR Lucro %","ffo_yield_pct":"FFO Yield %","cap_rate_pct":"Cap Rate %","vacancy_pct":"Vacância %","ltv_pct":"LTV %","wale_years":"WALE","daily_liquidity":"Liquidez diária","alb_score":"ALB","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","data_quality_score":"Data Quality","trend_daily":"Tend. Dia","trend_weekly":"Tend. Sem.","trend_monthly":"Tend. Mês","sma_daily":"Média Dia","sma_weekly":"Média Sem.","sma_monthly":"Média Mês","rsi14_screen":"RSI 14","pp":"PP","s1":"S1","s2":"S2","s3":"S3","r1":"R1","r2":"R2","r3":"R3","pivot_zone":"Faixa Pivot","pivot_reference":"Referência Pivot",
+                "ticker":"Ticker","name":"Nome","sector_label":"Setor","segment_label":"Segmento","classification":"Categoria","price":"Preço","pe":"P/L","pbv":"P/VP","dividend_yield_pct":"DY %","roe_pct":"ROE %","roic_pct":"ROIC %","ebit_margin_pct":"Margem EBIT %","net_margin_pct":"Margem Líquida %","ev_ebitda":"EV/EBITDA","gross_debt_to_equity":"Dív. Bruta/PL","net_debt_to_ebitda":"Dív. Líq./EBITDA","current_ratio":"Liq. Corrente","revenue_cagr_5y_pct":"CAGR Receita %","earnings_cagr_5y_pct":"CAGR Lucro %","ffo_yield_pct":"FFO Yield %","cap_rate_pct":"Cap Rate %","vacancy_pct":"Vacância %","ltv_pct":"LTV %","wale_years":"WALE","daily_liquidity":"Liquidez diária","alb_score":"ALB","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","data_quality_score":"Data Quality","trend_daily":"Tend. Dia","trend_weekly":"Tend. Sem.","trend_monthly":"Tend. Mês","sma_daily":"Média Dia","sma_weekly":"Média Sem.","sma_monthly":"Média Mês","rsi14_screen":"RSI 14","pp":"PP","s1":"S1","s2":"S2","s3":"S3","r1":"R1","r2":"R2","r3":"R3","pivot_zone":"Faixa Pivot","pivot_reference":"Referência Pivot",
             }
             view=df.rename(columns=rename)
-            preferred=[c for c in ["Ticker","Nome","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","ROIC %","FFO Yield %","Cap Rate %","Vacância %","ALB","Quality","Value","Technical","Risk","Liquidity","Tend. Dia","Tend. Sem.","Tend. Mês","Média Dia","Média Sem.","Média Mês","RSI 14","S3","S2","S1","PP","R1","R2","R3","Faixa Pivot","Referência Pivot"] if c in view.columns]
+            preferred=[c for c in ["Ticker","Nome","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","ROIC %","FFO Yield %","Cap Rate %","Vacância %","ALB","Quality","Value","Technical","Risk","Liquidity","Tend. Dia","Tend. Sem.","Tend. Mês","Média Dia","Média Sem.","Média Mês","RSI 14","S3","S2","S1","PP","R1","R2","R3","Faixa Pivot","Referência Pivot"] if c in view.columns]
             st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=520)
             st.caption("Tendência = preço atual acima/abaixo da média simples do período escolhido. Sem histórico suficiente, o filtro técnico ativo reprova o ativo em vez de assumir zero.")
 
@@ -381,33 +419,21 @@ def render_custom_filter_manager(asset_type,payload):
 
 def render_market():
     st.title("📊 Mercado e Análise Individual")
-    st.caption("Screener, scores por perfil de ativo e valuation multi-método.")
-    market=st.sidebar.radio("Mercado",["Ações","FIIs"])
+    st.caption("Escolha primeiro onde procurar e depois aplique a análise. Assim, cada filtro trabalha somente com os ativos do universo selecionado.")
+    market=st.radio(
+        "Tipo de ativo",["Ações","FIIs"],horizontal=True,key="market_asset_class",
+        on_change=_change_market_asset_class,
+    )
     asset_type="stock" if market=="Ações" else "fii"
+    all_market_label="Todas as ações" if asset_type=="stock" else "Todos os FIIs"
+    catalog,catalog_err=api_get("/assets",{"asset_type":asset_type,"limit":1200,"offset":0}); catalog=catalog or []
+    catalog_map={str(item.get("ticker") or "").upper():item for item in catalog}
+
     custom_payload={"items":[],"limit":int(PERMISSIONS.get("custom_filter_limit") or 0),"used":0}
     if custom_payload["limit"]>0:
         loaded,custom_err=api_get("/screen/custom-filters",{"asset_type":asset_type})
         if not custom_err and loaded:custom_payload=loaded
     custom_items=custom_payload.get("items") or []
-    preset_labels={"preset:default":"Padrão","preset:cnpi":"CNPI","preset:alb":"ALB"}
-    strategy_options=list(preset_labels)+[f"custom:{item['id']}" for item in custom_items]
-    custom_by_id={item["id"]:item for item in custom_items}
-    def strategy_name(value):
-        if value in preset_labels:return preset_labels[value]
-        return f"Personalizado — {custom_by_id[value.split(':',1)[1]]['name']}"
-    strategy_ref=st.sidebar.selectbox("Filtro de análise",strategy_options,format_func=strategy_name)
-    strategy_label=strategy_name(strategy_ref)
-    limit=st.sidebar.slider("Máximo de resultados",10,200,50,10)
-    catalog,catalog_err=api_get("/assets",{"asset_type":asset_type,"limit":500,"offset":0}); catalog=catalog or []
-    if strategy_ref.startswith("custom:"):
-        endpoint=f"/screen/db/custom/{strategy_ref.split(':',1)[1]}"
-    else:
-        strategy=strategy_ref.split(":",1)[1]
-        endpoint=f"/screen/db/stocks/{strategy}" if market=="Ações" else f"/screen/db/fiis/{strategy}"
-    rows,err=api_get(endpoint,{"limit":limit})
-    if err:
-        st.error(f"Não foi possível carregar o screener: {err}"); st.stop()
-    df=pd.DataFrame(rows or [])
 
     sync_message=st.session_state.pop("market_sync_message",None)
     if sync_message:
@@ -438,24 +464,163 @@ def render_market():
         elif not can("can_sync_market"):
             st.caption("Atualização do banco disponível somente para contas autorizadas pelo administrador.")
 
-    # V1.4.1: o filtro por ticker é independente da estratégia.
-    # Ao selecionar um ativo específico, ele é buscado diretamente na API e
-    # aparece sozinho na tabela, mesmo que não passe pelo setup atual.
-    ticker_options=[""]+[a["ticker"] for a in catalog]
-    ticker_labels={"":"Todos os ativos do screener"}
-    ticker_labels.update({a["ticker"]:f"{a['ticker']} — {a.get('name') or 'nome ainda não cadastrado'}" for a in catalog})
-    selected_table_ticker=st.sidebar.selectbox(
-        "Filtrar ticker na tabela",
-        ticker_options,
-        format_func=lambda t:ticker_labels.get(t,t),
-        key="v141_table_ticker",
-    )
+    scope_key=f"market_universe_mode_{asset_type}"
+    st.session_state.setdefault(scope_key,"all")
+    scope_labels={
+        "all":all_market_label,
+        "portfolio":"Minha carteira",
+        "besst":"Método BESST",
+        "classification":"Setor / categoria",
+        "specific":"Ativos específicos",
+    }
+    scope_options=["all"]
+    if can("can_view_portfolio"):scope_options.append("portfolio")
+    if asset_type=="stock":scope_options.append("besst")
+    scope_options.extend(["classification","specific"])
+    if st.session_state[scope_key] not in scope_options:st.session_state[scope_key]="all"
+
+    with st.container(border=True):
+        st.subheader("1. Universo de ativos")
+        st.caption("Esta escolha define quais ativos podem aparecer. Ao trocar o universo, os refinamentos anteriores são limpos para que 100% do novo grupo fique inicialmente disponível.")
+        universe_mode=st.radio(
+            "Onde deseja procurar?",scope_options,horizontal=True,
+            format_func=lambda value:scope_labels[value],key=scope_key,
+            on_change=_reset_market_refinements,args=(asset_type,),
+        )
+
+        selected_scope_tickers=None
+        besst_group="all"
+        classification=None
+        classification_field="classification"
+        scope_detail=""
+        if universe_mode=="portfolio":
+            portfolios,portfolio_err=api_get("/portfolios")
+            portfolios=portfolios or []
+            if portfolio_err:
+                st.error(f"Não foi possível consultar sua carteira: {portfolio_err}")
+                selected_scope_tickers=[]
+            elif not portfolios:
+                st.info("Você ainda não possui uma carteira. Cadastre ativos em Minha carteira ou volte a todas as ações.")
+                selected_scope_tickers=[]
+            else:
+                portfolio_labels={"all":"Todas as minhas carteiras"}
+                portfolio_labels.update({str(item["id"]):item["name"] for item in portfolios})
+                portfolio_choice=st.selectbox(
+                    "Carteira usada como universo",list(portfolio_labels),
+                    format_func=lambda value:portfolio_labels[value],key=f"market_portfolio_scope_{asset_type}",
+                    on_change=_reset_market_refinements,args=(asset_type,),
+                )
+                selected_portfolios=portfolios if portfolio_choice=="all" else [item for item in portfolios if str(item["id"])==portfolio_choice]
+                selected_scope_tickers=[]
+                portfolio_failures=[]
+                for item in selected_portfolios:
+                    snapshot,snapshot_err=api_get(f"/portfolios/{item['id']}")
+                    if snapshot_err:
+                        portfolio_failures.append(item["name"])
+                        continue
+                    selected_scope_tickers.extend(position.get("ticker") for position in (snapshot or {}).get("positions") or [] if position.get("ticker"))
+                if portfolio_failures:st.warning(f"Não foi possível ler: {', '.join(portfolio_failures)}.")
+                scope_detail=portfolio_labels[portfolio_choice]
+        elif universe_mode=="besst":
+            besst_group=st.selectbox(
+                "Grupo BESST",list(BESST_LABELS),format_func=lambda value:BESST_LABELS[value],
+                key=f"market_besst_group_{asset_type}",on_change=_reset_market_refinements,args=(asset_type,),
+            )
+            scope_detail=BESST_LABELS[besst_group]
+        elif universe_mode=="classification":
+            dimension_labels={
+                "classification":"Categoria consolidada","sector_label":"Setor",
+                "segment_label":"Segmento","market_cap_category_label":"Porte da empresa",
+            }
+            available_dimensions=[field for field in dimension_labels if any(str(item.get(field) or "").strip() for item in catalog)]
+            classification_field=st.selectbox(
+                "Como deseja agrupar?",available_dimensions,format_func=lambda value:dimension_labels[value],
+                key=f"market_classification_dimension_{asset_type}",on_change=_reset_market_refinements,args=(asset_type,),
+            ) if available_dimensions else "classification"
+            classifications=sorted({str(item.get(classification_field) or "").strip() for item in catalog if str(item.get(classification_field) or "").strip()},key=str.casefold)
+            if classifications:
+                classification=st.selectbox(
+                    dimension_labels[classification_field],classifications,key=f"market_classification_{asset_type}_{classification_field}",
+                    on_change=_reset_market_refinements,args=(asset_type,),
+                )
+                scope_detail=f"{dimension_labels[classification_field]}: {classification}"
+            else:
+                st.info("Ainda não há setor ou categoria cadastrada para este mercado.")
+        elif universe_mode=="specific":
+            ticker_labels={item["ticker"]:f"{item['ticker']} — {item.get('name') or 'nome ainda não cadastrado'}" for item in catalog}
+            selected_scope_tickers=st.multiselect(
+                "Escolha um ou mais ativos",list(ticker_labels),format_func=lambda value:ticker_labels[value],
+                key=f"market_specific_tickers_{asset_type}",on_change=_reset_market_refinements,args=(asset_type,),
+            )
+            scope_detail="Seleção manual"
+
+        allowed_tickers=universe_tickers(
+            catalog,universe_mode,selected_tickers=selected_scope_tickers,
+            besst_group=besst_group,classification=classification,classification_field=classification_field,
+        )
+        allowed_set=set(allowed_tickers)
+        scoped_catalog=[item for item in catalog if str(item.get("ticker") or "").upper() in allowed_set]
+        scope_label=scope_labels[universe_mode]+(f" • {scope_detail}" if scope_detail else "")
+        left,right=st.columns([4,1])
+        left.success(f"Universo atual: **{scope_label}** • **{len(allowed_tickers)} ativo(s)**")
+        right.button(
+            f"↩ {all_market_label}",key=f"restore_all_{asset_type}",use_container_width=True,
+            disabled=universe_mode=="all",on_click=_restore_full_market,args=(asset_type,),
+        )
+
+    notice=st.session_state.pop(f"market_scope_notice_{asset_type}",None)
+    if notice:
+        st.info(f"{notice} Agora você pode aplicar novamente Padrão, CNPI, ALB, um filtro personalizado ou o screener avançado somente dentro dos {len(allowed_tickers)} ativo(s) deste universo.")
+
+    preset_labels={
+        "preset:all":"Sem filtros — mostrar 100% do universo",
+        "preset:default":"Padrão","preset:cnpi":"CNPI","preset:alb":"ALB",
+    }
+    strategy_options=list(preset_labels)+[f"custom:{item['id']}" for item in custom_items]
+    custom_by_id={str(item["id"]):item for item in custom_items}
+    def strategy_name(value):
+        if value in preset_labels:return preset_labels[value]
+        item=custom_by_id.get(value.split(":",1)[1])
+        return f"Personalizado — {item['name']}" if item else "Personalizado indisponível"
+    strategy_key=f"market_strategy_ref_{asset_type}"
+    st.session_state.setdefault(strategy_key,"preset:all")
+    if st.session_state[strategy_key] not in strategy_options:st.session_state[strategy_key]="preset:all"
+
+    with st.container(border=True):
+        st.subheader("2. Refinar o universo")
+        st.caption("O filtro escolhido abaixo nunca traz ativos de fora do universo atual.")
+        c1,c2=st.columns([3,1])
+        strategy_ref=c1.selectbox("Filtro de análise",strategy_options,format_func=strategy_name,key=strategy_key)
+        limit=c2.slider("Máximo exibido",10,200,50,10,key=f"market_result_limit_{asset_type}")
+        strategy_label=strategy_name(strategy_ref)
+
+        ticker_labels={"":"Todos os ativos aprovados"}
+        ticker_labels.update({item["ticker"]:f"{item['ticker']} — {item.get('name') or 'nome ainda não cadastrado'}" for item in scoped_catalog})
+        selected_table_ticker=st.selectbox(
+            "Localizar um ativo dentro deste universo",list(ticker_labels),
+            format_func=lambda value:ticker_labels[value],key=f"market_table_ticker_{asset_type}",
+        )
+
+    if strategy_ref=="preset:all":
+        endpoint=f"/screen/db/universe/{asset_type}"
+    elif strategy_ref.startswith("custom:"):
+        endpoint=f"/screen/db/custom/{strategy_ref.split(':',1)[1]}"
+    else:
+        strategy=strategy_ref.split(":",1)[1]
+        endpoint=f"/screen/db/stocks/{strategy}" if asset_type=="stock" else f"/screen/db/fiis/{strategy}"
+    raw_rows,err=api_get(endpoint,{"limit":1200}) if allowed_tickers else ([],None)
+    if err:
+        st.error(f"Não foi possível carregar o filtro: {err}"); raw_rows=[]
+    refined_rows=filter_rows_by_tickers(raw_rows or [],allowed_tickers)
+    visible_rows=refined_rows[:limit]
+    visible_rows=[{**catalog_map.get(str(row.get("ticker") or "").upper(),{}),**row} for row in visible_rows]
+    df=pd.DataFrame(visible_rows)
 
     if selected_table_ticker:
         detail_one,e_detail=api_get(f"/assets/{selected_table_ticker}")
         intel_one,e_intel=api_get(f"/assets/{selected_table_ticker}/intelligence")
         if e_detail or detail_one is None:
-            st.sidebar.error(f"Não foi possível carregar {selected_table_ticker}: {e_detail or 'ativo não encontrado'}")
+            st.error(f"Não foi possível carregar {selected_table_ticker}: {e_detail or 'ativo não encontrado'}")
             df=pd.DataFrame()
         else:
             asset_one=detail_one.get("asset") or {}
@@ -464,7 +629,12 @@ def render_market():
             df=pd.DataFrame([{
                 "ticker":asset_one.get("ticker"),
                 "name":asset_one.get("name"),
+                "sector":asset_one.get("sector"),
+                "sector_label":asset_one.get("sector_label"),
+                "industry":asset_one.get("industry"),
                 "segment":asset_one.get("segment"),
+                "segment_label":asset_one.get("segment_label"),
+                "classification":asset_one.get("classification"),
                 "price":fund_one.get("price"),
                 "pe":fund_one.get("pe"),
                 "pbv":fund_one.get("pbv"),
@@ -483,43 +653,50 @@ def render_market():
                 "alb_score":intel_one.get("alb_score"),
                 "data_quality_score":(intel_one.get("data_quality") or {}).get("score"),
             }])
-            st.sidebar.caption("Ticker selecionado: a tabela ignora temporariamente os filtros da estratégia e mostra este ativo individualmente.")
+            st.caption("Ativo localizado: a tabela mostra somente este ticker do universo atual, independentemente de ele passar pelo refinamento escolhido.")
 
-    c1,c2,c3,c4=st.columns(4); c1.metric("Ativos encontrados",len(df))
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric("Universo selecionado",len(allowed_tickers))
+    c2.metric("Após o refinamento",len(refined_rows))
+    c3.metric("Exibidos",len(df))
     if not df.empty:
-        c2.metric("ALB médio",br_num(pd.to_numeric(df.get("alb_score"),errors="coerce").mean(),1))
-        c3.metric("Technical médio",br_num(pd.to_numeric(df.get("technical_score"),errors="coerce").mean(),1))
         c4.metric("Data Quality médio",br_num(pd.to_numeric(df.get("data_quality_score"),errors="coerce").mean(),1,"%"))
+    else:c4.metric("Data Quality médio","N/D")
 
-    st.subheader(f"{market} • Estratégia {strategy_label}")
+    st.subheader(f"{scope_label} • {strategy_label}")
     if df.empty:
         if not catalog:
-            st.warning("Não há ações cadastradas neste banco. Abra ‘Dados usados pelos filtros’ acima e carregue o mercado.")
+            st.warning("Não há ativos deste mercado cadastrados no banco. Abra ‘Dados usados pelos filtros’ acima e carregue o mercado.")
+        elif not allowed_tickers:
+            st.info(f"O universo selecionado está vazio. Escolha ativos, cadastre uma posição na carteira ou use ‘{all_market_label}’ para recomeçar.")
         else:
-            st.info(f"O catálogo contém {len(catalog)} ativo(s), mas nenhum passou pela estratégia {strategy_label}. Tente a estratégia Padrão ou atualize os dados do mercado.")
+            st.info(f"Nenhum dos {len(allowed_tickers)} ativo(s) passou por {strategy_label}. Escolha ‘Sem filtros’ para recuperar 100% deste universo ou ajuste o refinamento.")
     else:
-        rename={"ticker":"Ticker","name":"Nome","segment":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dy":"DY %","roe":"ROE %","ffo_yield":"FFO Yield %","cap_rate":"Cap Rate %","vacancy":"Vacância %","daily_liquidity":"Liquidez","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","alb_score":"ALB","data_quality_score":"Data Quality"}
+        rename={"ticker":"Ticker","name":"Nome","sector_label":"Setor","classification":"Categoria","segment_label":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dy":"DY %","roe":"ROE %","ffo_yield":"FFO Yield %","cap_rate":"Cap Rate %","vacancy":"Vacância %","daily_liquidity":"Liquidez","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","alb_score":"ALB","data_quality_score":"Data Quality"}
         view=df.rename(columns=rename)
-        preferred=[c for c in ["Ticker","Nome","Segmento","Preço","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
+        preferred=[c for c in ["Ticker","Nome","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
         st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=460)
 
     if int(PERMISSIONS.get("custom_filter_limit") or 0)>0:
         render_custom_filter_manager(asset_type,custom_payload)
 
     if can("can_use_advanced_filters"):
-        render_advanced_screener(asset_type)
+        render_advanced_screener(asset_type,allowed_tickers=allowed_tickers,universe_label=scope_label)
     else:
         st.info("Os filtros avançados estão disponíveis somente mediante autorização do administrador.")
 
     st.markdown("---"); st.header("🔎 Análise individual")
     if "analysis_payload_v14" not in st.session_state:st.session_state.analysis_payload_v14=None
-    if catalog:
-        options=[a["ticker"] for a in catalog]; labels={a["ticker"]:f"{a['ticker']} — {a.get('name') or 'nome ainda não cadastrado'}" for a in catalog}
+    if scoped_catalog:
+        options=[a["ticker"] for a in scoped_catalog]; labels={a["ticker"]:f"{a['ticker']} — {a.get('name') or 'nome ainda não cadastrado'}" for a in scoped_catalog}
         default_ticker=selected_table_ticker if selected_table_ticker in options else ("BBAS3" if "BBAS3" in options else options[0])
         default_index=options.index(default_ticker)
-        ticker=st.selectbox("Buscar / selecionar ticker",options,index=default_index,format_func=lambda t:labels.get(t,t),key="v14_ticker")
-    else:ticker=st.text_input("Ticker",value="BBAS3").strip().upper()
-    if st.button("Analisar ativo",type="primary"):
+        ticker=st.selectbox("Buscar / selecionar ticker",options,index=default_index,format_func=lambda t:labels.get(t,t),key=f"v14_ticker_{asset_type}")
+    elif not catalog:ticker=st.text_input("Ticker",value="BBAS3").strip().upper()
+    else:
+        ticker=""
+        st.info("Não há ativo disponível no universo atual para análise individual.")
+    if st.button("Analisar ativo",type="primary",disabled=not bool(ticker)):
         with st.spinner(f"Calculando inteligência V1.4 para {ticker}..."):
             detail,e1=api_get(f"/assets/{ticker}"); intel,e2=api_get(f"/assets/{ticker}/intelligence"); prices,e3=api_get(f"/assets/{ticker}/prices",{"limit":260}); hist,e4=api_get(f"/assets/{ticker}/scores/history",{"limit":120}); vals,e5=api_get(f"/assets/{ticker}/valuations",{"limit":120})
         st.session_state.analysis_payload_v14={"ticker":ticker,"detail":detail,"intel":intel,"prices":prices or [],"hist":hist or [],"vals":vals or [],"errors":{"Ativo":e1,"Inteligência":e2,"Preços":e3,"Scores":e4,"Valuation":e5}}
@@ -1491,20 +1668,28 @@ if registration_err or access_err:
     st.stop()
 PERMISSIONS=access or registered or {}
 st.sidebar.caption(f"Perfil: {PERMISSIONS.get('role','visitor')} • {PERMISSIONS.get('status','pending')}")
+st.sidebar.markdown("## 🧭 Navegação")
+module_labels={
+    "market":"📊 Mercado e análise",
+    "portfolio":"💼 Minha carteira",
+    "backtests":"🧪 Backtests",
+    "access":"🔐 Usuários e permissões",
+}
 modules=[]
-if can("can_view_market"):modules.append("Mercado & Análise")
-if can("can_view_portfolio"):modules.append("Carteira")
-if can("can_view_backtests"):modules.append("Backtests")
-if PERMISSIONS.get("is_owner"):modules.append("Usuários e permissões")
+if can("can_view_market"):modules.append("market")
+if can("can_view_portfolio"):modules.append("portfolio")
+if can("can_view_backtests"):modules.append("backtests")
+if PERMISSIONS.get("is_owner"):modules.append("access")
 if not modules:
     st.title("Acesso aguardando autorização")
     st.info("Sua conta Google foi identificada, mas ainda não possui menus liberados. Solicite ao proprietário a autorização necessária.")
     st.stop()
-module=st.sidebar.radio("Módulo",modules,index=0)
+module=st.sidebar.radio("Escolha uma área",modules,index=0,format_func=lambda value:module_labels[value],label_visibility="collapsed")
+st.sidebar.caption(f"Você está em: {module_labels[module]}")
 st.sidebar.markdown("---")
-if module=="Mercado & Análise":render_market()
-elif module=="Carteira":render_portfolio()
-elif module=="Backtests":render_backtests()
+if module=="market":render_market()
+elif module=="portfolio":render_portfolio()
+elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.7.5. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.8.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

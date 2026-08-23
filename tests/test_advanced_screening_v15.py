@@ -93,3 +93,30 @@ def test_advanced_screen_repository_integration_sqlite():
         assert result["meta"]["returned"] == 1
         assert result["rows"][0]["ticker"] == "TEST3"
         assert result["rows"][0]["pp"] is not None
+
+
+def test_advanced_screen_respects_the_selected_ticker_universe():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from investment_engine.infrastructure.db.base import Base
+    from investment_engine.core.repositories.assets import AssetRepository
+    from investment_engine.core.screening.advanced import advanced_screen
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        repo = AssetRepository(session)
+        now = datetime(2026, 8, 21, tzinfo=timezone.utc)
+        for ticker in ("KEEP3", "DROP3"):
+            asset = repo.upsert_asset(ticker=ticker, asset_type="stock", name=ticker)
+            repo.upsert_fundamentals(
+                asset, source="test", reference_date=now, retrieved_at=now, status="valid", quality_score=100,
+                data={"price": 10, "pe": 8, "pbv": 1, "roe_pct": 20}, raw_payload={},
+            )
+        session.commit()
+        result = advanced_screen(
+            repo, asset_type="stock", fundamental_filters={"roe_pct": {"min": 15}},
+            include_technical_columns=False, allowed_tickers=["KEEP3"], limit=10,
+        )
+        assert result["meta"]["universe_count"] == 1
+        assert [row["ticker"] for row in result["rows"]] == ["KEEP3"]

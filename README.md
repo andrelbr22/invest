@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.7.5
+# Formação do Investidor • Investment Engine V1.8.0
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -11,6 +11,8 @@ Backend Python/FastAPI/PostgreSQL + Streamlit para triagem fundamentalista/técn
 ## Principais módulos
 
 ### Mercado & Análise
+- universo selecionável: mercado completo, carteira do usuário, método BESST, setor/categoria/segmento/porte ou ativos específicos;
+- troca de universo segura: limpa refinamentos anteriores, mostra 100% do novo grupo e oferece retorno imediato ao mercado completo;
 - presets Padrão / CNPI / ALB;
 - até três filtros personalizados salvos por usuário, conforme permissão do proprietário;
 - análise individual por perfil setorial;
@@ -103,3 +105,7 @@ A V1.7.4 torna o cadastro de compras compatível com a rota estável de posiçõ
 ## V1.7.5
 
 A V1.7.5 mantém o cálculo consolidado da compra dentro da própria página da Carteira. Isso evita falha de inicialização quando o Streamlit Cloud atualiza o arquivo da interface antes de atualizar módulos auxiliares em cache.
+
+## V1.8.0
+
+A V1.8.0 reorganiza a navegação e separa a triagem em duas etapas: universo de ativos e refinamento. O usuário pode trabalhar com o mercado completo, suas próprias carteiras, o método BESST, setor/categoria/segmento/porte ou uma seleção de tickers. Padrão, CNPI, ALB, filtros personalizados e screener avançado passam a respeitar o universo escolhido. Não exige migração do banco. Consulte `V1_8_0.md` e `PATCH_V180.md`.

@@ -20,7 +20,7 @@ from ..core.repositories.portfolio import PortfolioRepository
 from ..core.repositories.screening_filters import SavedScreeningFilterRepository
 from ..core.repositories.backtests import BacktestRepository
 from ..core.repositories.access import AccessPolicyRepository, PERMISSION_FIELDS, full_owner_policy, policy_dict
-from ..core.portfolio.service import build_portfolio_snapshot, classification_for
+from ..core.portfolio.service import build_portfolio_snapshot, classification_for, localize_classification
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
 from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
 from ..infrastructure.db.models import AssetORM
@@ -32,8 +32,8 @@ from ..data.ingestion.pipeline import MarketIngestionPipeline
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.7.5",
-    version="0.8.5",
+    title="Investment Engine V1.8.0",
+    version="0.9.0",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -300,6 +300,7 @@ class AdvancedScreenRequest(BaseModel):
     pivot_timeframe: str = Field(default="daily", pattern="^(daily|weekly|monthly)$")
     include_technical_columns: bool = True
     limit: int = Field(default=100, ge=1, le=300)
+    allowed_tickers: list[str] | None = Field(default=None, max_length=1200)
 
 
 class MarketSyncRequest(BaseModel):
@@ -336,7 +337,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.8.5", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.9.0", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -587,7 +588,7 @@ def sync_market(req: MarketSyncRequest, _access=Depends(require_permission("can_
 @app.get("/assets")
 def assets(
     asset_type: str | None = Query(default=None, pattern="^(stock|fii|etf|bdr|fixed_income|crypto|other)$"),
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = Query(default=100, ge=1, le=1200),
     offset: int = Query(default=0, ge=0),
     _access=Depends(require_permission("can_view_market")),
     db: Session = Depends(get_db),
@@ -600,6 +601,9 @@ def assets(
             "exchange": a.exchange, "currency": a.currency, "sector": a.sector, "industry": a.industry,
             "segment": a.segment, "market_cap_category": a.market_cap_category, "is_active": a.is_active,
             "classification": classification_for(a.asset_type, a.sector, a.segment, industry=a.industry, category=a.market_cap_category),
+            "sector_label": localize_classification(a.sector), "industry_label": localize_classification(a.industry),
+            "segment_label": localize_classification(a.segment),
+            "market_cap_category_label": localize_classification(a.market_cap_category),
         }
         for a in rows
     ]
@@ -619,6 +623,9 @@ def asset_detail(ticker: str, _access=Depends(require_permission("can_view_marke
             "exchange": asset.exchange, "currency": asset.currency, "sector": asset.sector, "industry": asset.industry,
             "segment": asset.segment, "market_cap_category": asset.market_cap_category, "is_active": asset.is_active,
             "classification": classification_for(asset.asset_type, asset.sector, asset.segment, industry=asset.industry, category=asset.market_cap_category),
+            "sector_label": localize_classification(asset.sector), "industry_label": localize_classification(asset.industry),
+            "segment_label": localize_classification(asset.segment),
+            "market_cap_category_label": localize_classification(asset.market_cap_category),
             "metadata": asset.metadata_json,
         },
         "fundamentals": _fundamental_dict(fundamentals),
@@ -702,25 +709,72 @@ def ingest_prices(ticker: str, _access=Depends(require_permission("can_sync_mark
         db.rollback(); raise HTTPException(502,detail={"price_ingestion_failed":str(exc)})
 
 
+def _screen_identity(asset):
+    return {
+        "ticker": asset.ticker, "name": asset.name,
+        "sector": asset.sector, "industry": asset.industry, "segment": asset.segment,
+        "market_cap_category": asset.market_cap_category,
+        "classification": classification_for(
+            asset.asset_type, asset.sector, asset.segment,
+            industry=asset.industry, category=asset.market_cap_category,
+        ),
+        "sector_label": localize_classification(asset.sector),
+        "industry_label": localize_classification(asset.industry),
+        "segment_label": localize_classification(asset.segment),
+        "market_cap_category_label": localize_classification(asset.market_cap_category),
+    }
+
+
+def _screen_scores(score):
+    return {
+        "alb_score": _num(score.alb_score) if score else None,
+        "quality_score": _num(score.quality_score) if score else None,
+        "value_score": _num(score.value_score) if score else None,
+        "growth_score": _num(score.growth_score) if score else None,
+        "technical_score": _num(score.technical_score) if score else None,
+        "risk_score": _num(score.risk_score) if score else None,
+        "liquidity_score": _num(score.liquidity_score) if score else None,
+        "data_quality_score": _num(score.data_quality_score) if score else None,
+    }
+
+
+def _stock_screen_row(asset, fundamental, score):
+    return {
+        **_screen_identity(asset),
+        "price": _num(fundamental.price) if fundamental else None,
+        "pe": _num(fundamental.pe) if fundamental else None,
+        "pbv": _num(fundamental.pbv) if fundamental else None,
+        "dy": _num(fundamental.dividend_yield_pct) if fundamental else None,
+        "roe": _num(fundamental.roe_pct) if fundamental else None,
+        **_screen_scores(score),
+    }
+
+
 def _stock_screen_result(rows):
-    return [{"ticker":a.ticker,"name":a.name,"price":_num(f.price),"pe":_num(f.pe),"pbv":_num(f.pbv),"dy":_num(f.dividend_yield_pct),"roe":_num(f.roe_pct),"alb_score":_num(sc.alb_score) if sc else None,"quality_score":_num(sc.quality_score) if sc else None,"value_score":_num(sc.value_score) if sc else None,"growth_score":_num(sc.growth_score) if sc else None,"technical_score":_num(sc.technical_score) if sc else None,"risk_score":_num(sc.risk_score) if sc else None,"liquidity_score":_num(sc.liquidity_score) if sc else None,"data_quality_score":_num(sc.data_quality_score) if sc else None} for a,f,sc in rows]
+    return [_stock_screen_row(asset, fundamental, score) for asset, fundamental, score in rows]
+
+
+def _fii_screen_row(asset, fundamental, score):
+    return {
+        **_screen_identity(asset),
+        "price": _num(fundamental.price) if fundamental else None,
+        "pbv": _num(fundamental.pbv) if fundamental else None,
+        "dy": _num(fundamental.dividend_yield_pct) if fundamental else None,
+        "ffo_yield": _num(fundamental.ffo_yield_pct) if fundamental else None,
+        "cap_rate": _num(fundamental.cap_rate_pct) if fundamental else None,
+        "vacancy": _num(fundamental.vacancy_pct) if fundamental else None,
+        "daily_liquidity": _num(fundamental.daily_liquidity) if fundamental else None,
+        **_screen_scores(score),
+    }
 
 
 def _fii_screen_result(rows):
-    return [{
-        "ticker": a.ticker, "name": a.name, "segment": a.segment,
-        "price": _num(f.price), "pbv": _num(f.pbv), "dy": _num(f.dividend_yield_pct),
-        "ffo_yield": _num(f.ffo_yield_pct), "cap_rate": _num(f.cap_rate_pct),
-        "vacancy": _num(f.vacancy_pct), "daily_liquidity": _num(f.daily_liquidity),
-        "alb_score": _num(sc.alb_score) if sc else None,
-        "quality_score": _num(sc.quality_score) if sc else None,
-        "value_score": _num(sc.value_score) if sc else None,
-        "growth_score": _num(sc.growth_score) if sc else None,
-        "technical_score": _num(sc.technical_score) if sc else None,
-        "risk_score": _num(sc.risk_score) if sc else None,
-        "liquidity_score": _num(sc.liquidity_score) if sc else None,
-        "data_quality_score": _num(sc.data_quality_score) if sc else None,
-    } for a, f, sc in rows]
+    return [_fii_screen_row(asset, fundamental, score) for asset, fundamental, score in rows]
+
+
+def _universe_screen_result(rows, asset_type: str):
+    converter = _stock_screen_row if asset_type == "stock" else _fii_screen_row
+    return [converter(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
 
 @app.get("/screen/db/stocks/{strategy_id}")
 def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, _access=Depends(require_permission("can_view_market")), db: Session=Depends(get_db)):
@@ -736,6 +790,19 @@ def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, _access=D
         raise HTTPException(404, "strategy_not_found")
     rows = AssetRepository(db).screen_latest_fiis(strategy.filters, limit=limit, offset=offset)
     return _fii_screen_result(rows)
+
+
+@app.get("/screen/db/universe/{asset_type}")
+def screen_db_universe(
+    asset_type: str,
+    limit: int = Query(default=500, ge=1, le=1200),
+    _access=Depends(require_permission("can_view_market")),
+    db: Session = Depends(get_db),
+):
+    if asset_type not in {"stock", "fii"}:
+        raise HTTPException(422, "invalid_asset_type")
+    rows = AssetRepository(db).latest_universe(asset_type=asset_type, limit=limit)
+    return _universe_screen_result(rows, asset_type)
 
 
 @app.get("/screen/db/custom/{filter_id}")
@@ -764,6 +831,7 @@ def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permissi
             score_filters=score_filters, valuation_flags=req.valuation_flags,
             technical_filters=req.technical_filters.model_dump(exclude_none=True), trend_period=req.trend_period,
             pivot_timeframe=req.pivot_timeframe, include_technical_columns=req.include_technical_columns, limit=req.limit,
+            allowed_tickers=req.allowed_tickers,
         )
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))

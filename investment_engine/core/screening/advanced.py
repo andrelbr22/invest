@@ -7,6 +7,8 @@ from typing import Iterable
 
 import pandas as pd
 
+from investment_engine.core.portfolio.service import classification_for, localize_classification
+
 
 FUNDAMENTAL_FIELDS = {
     "price", "pe", "pbv", "dividend_yield_pct", "ev_ebitda", "ebit_margin_pct", "net_margin_pct",
@@ -244,6 +246,14 @@ def row_from_orm(asset, fund, tech, score) -> dict:
         "asset": {
             "id": str(asset.id), "ticker": asset.ticker, "name": asset.name, "asset_type": asset.asset_type,
             "sector": asset.sector, "industry": asset.industry, "segment": asset.segment,
+            "classification": classification_for(
+                asset.asset_type, asset.sector, asset.segment,
+                industry=asset.industry, category=asset.market_cap_category,
+            ),
+            "sector_label": localize_classification(asset.sector),
+            "industry_label": localize_classification(asset.industry),
+            "segment_label": localize_classification(asset.segment),
+            "market_cap_category_label": localize_classification(asset.market_cap_category),
         },
         "fundamentals": fund_dict,
         "scores": score_dict,
@@ -258,8 +268,11 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
                     score_filters: dict | None = None, valuation_flags: dict | None = None,
                     technical_filters: dict | None = None, trend_period: int = 21,
                     pivot_timeframe: str = "daily", include_technical_columns: bool = True,
-                    limit: int = 100) -> dict:
+                    limit: int = 100, allowed_tickers: Iterable[str] | None = None) -> dict:
     universe = repo.latest_universe(asset_type=asset_type, limit=1200)
+    if allowed_tickers is not None:
+        allowed = {str(ticker).strip().upper() for ticker in allowed_tickers if str(ticker).strip()}
+        universe = [row for row in universe if str(row[0].ticker).upper() in allowed]
     preliminary = []
     for asset, fund, tech, score in universe:
         if fund is None:

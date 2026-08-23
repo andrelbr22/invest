@@ -101,7 +101,7 @@ try {
         & $gitPath config user.email "andrelbr22@users.noreply.github.com"
     }
 
-    & $gitPath commit -m "Publica Investment Engine V1.7.5 no Streamlit Cloud"
+    & $gitPath commit -m "Publica Investment Engine V1.8.0 no Streamlit Cloud"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
