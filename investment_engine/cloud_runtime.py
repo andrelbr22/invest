@@ -6,6 +6,8 @@ import os
 import socket
 import threading
 import time
+import json
+from urllib.request import urlopen
 from pathlib import Path
 
 
@@ -25,6 +27,27 @@ def _port_is_open(host: str, port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+def _running_api_version(host: str, port: int) -> str | None:
+    try:
+        with urlopen(f"http://{host}:{port}/health", timeout=1.0) as response:
+            return str(json.loads(response.read().decode("utf-8")).get("version") or "")
+    except Exception:
+        return None
+
+
+def _stop_stale_api(host: str, port: int) -> None:
+    global _API_THREAD, _API_SERVER
+    if _API_SERVER is not None:
+        _API_SERVER.should_exit = True
+    if _API_THREAD is not None and _API_THREAD.is_alive():
+        _API_THREAD.join(timeout=10)
+    deadline = time.monotonic() + 10
+    while _port_is_open(host, port) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    _API_THREAD = None
+    _API_SERVER = None
 
 
 def _normalize_database_urls() -> None:
@@ -84,13 +107,18 @@ def ensure_cloud_runtime() -> None:
 
     host = os.getenv("EMBEDDED_API_HOST", "127.0.0.1")
     port = int(os.getenv("EMBEDDED_API_PORT", "8765"))
+    expected_version = os.getenv("EXPECTED_EMBEDDED_API_VERSION", "").strip()
 
     if _port_is_open(host, port):
-        return
+        if not expected_version or _running_api_version(host, port) == expected_version:
+            return
+        _stop_stale_api(host, port)
 
     with _START_LOCK:
         if _port_is_open(host, port):
-            return
+            if not expected_version or _running_api_version(host, port) == expected_version:
+                return
+            _stop_stale_api(host, port)
         if _API_THREAD is not None and _API_THREAD.is_alive():
             return
 

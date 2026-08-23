@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
 
@@ -195,6 +195,32 @@ class ScoreSnapshotORM(Base):
     data_quality_score: Mapped[Decimal|None]=mapped_column(Numeric(5,2))
     details_json: Mapped[dict]=mapped_column(JSON,default=dict,nullable=False)
     asset: Mapped[AssetORM]=relationship(back_populates="scores")
+
+
+class UserAccessPolicyORM(Base):
+    """Authorization policy for a Google account.
+
+    Authentication remains with Google/Streamlit.  This table only controls
+    what an authenticated account may see or change inside the application.
+    """
+    __tablename__ = "user_access_policies"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True, index=True)
+    display_name: Mapped[str | None] = mapped_column(String(180))
+    role: Mapped[str] = mapped_column(String(24), nullable=False, default="visitor")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    can_view_market: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    can_use_advanced_filters: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_view_portfolio: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_write_portfolio: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_view_backtests: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_run_backtests: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_sync_market: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_manage_users: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class PortfolioORM(Base):

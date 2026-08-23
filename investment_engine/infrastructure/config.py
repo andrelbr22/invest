@@ -17,10 +17,20 @@ class Settings(BaseSettings):
     gordon_required_return_pct: float = 12.0
     gordon_growth_pct: float = 4.0
     valuation_margin_of_safety_pct: float = 20.0
+    app_auth_required: bool = False
+    app_owner_emails: str = ""
+    # Backward compatibility: the former allow-list becomes the initial owner
+    # list when APP_OWNER_EMAILS has not been configured yet.
+    app_allowed_emails: str = ""
 
     @property
     def allowed_hosts_list(self) -> list[str]:
         return [item.strip() for item in self.allowed_hosts.split(",") if item.strip()]
+
+    @property
+    def owner_emails(self) -> set[str]:
+        raw = self.app_owner_emails or self.app_allowed_emails
+        return {item.strip().lower() for item in raw.split(",") if item.strip()}
 
 
 settings = Settings()

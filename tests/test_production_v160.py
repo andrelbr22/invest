@@ -30,10 +30,16 @@ def test_landing_page_and_private_beta_configuration_are_present():
     assert "Formação do Investidor" in page
     assert "https://app.formacaodoinvestidor.com.br" in page
     assert 'os.getenv("INVESTMENT_API_URL"' in ui
-    assert 'os.getenv("APP_ALLOWED_EMAILS"' in ui
+    assert "CURRENT_USER_EMAIL" in ui
+    assert 'api_get("/access/me")' in ui
     assert "st.login()" in ui and "st.logout()" in ui
 
 
 def test_allowed_hosts_are_parsed_from_environment_shape():
     settings = Settings(allowed_hosts="api, localhost,127.0.0.1")
     assert settings.allowed_hosts_list == ["api", "localhost", "127.0.0.1"]
+
+
+def test_owner_email_uses_new_setting_and_legacy_fallback():
+    assert Settings(app_owner_emails="Owner@Example.com").owner_emails == {"owner@example.com"}
+    assert Settings(app_allowed_emails="legacy@example.com").owner_emails == {"legacy@example.com"}

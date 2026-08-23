@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.6.1
+# Formação do Investidor • Investment Engine V1.6.2
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -71,3 +71,7 @@ A V1.6.0 prepara o beta privado do domínio Formação do Investidor: página in
 ## V1.6.1
 
 A V1.6.1 permite carregar e atualizar o catálogo de ações e FIIs pela própria tela do Mercado, identifica claramente um banco Neon vazio e melhora o cadastro da Carteira com classificação automática em português, preço com duas casas decimais e quantidade ajustável em passos de 100, 10 ou 1. Não exige migração adicional do banco. Consulte `V1_6_1.md`.
+
+## V1.6.2
+
+A V1.6.2 libera a autenticação para contas Google externas com perfil inicial de visitante somente leitura. O proprietário passa a controlar individualmente acesso ao Mercado, filtros avançados, Carteira, Backtests e atualização do banco. A quantidade da Carteira ganha botões confiáveis para 100, 25, 10, 5 ou 1 unidade. Consulte `V1_6_2.md`.

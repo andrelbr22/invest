@@ -8,10 +8,15 @@ from investment_engine.ui_helpers import format_brl_price_input, parse_brl_price
 
 st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
+CURRENT_USER_EMAIL=""
+CURRENT_USER_NAME=""
+PERMISSIONS={}
+
 def _env_flag(name,default=False):
     return os.getenv(name,"true" if default else "false").strip().lower() in {"1","true","yes","on"}
 
 def _protect_private_beta():
+    global CURRENT_USER_EMAIL,CURRENT_USER_NAME
     if not _env_flag("APP_AUTH_REQUIRED",False):
         return
     try:
@@ -28,12 +33,8 @@ def _protect_private_beta():
                 st.error("A autenticação ainda não foi configurada neste servidor.")
         st.stop()
     email=str(getattr(st.user,"email","") or "").strip().lower()
-    allowed={item.strip().lower() for item in os.getenv("APP_ALLOWED_EMAILS","").split(",") if item.strip()}
-    if allowed and email not in allowed:
-        st.error("Esta conta não está autorizada para o beta privado.")
-        if st.button("Sair"):
-            st.logout()
-        st.stop()
+    CURRENT_USER_EMAIL=email
+    CURRENT_USER_NAME=str(getattr(st.user,"name","") or getattr(st.user,"given_name","") or "").strip()
     st.sidebar.caption(f"Acesso privado: {email or 'usuário autenticado'}")
     if st.sidebar.button("Sair da conta",key="app_logout"):
         st.logout()
@@ -48,7 +49,8 @@ else:
 
 def _request(method,path,params=None,json=None,timeout=120):
     try:
-        r=requests.request(method,f"{API}{path}",params=params,json=json,timeout=timeout)
+        headers={"X-App-User-Email":CURRENT_USER_EMAIL} if CURRENT_USER_EMAIL else {}
+        r=requests.request(method,f"{API}{path}",params=params,json=json,headers=headers,timeout=timeout)
         r.raise_for_status(); return r.json(),None
     except requests.RequestException as exc:
         detail=getattr(exc.response,"text",None) if getattr(exc,"response",None) is not None else None
@@ -59,6 +61,8 @@ def api_post(path,json=None,timeout=180):return _request("POST",path,json=json,t
 def api_put(path,json=None,timeout=120):return _request("PUT",path,json=json,timeout=timeout)
 def api_patch(path,json=None,timeout=120):return _request("PATCH",path,json=json,timeout=timeout)
 def api_delete(path,timeout=120):return _request("DELETE",path,timeout=timeout)
+
+def can(permission):return bool(PERMISSIONS.get(permission,False))
 
 def br_money(v):
     if v is None or (isinstance(v,float) and math.isnan(v)):return "N/D"
@@ -276,7 +280,7 @@ def render_market():
             st.warning("O banco online ainda não possui o catálogo deste mercado. Sem esses dados, nenhum filtro pode retornar ações.")
         else:
             st.caption("Use a atualização quando o banco for novo ou quando quiser renovar fundamentos, nomes, setores e indicadores técnicos.")
-        if st.button(f"🔄 Carregar / atualizar dados de {market}",type="primary" if not catalog else "secondary",key=f"sync_market_{asset_type}"):
+        if can("can_sync_market") and st.button(f"🔄 Carregar / atualizar dados de {market}",type="primary" if not catalog else "secondary",key=f"sync_market_{asset_type}"):
             with st.spinner(f"Buscando e organizando os dados de {market}. Isso pode levar alguns minutos..."):
                 sync_result,sync_err=api_post("/data/sync-market",{"asset_type":asset_type},timeout=360)
             if sync_err:
@@ -291,6 +295,8 @@ def render_market():
                 else:
                     st.session_state.market_sync_message=f"Dados atualizados: {count} ativo(s) disponíveis para os filtros."
                     st.rerun()
+        elif not can("can_sync_market"):
+            st.caption("Atualização do banco disponível somente para contas autorizadas pelo administrador.")
 
     # V1.4.1: o filtro por ticker é independente da estratégia.
     # Ao selecionar um ativo específico, ele é buscado diretamente na API e
@@ -357,7 +363,10 @@ def render_market():
         preferred=[c for c in ["Ticker","Nome","Segmento","Preço","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
         st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=460)
 
-    render_advanced_screener(asset_type)
+    if can("can_use_advanced_filters"):
+        render_advanced_screener(asset_type)
+    else:
+        st.info("Os filtros avançados estão disponíveis somente mediante autorização do administrador.")
 
     st.markdown("---"); st.header("🔎 Análise individual")
     if "analysis_payload_v14" not in st.session_state:st.session_state.analysis_payload_v14=None
@@ -489,6 +498,8 @@ def render_market():
 def render_portfolio():
     st.title("💼 Carteira — posição, alvos e composição")
     st.caption("Controle a posição atual, ativos-alvo e ativos em análise. Percentuais atuais são calculados pelo valor de mercado; percentuais-alvo são definidos por você.")
+    if not can("can_write_portfolio"):
+        st.info("Modo somente leitura: esta conta pode consultar a carteira, mas não pode salvar, remover ou atualizar dados.")
 
     portfolios,err=api_get("/portfolios")
     if err:
@@ -496,7 +507,7 @@ def render_portfolio():
     portfolios=portfolios or []
     if not portfolios:
         st.info("Ainda não existe uma carteira cadastrada.")
-        if st.button("Criar Carteira Principal",type="primary"):
+        if st.button("Criar Carteira Principal",type="primary",disabled=not can("can_write_portfolio")):
             created,e=api_post("/portfolios",{"name":"Carteira Principal","cash_balance":0,"target_cash_pct":0})
             if e:st.error(e)
             else:st.success("Carteira criada."); st.rerun()
@@ -515,7 +526,7 @@ def render_portfolio():
         cash=c2.number_input("Saldo em caixa (R$)",min_value=0.0,value=float(portfolio.get("cash_balance") or 0),step=100.0,key="pf_cash")
         target_cash=c3.number_input("Alvo de caixa (%)",min_value=0.0,max_value=100.0,value=float(portfolio.get("target_cash_pct") or 0),step=0.5,key="pf_target_cash")
         notes=st.text_area("Observações",value=portfolio.get("notes") or "",key="pf_notes")
-        if st.button("Salvar configurações da carteira"):
+        if st.button("Salvar configurações da carteira",disabled=not can("can_write_portfolio")):
             _,e=api_patch(f"/portfolios/{pid}",{"name":name,"cash_balance":cash,"target_cash_pct":target_cash,"notes":notes})
             if e:st.error(e)
             else:st.success("Configurações salvas."); st.rerun()
@@ -566,6 +577,8 @@ def render_portfolio():
         stage_map={"Posição atual":"position","Alvo":"target","Em análise":"analysis"}
         stage_rev={v:k for k,v in stage_map.items()}
         form_key=f"portfolio_position_form_{edit_ticker or ticker or 'new'}"
+        quantity_key=f"portfolio_quantity_{edit_ticker or ticker or 'new'}"
+        quantity_step=st.radio("Passo para aumentar ou reduzir",[100,25,10,5,1],horizontal=True,index=0,key=f"portfolio_quantity_step_{edit_ticker or ticker or 'new'}",help="Use 100 para lote padrão ou escolha 25, 10, 5 e 1 para ajustes menores.")
         with st.form(form_key):
             b,c=st.columns(2)
             detected_type=asset_metadata.get("asset_type")
@@ -574,8 +587,10 @@ def render_portfolio():
             default_stage=stage_rev.get(existing.get("stage"),"Posição atual")
             stage_label=c.selectbox("Situação",stage_options,index=stage_options.index(default_stage))
             d,e=st.columns(2)
-            quantity_step=d.radio("Passo dos botões +/− da quantidade",[100,10,1],horizontal=True,index=0,help="Escolha 100 para lote padrão ou use 10 e 1 para ajuste fino.")
-            qty=d.number_input("Quantidade",min_value=0.0,value=float(existing.get("quantity") or 0.0),step=float(quantity_step),format="%.0f")
+            qty=d.number_input("Quantidade",min_value=0.0,value=float(existing.get("quantity") or 0.0),step=1.0,format="%.0f",key=quantity_key)
+            qminus,qplus=d.columns(2)
+            decrease=qminus.form_submit_button(f"− {quantity_step}",use_container_width=True,disabled=not can("can_write_portfolio"))
+            increase=qplus.form_submit_button(f"+ {quantity_step}",use_container_width=True,disabled=not can("can_write_portfolio"))
             current_avg=format_brl_price_input(existing.get("average_price"))
             avg_text=e.text_input(
                 "Novo preço médio de compra (R$)",
@@ -587,7 +602,11 @@ def render_portfolio():
             st.text_input("Setor / segmento / categoria (automático)",value=automatic_classification,disabled=True)
             classification_override=st.text_input("Ajuste manual da classificação (opcional)",value=existing.get("classification_override") or "",placeholder="Preencha apenas se quiser substituir a classificação automática")
             pnotes=st.text_input("Observação / tese curta",value=existing.get("notes") or "",placeholder="Ex.: aumentar posição se valuation continuar atrativo")
-            save=st.form_submit_button("Salvar ativo",type="primary")
+            save=st.form_submit_button("Salvar ativo",type="primary",disabled=not can("can_write_portfolio"))
+        if decrease:
+            st.session_state[quantity_key]=max(0.0,float(qty)-float(quantity_step)); st.rerun()
+        if increase:
+            st.session_state[quantity_key]=float(qty)+float(quantity_step); st.rerun()
         if save:
             if not ticker:st.error("Informe o ticker.")
             else:
@@ -606,7 +625,7 @@ def render_portfolio():
     with right:
         st.subheader("Cotações")
         st.caption("Atualiza pelo Yahoo e grava o histórico no banco. Útil também para ETFs.")
-        if st.button("🔄 Atualizar preços da carteira",use_container_width=True):
+        if st.button("🔄 Atualizar preços da carteira",use_container_width=True,disabled=not can("can_write_portfolio")):
             with st.spinner("Atualizando cotações..."):
                 r,e=api_post(f"/portfolios/{pid}/refresh-prices",{},timeout=240)
             if e:st.error(e)
@@ -616,7 +635,7 @@ def render_portfolio():
                 st.rerun()
         if positions:
             delete_ticker=st.selectbox("Remover ativo",[""]+[p["ticker"] for p in positions],key="pf_delete")
-            if st.button("Remover selecionado",disabled=not bool(delete_ticker),use_container_width=True):
+            if st.button("Remover selecionado",disabled=(not bool(delete_ticker) or not can("can_write_portfolio")),use_container_width=True):
                 _,e=api_delete(f"/portfolios/{pid}/positions/{delete_ticker}")
                 if e:st.error(e)
                 else:st.success(f"{delete_ticker} removido."); st.rerun()
@@ -1058,6 +1077,8 @@ def _render_basket_result(result):
 
 
 def render_backtests():
+    if not can("can_run_backtests"):
+        st.info("Modo consulta: esta conta pode visualizar resultados autorizados, mas não pode executar nem salvar novos backtests.")
     st.title("🧪 Backtests — Estratégias Técnicas")
     st.caption("Teste regras objetivas em diferentes horizontes, compare com buy-and-hold e examine risco, custos e operações.")
     catalog,err=api_get("/backtests/strategies")
@@ -1144,7 +1165,7 @@ def render_backtests():
                 f"{mode_labels[params['trend_filter_mode']]} {int(params['trend_period'])} • "
                 f"{trig_labels[params['band_trigger']]}"
             )
-        if st.button("▶ Executar backtest",type="primary",key="bt_run"):
+        if st.button("▶ Executar backtest",type="primary",key="bt_run",disabled=not can("can_run_backtests")):
             payload={"ticker":ticker,"asset_type":type_map[type_label],"strategy_id":sid,"period":period,"initial_capital":capital,"fee_pct":fee,"slippage_pct":slip,"risk_free_rate_pct":rf,"apply_cash_yield":apply_cash_yield,"cash_yield_rate_pct":cash_yield_rate,"params":params,"filters":filters,"persist":True}
             if period=="custom":payload.update({"start":datetime.combine(start,datetime.min.time(),tzinfo=timezone.utc).isoformat(),"end":datetime.combine(end,datetime.max.time(),tzinfo=timezone.utc).isoformat()})
             with st.spinner("Carregando histórico, calculando sinais e simulando operações..."):
@@ -1184,7 +1205,7 @@ def render_backtests():
             basket_params["slow_period"]=p2.number_input("Período lento",3,400,40,1,key="basket_slow")
             basket_params["fast_type"]=p3.selectbox("Tipo rápida",["ema","sma"],key="basket_fast_type")
             basket_params["slow_type"]=p4.selectbox("Tipo lenta",["sma","ema"],key="basket_slow_type")
-        if st.button("🧪 Executar backtest da cesta",type="primary",key="bt_basket_run",disabled=len(set(basket_tickers))<2,use_container_width=True):
+        if st.button("🧪 Executar backtest da cesta",type="primary",key="bt_basket_run",disabled=(len(set(basket_tickers))<2 or not can("can_run_backtests")),use_container_width=True):
             payload={"tickers":basket_tickers,"asset_type":type_map[type_label],"strategy_id":basket_sid,"period":period,"initial_capital":basket_capital,"fee_pct":fee,"slippage_pct":slip,"risk_free_rate_pct":rf,"apply_cash_yield":apply_cash_yield,"cash_yield_rate_pct":cash_yield_rate,"params":basket_params,"filters":filters}
             if period=="custom":payload.update({"start":datetime.combine(start,datetime.min.time(),tzinfo=timezone.utc).isoformat(),"end":datetime.combine(end,datetime.max.time(),tzinfo=timezone.utc).isoformat()})
             with st.spinner("Carregando os ativos e consolidando as curvas diárias da cesta..."):
@@ -1197,7 +1218,7 @@ def render_backtests():
     with compare_tab:
         default_ids=[x for x in ["ema9_sma50","ema9_sma40","sma3_ema9_sma21","sma50_sma200","macd_12_26_9","donchian_20_10","momentum_12m"] if x in by_id]
         selected=st.multiselect("Estratégias para comparar",list(by_id),default=default_ids,format_func=lambda x:by_id[x]["name"])
-        if st.button("Comparar no mesmo ativo e período",key="bt_compare",disabled=not bool(selected)):
+        if st.button("Comparar no mesmo ativo e período",key="bt_compare",disabled=(not bool(selected) or not can("can_run_backtests"))):
             payload={"ticker":ticker,"asset_type":type_map[type_label],"strategy_ids":selected,"period":period,"initial_capital":capital,"fee_pct":fee,"slippage_pct":slip,"risk_free_rate_pct":rf,"apply_cash_yield":apply_cash_yield,"cash_yield_rate_pct":cash_yield_rate,"filters":filters}
             if period=="custom":payload.update({"start":datetime.combine(start,datetime.min.time(),tzinfo=timezone.utc).isoformat(),"end":datetime.combine(end,datetime.max.time(),tzinfo=timezone.utc).isoformat()})
             with st.spinner("Comparando estratégias sobre a mesma série histórica..."):
@@ -1237,16 +1258,93 @@ def render_backtests():
                     _render_backtest_result(detail)
 
 
+def render_access_admin():
+    st.title("🔐 Usuários e permissões")
+    st.caption("Somente a conta proprietária pode alterar estas liberações. Novas contas entram como visitantes: Mercado básico em modo somente leitura.")
+    users,err=api_get("/access/users")
+    if err:
+        st.error(f"Não foi possível carregar os usuários: {err}"); return
+    users=users or []
+    if not users:
+        st.info("Nenhum outro usuário entrou no aplicativo ainda."); return
+
+    table=[]
+    for user in users:
+        table.append({
+            "E-mail":user.get("email"),"Nome":user.get("display_name"),"Situação":user.get("status"),"Perfil":user.get("role"),
+            "Mercado":user.get("can_view_market"),"Filtros avançados":user.get("can_use_advanced_filters"),
+            "Ver carteira":user.get("can_view_portfolio"),"Alterar carteira":user.get("can_write_portfolio"),
+            "Ver backtests":user.get("can_view_backtests"),"Executar backtests":user.get("can_run_backtests"),
+            "Atualizar banco":user.get("can_sync_market"),"Último acesso":user.get("last_seen_at"),
+        })
+    st.dataframe(pd.DataFrame(table),hide_index=True,use_container_width=True)
+
+    editable=[u for u in users if not u.get("is_owner")]
+    if not editable:
+        st.info("Quando outra conta Google entrar, ela aparecerá aqui para você autorizar."); return
+    by_email={u["email"]:u for u in editable}
+    selected=st.selectbox("Usuário para configurar",sorted(by_email),format_func=lambda email:f"{by_email[email].get('display_name') or 'Sem nome'} — {email}")
+    current=by_email[selected]
+    status_options=["pending","approved","blocked"]
+    status_labels={"pending":"Pendente","approved":"Aprovado","blocked":"Bloqueado"}
+    role_options=["visitor","member","admin"]
+    role_labels={"visitor":"Visitante","member":"Membro","admin":"Administrador sem gestão de usuários"}
+    with st.form(f"access_policy_{selected}"):
+        a,b=st.columns(2)
+        status=a.selectbox("Situação da conta",status_options,index=status_options.index(current.get("status","pending")),format_func=lambda value:status_labels[value])
+        role=b.selectbox("Nome do perfil",role_options,index=role_options.index(current.get("role","visitor")),format_func=lambda value:role_labels[value])
+        st.markdown("#### Permissões individuais")
+        c1,c2=st.columns(2)
+        view_market=c1.checkbox("Ver Mercado e filtros básicos",value=bool(current.get("can_view_market")))
+        advanced=c1.checkbox("Usar filtros avançados",value=bool(current.get("can_use_advanced_filters")))
+        view_portfolio=c1.checkbox("Ver Carteira",value=bool(current.get("can_view_portfolio")))
+        write_portfolio=c1.checkbox("Alterar e salvar Carteira",value=bool(current.get("can_write_portfolio")))
+        view_backtests=c2.checkbox("Ver Backtests e históricos",value=bool(current.get("can_view_backtests")))
+        run_backtests=c2.checkbox("Executar novos Backtests",value=bool(current.get("can_run_backtests")))
+        sync_market=c2.checkbox("Atualizar dados do Mercado no banco",value=bool(current.get("can_sync_market")))
+        st.caption("Nenhum usuário recebe permissão para administrar contas. Essa função permanece exclusiva do proprietário.")
+        save=st.form_submit_button("Salvar permissões",type="primary")
+    if save:
+        payload={
+            "status":status,"role":role,"can_view_market":view_market,"can_use_advanced_filters":advanced,
+            "can_view_portfolio":view_portfolio,"can_write_portfolio":write_portfolio,
+            "can_view_backtests":view_backtests,"can_run_backtests":run_backtests,"can_sync_market":sync_market,
+        }
+        _,save_err=api_put(f"/access/users/{selected}",payload)
+        if save_err:st.error(f"Não foi possível salvar: {save_err}")
+        else:st.success("Permissões atualizadas."); st.rerun()
+
+
 health,err=api_get("/health")
 if err:
     st.error("Não consegui falar com o Investment Engine. Ligue a API primeiro.")
     st.code("python -m uvicorn investment_engine.api.app:app --host 127.0.0.1 --port 8000")
     st.stop()
 st.sidebar.success(f"Motor online • versão {health.get('version','?')}")
-module=st.sidebar.radio("Módulo",["Mercado & Análise","Carteira","Backtests"],index=0)
+registered=None; registration_err=None
+if st.session_state.get("access_registered_email") != CURRENT_USER_EMAIL:
+    registered,registration_err=api_post("/access/register",{"display_name":CURRENT_USER_NAME})
+    if not registration_err:st.session_state.access_registered_email=CURRENT_USER_EMAIL
+access,access_err=api_get("/access/me")
+if registration_err or access_err:
+    st.error(f"Não foi possível validar as permissões desta conta: {registration_err or access_err}")
+    st.stop()
+PERMISSIONS=access or registered or {}
+st.sidebar.caption(f"Perfil: {PERMISSIONS.get('role','visitor')} • {PERMISSIONS.get('status','pending')}")
+modules=[]
+if can("can_view_market"):modules.append("Mercado & Análise")
+if can("can_view_portfolio"):modules.append("Carteira")
+if can("can_view_backtests"):modules.append("Backtests")
+if PERMISSIONS.get("is_owner"):modules.append("Usuários e permissões")
+if not modules:
+    st.title("Acesso aguardando autorização")
+    st.info("Sua conta Google foi identificada, mas ainda não possui menus liberados. Solicite ao proprietário a autorização necessária.")
+    st.stop()
+module=st.sidebar.radio("Módulo",modules,index=0)
 st.sidebar.markdown("---")
 if module=="Mercado & Análise":render_market()
 elif module=="Carteira":render_portfolio()
-else:render_backtests()
+elif module=="Backtests":render_backtests()
+else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.6.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.6.2. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
