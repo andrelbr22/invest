@@ -13,6 +13,17 @@ BESST_LABELS = {
     "telecom": "Telecomunicações",
 }
 
+COMPANY_SIZE_LABELS = {
+    "large": "Blue Chip / Large Cap",
+    "mid": "Mid Cap",
+    "small": "Small Cap",
+}
+
+COMPANY_SIZE_THRESHOLDS = {
+    "large_min": 20_000_000_000.0,
+    "mid_min": 2_000_000_000.0,
+}
+
 
 _BESST_KEYWORDS = {
     # More specific groups come first so that, for example, BB Seguridade is
@@ -64,6 +75,37 @@ def besst_category(asset: dict) -> str | None:
     return None
 
 
+def company_size_from_market_cap(value: object) -> str | None:
+    """Classify market value using explicit, stable BRL thresholds."""
+    try:
+        market_cap = float(value)
+    except (TypeError, ValueError):
+        return None
+    if market_cap <= 0:
+        return None
+    if market_cap >= COMPANY_SIZE_THRESHOLDS["large_min"]:
+        return "large"
+    if market_cap >= COMPANY_SIZE_THRESHOLDS["mid_min"]:
+        return "mid"
+    return "small"
+
+
+def company_size_category(asset: dict) -> str | None:
+    """Resolve size from a saved category or the latest TradingView market cap."""
+    explicit = normalize_text(asset.get("company_size") or asset.get("market_cap_category"))
+    aliases = {
+        "large": "large", "large cap": "large", "grande capitalizacao": "large",
+        "blue chip": "large", "blue chip / large cap": "large",
+        "mid": "mid", "mid cap": "mid", "middle cap": "mid", "media capitalizacao": "mid",
+        "small": "small", "small cap": "small", "micro cap": "small",
+        "pequena capitalizacao": "small", "microcapitalizacao": "small",
+    }
+    if explicit in aliases:
+        return aliases[explicit]
+    metadata = asset.get("metadata_json") if isinstance(asset.get("metadata_json"), dict) else {}
+    return company_size_from_market_cap(asset.get("market_cap") or metadata.get("last_market_cap"))
+
+
 def universe_tickers(
     catalog: Iterable[dict],
     mode: str,
@@ -72,13 +114,14 @@ def universe_tickers(
     besst_group: str = "all",
     classification: str | None = None,
     classification_field: str = "classification",
+    company_size: str | None = None,
 ) -> list[str]:
     """Resolve a UI universe to catalog tickers while preserving catalog order."""
     assets = list(catalog or [])
     if mode == "all":
         return [str(asset.get("ticker") or "").upper() for asset in assets if asset.get("ticker")]
 
-    if mode in {"portfolio", "specific"}:
+    if mode in {"portfolio", "specific", "index"}:
         selected = {str(ticker).strip().upper() for ticker in (selected_tickers or []) if str(ticker).strip()}
         return [str(asset["ticker"]).upper() for asset in assets if str(asset.get("ticker") or "").upper() in selected]
 
@@ -90,6 +133,15 @@ def universe_tickers(
             for asset in assets
             if asset.get("ticker") and (besst_group == "all" and besst_category(asset) is not None
                                         or besst_category(asset) == besst_group)
+        ]
+
+    if mode == "company_size":
+        if company_size not in COMPANY_SIZE_LABELS:
+            raise ValueError("invalid_company_size")
+        return [
+            str(asset["ticker"]).upper()
+            for asset in assets
+            if asset.get("ticker") and company_size_category(asset) == company_size
         ]
 
     if mode == "classification":

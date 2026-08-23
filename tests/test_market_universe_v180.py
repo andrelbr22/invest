@@ -1,6 +1,8 @@
 from investment_engine.core.screening.universe import (
     BESST_LABELS,
     besst_category,
+    company_size_category,
+    company_size_from_market_cap,
     filter_rows_by_tickers,
     universe_tickers,
 )
@@ -43,3 +45,17 @@ def test_portfolio_specific_and_classification_scopes_intersect_the_catalog():
 def test_row_intersection_preserves_screener_order_and_applies_display_limit():
     rows = [{"ticker": "WEGE3"}, {"ticker": "BBAS3"}, {"ticker": "VIVT3"}]
     assert filter_rows_by_tickers(rows, ["BBAS3", "VIVT3"], limit=1) == [{"ticker": "BBAS3"}]
+
+
+def test_company_size_uses_visible_market_cap_thresholds_and_saved_metadata():
+    assert company_size_from_market_cap(20_000_000_000) == "large"
+    assert company_size_from_market_cap(5_000_000_000) == "mid"
+    assert company_size_from_market_cap(900_000_000) == "small"
+    assert company_size_category({"metadata_json": {"last_market_cap": 25_000_000_000}}) == "large"
+    sized = [
+        {"ticker": "BIG3", "company_size": "large"},
+        {"ticker": "MID3", "market_cap": 5_000_000_000},
+        {"ticker": "SML3", "metadata_json": {"last_market_cap": 1_000_000_000}},
+    ]
+    assert universe_tickers(sized, "company_size", company_size="mid") == ["MID3"]
+    assert universe_tickers(sized, "index", selected_tickers=["BIG3", "SML3"]) == ["BIG3", "SML3"]

@@ -5,7 +5,7 @@ import pandas as pd
 import requests
 import streamlit as st
 from investment_engine.ui_helpers import format_brl_price_input, parse_brl_price_input
-from investment_engine.core.screening.universe import BESST_LABELS, filter_rows_by_tickers, universe_tickers
+from investment_engine.core.screening.universe import BESST_LABELS, COMPANY_SIZE_LABELS, filter_rows_by_tickers, universe_tickers
 
 st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
@@ -284,10 +284,10 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
         else:
             df=pd.DataFrame(rows)
             rename={
-                "ticker":"Ticker","name":"Nome","sector_label":"Setor","segment_label":"Segmento","classification":"Categoria","price":"Preço","pe":"P/L","pbv":"P/VP","dividend_yield_pct":"DY %","roe_pct":"ROE %","roic_pct":"ROIC %","ebit_margin_pct":"Margem EBIT %","net_margin_pct":"Margem Líquida %","ev_ebitda":"EV/EBITDA","gross_debt_to_equity":"Dív. Bruta/PL","net_debt_to_ebitda":"Dív. Líq./EBITDA","current_ratio":"Liq. Corrente","revenue_cagr_5y_pct":"CAGR Receita %","earnings_cagr_5y_pct":"CAGR Lucro %","ffo_yield_pct":"FFO Yield %","cap_rate_pct":"Cap Rate %","vacancy_pct":"Vacância %","ltv_pct":"LTV %","wale_years":"WALE","daily_liquidity":"Liquidez diária","alb_score":"ALB","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","data_quality_score":"Data Quality","trend_daily":"Tend. Dia","trend_weekly":"Tend. Sem.","trend_monthly":"Tend. Mês","sma_daily":"Média Dia","sma_weekly":"Média Sem.","sma_monthly":"Média Mês","rsi14_screen":"RSI 14","pp":"PP","s1":"S1","s2":"S2","s3":"S3","r1":"R1","r2":"R2","r3":"R3","pivot_zone":"Faixa Pivot","pivot_reference":"Referência Pivot",
+                "ticker":"Ticker","name":"Nome","company_size_label":"Porte","sector_label":"Setor","segment_label":"Segmento","classification":"Categoria","price":"Preço","pe":"P/L","pbv":"P/VP","dividend_yield_pct":"DY %","roe_pct":"ROE %","roic_pct":"ROIC %","ebit_margin_pct":"Margem EBIT %","net_margin_pct":"Margem Líquida %","ev_ebitda":"EV/EBITDA","gross_debt_to_equity":"Dív. Bruta/PL","net_debt_to_ebitda":"Dív. Líq./EBITDA","current_ratio":"Liq. Corrente","revenue_cagr_5y_pct":"CAGR Receita %","earnings_cagr_5y_pct":"CAGR Lucro %","ffo_yield_pct":"FFO Yield %","cap_rate_pct":"Cap Rate %","vacancy_pct":"Vacância %","ltv_pct":"LTV %","wale_years":"WALE","daily_liquidity":"Liquidez diária","alb_score":"ALB","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","data_quality_score":"Data Quality","trend_daily":"Tend. Dia","trend_weekly":"Tend. Sem.","trend_monthly":"Tend. Mês","sma_daily":"Média Dia","sma_weekly":"Média Sem.","sma_monthly":"Média Mês","rsi14_screen":"RSI 14","pp":"PP","s1":"S1","s2":"S2","s3":"S3","r1":"R1","r2":"R2","r3":"R3","pivot_zone":"Faixa Pivot","pivot_reference":"Referência Pivot",
             }
             view=df.rename(columns=rename)
-            preferred=[c for c in ["Ticker","Nome","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","ROIC %","FFO Yield %","Cap Rate %","Vacância %","ALB","Quality","Value","Technical","Risk","Liquidity","Tend. Dia","Tend. Sem.","Tend. Mês","Média Dia","Média Sem.","Média Mês","RSI 14","S3","S2","S1","PP","R1","R2","R3","Faixa Pivot","Referência Pivot"] if c in view.columns]
+            preferred=[c for c in ["Ticker","Nome","Porte","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","ROIC %","FFO Yield %","Cap Rate %","Vacância %","ALB","Quality","Value","Technical","Risk","Liquidity","Tend. Dia","Tend. Sem.","Tend. Mês","Média Dia","Média Sem.","Média Mês","RSI 14","S3","S2","S1","PP","R1","R2","R3","Faixa Pivot","Referência Pivot"] if c in view.columns]
             st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=520)
             st.caption("Tendência = preço atual acima/abaixo da média simples do período escolhido. Sem histórico suficiente, o filtro técnico ativo reprova o ativo em vez de assumir zero.")
 
@@ -470,12 +470,14 @@ def render_market():
         "all":all_market_label,
         "portfolio":"Minha carteira",
         "besst":"Método BESST",
+        "company_size":"Tamanho da empresa",
+        "ibov":"Ibovespa (IBOV)",
         "classification":"Setor / categoria",
         "specific":"Ativos específicos",
     }
     scope_options=["all"]
     if can("can_view_portfolio"):scope_options.append("portfolio")
-    if asset_type=="stock":scope_options.append("besst")
+    if asset_type=="stock":scope_options.extend(["besst","company_size","ibov"])
     scope_options.extend(["classification","specific"])
     if st.session_state[scope_key] not in scope_options:st.session_state[scope_key]="all"
 
@@ -492,6 +494,7 @@ def render_market():
         besst_group="all"
         classification=None
         classification_field="classification"
+        company_size=None
         scope_detail=""
         if universe_mode=="portfolio":
             portfolios,portfolio_err=api_get("/portfolios")
@@ -527,10 +530,36 @@ def render_market():
                 key=f"market_besst_group_{asset_type}",on_change=_reset_market_refinements,args=(asset_type,),
             )
             scope_detail=BESST_LABELS[besst_group]
+        elif universe_mode=="company_size":
+            company_size=st.selectbox(
+                "Tamanho da empresa",list(COMPANY_SIZE_LABELS),format_func=lambda value:COMPANY_SIZE_LABELS[value],
+                key=f"market_company_size_{asset_type}",on_change=_reset_market_refinements,args=(asset_type,),
+            )
+            scope_detail=COMPANY_SIZE_LABELS[company_size]
+            st.caption("Classificação objetiva pelo valor de mercado: Blue Chip/Large Cap ≥ R$ 20 bi; Mid Cap entre R$ 2 bi e R$ 20 bi; Small Cap abaixo de R$ 2 bi.")
+        elif universe_mode=="ibov":
+            ibov_choice_labels={"inside":"Está no IBOV","outside":"Não está no IBOV"}
+            ibov_choice=st.radio(
+                "Participação no índice",list(ibov_choice_labels),horizontal=True,
+                format_func=lambda value:ibov_choice_labels[value],key=f"market_ibov_membership_{asset_type}",
+                on_change=_reset_market_refinements,args=(asset_type,),
+            )
+            ibov_data,ibov_err=api_get("/market/index-members/IBOV")
+            if ibov_err:
+                st.error(f"Não foi possível consultar a composição atual do IBOV na B3: {ibov_err}")
+                selected_scope_tickers=[]
+            else:
+                ibov_members={str(item.get("ticker") or "").upper() for item in (ibov_data or {}).get("members") or []}
+                if ibov_choice=="inside":selected_scope_tickers=[ticker for ticker in catalog_map if ticker in ibov_members]
+                else:selected_scope_tickers=[ticker for ticker in catalog_map if ticker not in ibov_members]
+                reference=(ibov_data or {}).get("as_of") or "carteira vigente"
+                stale_text=" • última consulta disponível" if (ibov_data or {}).get("stale") else ""
+                st.caption(f"Fonte: B3 • referência: {reference}{stale_text}.")
+            scope_detail=ibov_choice_labels[ibov_choice]
         elif universe_mode=="classification":
             dimension_labels={
                 "classification":"Categoria consolidada","sector_label":"Setor",
-                "segment_label":"Segmento","market_cap_category_label":"Porte da empresa",
+                "segment_label":"Segmento",
             }
             available_dimensions=[field for field in dimension_labels if any(str(item.get(field) or "").strip() for item in catalog)]
             classification_field=st.selectbox(
@@ -554,9 +583,11 @@ def render_market():
             )
             scope_detail="Seleção manual"
 
+        resolver_mode="index" if universe_mode=="ibov" else universe_mode
         allowed_tickers=universe_tickers(
-            catalog,universe_mode,selected_tickers=selected_scope_tickers,
+            catalog,resolver_mode,selected_tickers=selected_scope_tickers,
             besst_group=besst_group,classification=classification,classification_field=classification_field,
+            company_size=company_size,
         )
         allowed_set=set(allowed_tickers)
         scoped_catalog=[item for item in catalog if str(item.get("ticker") or "").upper() in allowed_set]
@@ -635,6 +666,7 @@ def render_market():
                 "segment":asset_one.get("segment"),
                 "segment_label":asset_one.get("segment_label"),
                 "classification":asset_one.get("classification"),
+                "company_size_label":asset_one.get("company_size_label"),
                 "price":fund_one.get("price"),
                 "pe":fund_one.get("pe"),
                 "pbv":fund_one.get("pbv"),
@@ -672,9 +704,9 @@ def render_market():
         else:
             st.info(f"Nenhum dos {len(allowed_tickers)} ativo(s) passou por {strategy_label}. Escolha ‘Sem filtros’ para recuperar 100% deste universo ou ajuste o refinamento.")
     else:
-        rename={"ticker":"Ticker","name":"Nome","sector_label":"Setor","classification":"Categoria","segment_label":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dy":"DY %","roe":"ROE %","ffo_yield":"FFO Yield %","cap_rate":"Cap Rate %","vacancy":"Vacância %","daily_liquidity":"Liquidez","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","alb_score":"ALB","data_quality_score":"Data Quality"}
+        rename={"ticker":"Ticker","name":"Nome","company_size_label":"Porte","sector_label":"Setor","classification":"Categoria","segment_label":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dy":"DY %","roe":"ROE %","ffo_yield":"FFO Yield %","cap_rate":"Cap Rate %","vacancy":"Vacância %","daily_liquidity":"Liquidez","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","alb_score":"ALB","data_quality_score":"Data Quality"}
         view=df.rename(columns=rename)
-        preferred=[c for c in ["Ticker","Nome","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
+        preferred=[c for c in ["Ticker","Nome","Porte","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
         st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=460)
 
     if int(PERMISSIONS.get("custom_filter_limit") or 0)>0:
@@ -1692,4 +1724,4 @@ elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.8.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.8.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

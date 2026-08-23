@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from ...core.repositories.assets import AssetRepository
+from ...core.screening.universe import company_size_from_market_cap
 from ...infrastructure.db.models import IngestionRunORM
 from ..providers.fundamentus import FundamentusStockProvider, FundamentusFiiProvider
 from ..providers.tradingview import TradingViewScannerProvider
@@ -138,6 +139,7 @@ class MarketIngestionPipeline:
             )
             if raw.get("market_cap") is not None:
                 asset.metadata_json = {**(asset.metadata_json or {}), "last_market_cap": raw.get("market_cap")}
+                asset.market_cap_category = company_size_from_market_cap(raw.get("market_cap"))
             self.repo.upsert_technical(
                 asset,
                 source="tradingview",

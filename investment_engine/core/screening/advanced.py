@@ -8,6 +8,7 @@ from typing import Iterable
 import pandas as pd
 
 from investment_engine.core.portfolio.service import classification_for, localize_classification
+from investment_engine.core.screening.universe import COMPANY_SIZE_LABELS, company_size_category
 
 
 FUNDAMENTAL_FIELDS = {
@@ -242,6 +243,11 @@ def row_from_orm(asset, fund, tech, score) -> dict:
     def g(obj, name): return _f(getattr(obj, name, None)) if obj is not None else None
     fund_dict = {field: g(fund, field) for field in FUNDAMENTAL_FIELDS}
     score_dict = {field: g(score, field) for field in SCORE_FIELDS}
+    size = company_size_category({
+        "market_cap_category": asset.market_cap_category,
+        "metadata_json": asset.metadata_json if isinstance(asset.metadata_json, dict) else {},
+        "market_cap": g(tech, "market_cap"),
+    })
     return {
         "asset": {
             "id": str(asset.id), "ticker": asset.ticker, "name": asset.name, "asset_type": asset.asset_type,
@@ -253,7 +259,9 @@ def row_from_orm(asset, fund, tech, score) -> dict:
             "sector_label": localize_classification(asset.sector),
             "industry_label": localize_classification(asset.industry),
             "segment_label": localize_classification(asset.segment),
-            "market_cap_category_label": localize_classification(asset.market_cap_category),
+            "company_size": size,
+            "company_size_label": COMPANY_SIZE_LABELS.get(size),
+            "market_cap_category_label": COMPANY_SIZE_LABELS.get(size) or localize_classification(asset.market_cap_category),
         },
         "fundamentals": fund_dict,
         "scores": score_dict,

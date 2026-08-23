@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from datetime import datetime, timezone
+from time import monotonic
 from uuid import UUID
 from typing import Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -15,6 +16,7 @@ from ..core.valuation.dividend_target import dividend_yield_target_price
 from ..core.strategies.presets import STOCK_STRATEGIES, FII_STRATEGIES
 from ..core.screening.filters import stock_passes, fii_passes
 from ..core.screening.advanced import advanced_screen
+from ..core.screening.universe import COMPANY_SIZE_LABELS, company_size_category
 from ..core.repositories.assets import AssetRepository
 from ..core.repositories.portfolio import PortfolioRepository
 from ..core.repositories.screening_filters import SavedScreeningFilterRepository
@@ -29,16 +31,20 @@ from ..infrastructure.db.session import get_session_factory
 from ..core.services_v14 import calculate_asset_intelligence
 from ..data.ingestion.prices import PriceIngestionService
 from ..data.ingestion.pipeline import MarketIngestionPipeline
+from ..data.providers.b3_indices import B3IndexProvider
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.8.0",
-    version="0.9.0",
+    title="Investment Engine V1.8.1",
+    version="0.9.1",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts_list)
+
+_INDEX_PORTFOLIO_CACHE: dict[str, tuple[float, dict]] = {}
+_INDEX_PORTFOLIO_TTL_SECONDS = 6 * 60 * 60
 
 
 @app.middleware("http")
@@ -113,6 +119,38 @@ def _num(value):
     if isinstance(value, Decimal):
         return float(value)
     return value
+
+
+def _company_size_fields(asset) -> dict:
+    metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+    size = company_size_category({
+        "market_cap_category": asset.market_cap_category,
+        "metadata_json": metadata,
+    })
+    return {
+        "company_size": size,
+        "company_size_label": COMPANY_SIZE_LABELS.get(size),
+        "market_cap": _num(metadata.get("last_market_cap")),
+        "market_cap_category_label": COMPANY_SIZE_LABELS.get(size) or localize_classification(asset.market_cap_category),
+    }
+
+
+def _index_portfolio(index_code: str) -> dict:
+    code = index_code.upper()
+    now = monotonic()
+    cached = _INDEX_PORTFOLIO_CACHE.get(code)
+    if cached and now - cached[0] < _INDEX_PORTFOLIO_TTL_SECONDS:
+        return cached[1]
+    try:
+        result = B3IndexProvider().fetch(code)
+        result["stale"] = False
+        _INDEX_PORTFOLIO_CACHE[code] = (now, result)
+        return result
+    except Exception:
+        if cached:
+            stale = {**cached[1], "stale": True}
+            return stale
+        raise
 
 
 def _fundamental_dict(row):
@@ -337,7 +375,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.9.0", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.9.1", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -585,6 +623,20 @@ def sync_market(req: MarketSyncRequest, _access=Depends(require_permission("can_
     return {"asset_type": req.asset_type, "catalog_count": catalog_count, "steps": steps}
 
 
+@app.get("/market/index-members/{index_code}")
+def market_index_members(
+    index_code: str,
+    _access=Depends(require_permission("can_view_market")),
+):
+    code = str(index_code or "").strip().upper()
+    if code != "IBOV":
+        raise HTTPException(422, "unsupported_market_index")
+    try:
+        return _index_portfolio(code)
+    except Exception as exc:
+        raise HTTPException(502, detail={"b3_index_unavailable": str(exc)})
+
+
 @app.get("/assets")
 def assets(
     asset_type: str | None = Query(default=None, pattern="^(stock|fii|etf|bdr|fixed_income|crypto|other)$"),
@@ -603,7 +655,7 @@ def assets(
             "classification": classification_for(a.asset_type, a.sector, a.segment, industry=a.industry, category=a.market_cap_category),
             "sector_label": localize_classification(a.sector), "industry_label": localize_classification(a.industry),
             "segment_label": localize_classification(a.segment),
-            "market_cap_category_label": localize_classification(a.market_cap_category),
+            **_company_size_fields(a),
         }
         for a in rows
     ]
@@ -625,7 +677,7 @@ def asset_detail(ticker: str, _access=Depends(require_permission("can_view_marke
             "classification": classification_for(asset.asset_type, asset.sector, asset.segment, industry=asset.industry, category=asset.market_cap_category),
             "sector_label": localize_classification(asset.sector), "industry_label": localize_classification(asset.industry),
             "segment_label": localize_classification(asset.segment),
-            "market_cap_category_label": localize_classification(asset.market_cap_category),
+            **_company_size_fields(asset),
             "metadata": asset.metadata_json,
         },
         "fundamentals": _fundamental_dict(fundamentals),
@@ -721,7 +773,7 @@ def _screen_identity(asset):
         "sector_label": localize_classification(asset.sector),
         "industry_label": localize_classification(asset.industry),
         "segment_label": localize_classification(asset.segment),
-        "market_cap_category_label": localize_classification(asset.market_cap_category),
+        **_company_size_fields(asset),
     }
 
 

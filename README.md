@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.8.0
+# Formação do Investidor • Investment Engine V1.8.1
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -109,3 +109,7 @@ A V1.7.5 mantém o cálculo consolidado da compra dentro da própria página da 
 ## V1.8.0
 
 A V1.8.0 reorganiza a navegação e separa a triagem em duas etapas: universo de ativos e refinamento. O usuário pode trabalhar com o mercado completo, suas próprias carteiras, o método BESST, setor/categoria/segmento/porte ou uma seleção de tickers. Padrão, CNPI, ALB, filtros personalizados e screener avançado passam a respeitar o universo escolhido. Não exige migração do banco. Consulte `V1_8_0.md` e `PATCH_V180.md`.
+
+## V1.8.1
+
+A V1.8.1 torna **Tamanho da empresa** uma opção direta do universo, com Blue Chip/Large Cap, Mid Cap e Small Cap calculadas pelo valor de mercado. Também acrescenta **Ibovespa (IBOV)** com as escolhas “está no IBOV” e “não está no IBOV”, consultando a carteira vigente no portal da B3. Não exige migração. Consulte `V1_8_1.md` e `PATCH_V181.md`.
