@@ -266,6 +266,22 @@ def _set_quantity_state(key, *, delta=0, minimum=0, exact=None):
     st.session_state[key]=max(int(minimum),int(exact) if exact is not None else current+int(delta))
 
 
+def _quantity_adjustment_buttons(quantity_key,key_prefix,*,disabled=False):
+    """Render fixed portfolio adjustments without a separate step selector."""
+    columns=st.columns(5)
+    for column,amount in zip(columns,(100,50,10,5,1)):
+        column.button(
+            f"(+{amount})",key=f"{key_prefix}_plus_{amount}",use_container_width=True,
+            disabled=disabled,on_click=_set_quantity_state,
+            kwargs={"key":quantity_key,"delta":amount,"minimum":0},
+        )
+        column.button(
+            f"(-{amount})",key=f"{key_prefix}_minus_{amount}",use_container_width=True,
+            disabled=disabled,on_click=_set_quantity_state,
+            kwargs={"key":quantity_key,"delta":-amount,"minimum":0},
+        )
+
+
 def _custom_filter_editor(asset_type,prefix,initial=None):
     initial=initial or {}
     values={}
@@ -669,19 +685,14 @@ def render_portfolio():
                 st.info(f"Você já possui {purchase_existing.get('quantity',0):.0f} ação(ões) de {purchase_ticker}. Esta compra será somada à posição.")
             detected_type=purchase_metadata.get("asset_type") or purchase_existing.get("asset_type") or "stock"
             ptype=st.selectbox("Tipo",type_options,index=type_options.index(type_rev.get(detected_type,"Ação")),key="pf_purchase_type")
-            step=st.selectbox("Quantidade de cada clique",[100,50,25,10,5,1],index=0,key="pf_purchase_step")
             qty_key=f"pf_purchase_qty_{pid}_{purchase_ticker or 'new'}"
             reset_key=f"{qty_key}_reset_pending"
             if st.session_state.pop(reset_key,False):
                 st.session_state[qty_key]=100
             if qty_key not in st.session_state:
                 st.session_state[qty_key]=100
-            purchase_qty=st.number_input("Quantidade desta compra",min_value=1,step=1,format="%d",key=qty_key)
-            q1,q2,q3,q4=st.columns(4)
-            q1.button(f"+ {step}",key=f"purchase_add_1_{pid}_{purchase_ticker}",use_container_width=True,disabled=not can("can_write_portfolio"),on_click=_set_quantity_state,kwargs={"key":qty_key,"delta":step,"minimum":1})
-            q2.button(f"+ {step*2}",key=f"purchase_add_2_{pid}_{purchase_ticker}",use_container_width=True,disabled=not can("can_write_portfolio"),on_click=_set_quantity_state,kwargs={"key":qty_key,"delta":step*2,"minimum":1})
-            q3.button(f"+ {step*5}",key=f"purchase_add_5_{pid}_{purchase_ticker}",use_container_width=True,disabled=not can("can_write_portfolio"),on_click=_set_quantity_state,kwargs={"key":qty_key,"delta":step*5,"minimum":1})
-            q4.button("Voltar a 100",key=f"purchase_reset_{pid}_{purchase_ticker}",use_container_width=True,disabled=not can("can_write_portfolio"),on_click=_set_quantity_state,kwargs={"key":qty_key,"minimum":1,"exact":100})
+            purchase_qty=st.number_input("Quantidade desta compra",min_value=0,step=100,format="%d",key=qty_key)
+            _quantity_adjustment_buttons(qty_key,f"purchase_adjust_{pid}_{purchase_ticker or 'new'}",disabled=not can("can_write_portfolio"))
             purchase_price_text=st.text_input("Preço unitário desta compra (R$)",value="",placeholder="Ex.: 27,45",key=f"pf_purchase_price_{pid}_{purchase_ticker}")
             automatic=purchase_metadata.get("classification") or purchase_existing.get("classification") or "Não localizado no cadastro"
             st.text_input("Setor / segmento / categoria (automático)",value=automatic,disabled=True,key=f"pf_purchase_class_{pid}_{purchase_ticker}")
@@ -690,6 +701,7 @@ def render_portfolio():
                 try:
                     purchase_price=parse_brl_price_input(purchase_price_text)
                     if not purchase_ticker: raise ValueError("Informe o ticker.")
+                    if int(purchase_qty)<=0: raise ValueError("Informe uma quantidade maior que zero.")
                     if purchase_price is None: raise ValueError("Informe o preço unitário da compra.")
                 except ValueError as exc:
                     st.error(str(exc))
@@ -707,15 +719,11 @@ def render_portfolio():
             else:
                 edit_ticker=st.selectbox("Posição",sorted(existing_map),format_func=lambda x:f"{x} — {existing_map[x].get('name') or ''}",key="pf_edit_existing_v170")
                 existing=existing_map[edit_ticker]
-                edit_step=st.selectbox("Quantidade de cada clique",[100,50,25,10,5,1],index=0,key=f"pf_edit_step_{pid}_{edit_ticker}")
                 edit_qty_key=f"pf_edit_qty_{pid}_{edit_ticker}"
                 if edit_qty_key not in st.session_state:
                     st.session_state[edit_qty_key]=int(float(existing.get("quantity") or 0))
-                edit_qty=st.number_input("Quantidade total da posição",min_value=0,step=1,format="%d",key=edit_qty_key)
-                qm,qp,qz=st.columns(3)
-                qm.button(f"− {edit_step}",key=f"edit_minus_{pid}_{edit_ticker}",use_container_width=True,disabled=not can("can_write_portfolio"),on_click=_set_quantity_state,kwargs={"key":edit_qty_key,"delta":-edit_step,"minimum":0})
-                qp.button(f"+ {edit_step}",key=f"edit_plus_{pid}_{edit_ticker}",use_container_width=True,disabled=not can("can_write_portfolio"),on_click=_set_quantity_state,kwargs={"key":edit_qty_key,"delta":edit_step,"minimum":0})
-                qz.button("Zerar",key=f"edit_zero_{pid}_{edit_ticker}",use_container_width=True,disabled=not can("can_write_portfolio"),on_click=_set_quantity_state,kwargs={"key":edit_qty_key,"minimum":0,"exact":0})
+                edit_qty=st.number_input("Quantidade total da posição",min_value=0,step=100,format="%d",key=edit_qty_key)
+                _quantity_adjustment_buttons(edit_qty_key,f"edit_adjust_{pid}_{edit_ticker}",disabled=not can("can_write_portfolio"))
                 e1,e2=st.columns(2)
                 default_stage=stage_rev.get(existing.get("stage"),"Posição atual")
                 edit_stage=e1.selectbox("Situação",stage_options,index=stage_options.index(default_stage),key=f"pf_edit_stage_{pid}_{edit_ticker}")
@@ -1464,4 +1472,4 @@ elif module=="Carteira":render_portfolio()
 elif module=="Backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.7.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.7.2. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.7.1
+# Formação do Investidor • Investment Engine V1.7.2
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -87,3 +87,7 @@ A V1.7.0 separa cada Carteira por conta Google, distingue novas compras de corre
 ## V1.7.1
 
 A V1.7.1 corrige os botões de quantidade para usar callbacks compatíveis com o estado de sessão do Streamlit Cloud. Os botões de compra, redução, aumento, zeragem e restauração do lote padrão deixam de alterar um campo depois de ele ter sido desenhado.
+
+## V1.7.2
+
+A V1.7.2 elimina o seletor de passo da Carteira. Abaixo de cada campo de quantidade ficam somente os botões fixos `(+100)`, `(-100)`, `(+50)`, `(-50)`, `(+10)`, `(-10)`, `(+5)`, `(-5)`, `(+1)` e `(-1)`. Os controles nativos `+` e `-` da própria caixa avançam de 100 em 100.
