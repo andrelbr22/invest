@@ -101,7 +101,13 @@ try {
         & $gitPath config user.email "andrelbr22@users.noreply.github.com"
     }
 
-    & $gitPath commit -m "Publica Investment Engine V1.8.1 no Streamlit Cloud"
+    & $gitPath diff --cached --quiet
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "A pasta ja corresponde a versao publicada. Nenhum arquivo precisava ser enviado." -ForegroundColor Green
+        return
+    }
+
+    & $gitPath commit -m "Publica Investment Engine V1.10.0 no Streamlit Cloud"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }

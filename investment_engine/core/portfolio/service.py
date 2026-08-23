@@ -10,6 +10,7 @@ ASSET_CLASS_LABELS = {
     "fii": "FIIs",
     "etf": "ETFs",
     "bdr": "BDRs",
+    "future": "Futuros / derivativos",
     "fixed_income": "Renda Fixa",
     "crypto": "Cripto",
     "other": "Outros",

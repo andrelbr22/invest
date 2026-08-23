@@ -30,7 +30,7 @@ class FakeFiiProvider:
 
 
 class FakeTechnicalProvider:
-    def fetch(self, asset_type="stock"):
+    def fetch(self, asset_type="stock", **_kwargs):
         ticker = "TEST3" if asset_type == "stock" else "TEST11"
         return [{
             "ticker": ticker, "score_tv": 0.55, "signal_tv": "strong_buy", "market_cap": 20_000_000_000,

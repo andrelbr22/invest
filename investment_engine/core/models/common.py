@@ -19,6 +19,10 @@ class DataStatus(str, Enum):
 class AssetType(str, Enum):
     STOCK = "stock"
     FII = "fii"
+    ETF = "etf"
+    BDR = "bdr"
+    FUTURE = "future"
+    OTHER = "other"
 
 
 class Signal(str, Enum):

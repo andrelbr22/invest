@@ -20,11 +20,12 @@ from ..core.screening.universe import COMPANY_SIZE_LABELS, company_size_category
 from ..core.repositories.assets import AssetRepository
 from ..core.repositories.portfolio import PortfolioRepository
 from ..core.repositories.screening_filters import SavedScreeningFilterRepository
-from ..core.repositories.backtests import BacktestRepository
+from ..core.repositories.backtests import BacktestRepository, backtest_market_date, run_summary
 from ..core.repositories.access import AccessPolicyRepository, PERMISSION_FIELDS, full_owner_policy, policy_dict
 from ..core.portfolio.service import build_portfolio_snapshot, classification_for, localize_classification
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
 from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
+from ..core.backtesting.batch import BacktestBatchService, OFFICIAL_OWNER
 from ..infrastructure.db.models import AssetORM
 from ..core.models.strategy import StockFilterSet, FiiFilterSet
 from ..infrastructure.db.session import get_session_factory
@@ -35,8 +36,8 @@ from ..data.providers.b3_indices import B3IndexProvider
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.8.1",
-    version="0.9.1",
+    title="Investment Engine V1.10.0",
+    version="0.11.0",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -53,7 +54,8 @@ async def security_headers(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/portfolios") else "no-cache"
+    private_path = request.url.path.startswith(("/portfolios", "/backtests", "/access"))
+    response.headers["Cache-Control"] = "no-store" if private_path else "no-cache"
     return response
 
 
@@ -211,7 +213,7 @@ class PortfolioUpdateRequest(BaseModel):
 
 
 class PortfolioPositionRequest(BaseModel):
-    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|fixed_income|crypto|other)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|fixed_income|crypto|other)$")
     stage: str = Field(default="position", pattern="^(position|target|analysis)$")
     quantity: float = Field(default=0.0, ge=0)
     average_price: float | None = Field(default=None, ge=0)
@@ -221,7 +223,7 @@ class PortfolioPositionRequest(BaseModel):
 
 
 class PortfolioPurchaseRequest(BaseModel):
-    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|fixed_income|crypto|other)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|fixed_income|crypto|other)$")
     quantity: float = Field(gt=0)
     unit_price: float = Field(gt=0)
     stage: str = Field(default="position", pattern="^(position|target|analysis)$")
@@ -264,7 +266,7 @@ class BacktestFiltersRequest(BaseModel):
 
 class BacktestRequest(BaseModel):
     ticker: str
-    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|other)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other)$")
     strategy_id: str
     period: str = Field(default="1y", pattern="^(6m|1y|2y|3y|5y|10y|15y|20y|custom)$")
     start: datetime | None = None
@@ -282,7 +284,7 @@ class BacktestRequest(BaseModel):
 
 class BacktestCompareRequest(BaseModel):
     ticker: str
-    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|other)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other)$")
     strategy_ids: list[str] = Field(min_length=1, max_length=20)
     period: str = Field(default="1y", pattern="^(6m|1y|2y|3y|5y|10y|15y|20y|custom)$")
     start: datetime | None = None
@@ -298,7 +300,7 @@ class BacktestCompareRequest(BaseModel):
 
 class BacktestBasketRequest(BaseModel):
     tickers: list[str] = Field(min_length=2, max_length=30)
-    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|other)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other)$")
     strategy_id: str
     period: str = Field(default="5y", pattern="^(6m|1y|2y|3y|5y|10y|15y|20y|custom)$")
     start: datetime | None = None
@@ -329,7 +331,7 @@ class AdvancedTechnicalFiltersRequest(BaseModel):
 
 
 class AdvancedScreenRequest(BaseModel):
-    asset_type: str = Field(default="stock", pattern="^(stock|fii)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|other_b3)$")
     fundamental_filters: dict[str, NumericRangeRequest] = Field(default_factory=dict)
     score_filters: dict[str, NumericRangeRequest] = Field(default_factory=dict)
     valuation_flags: dict[str, bool] = Field(default_factory=dict)
@@ -342,7 +344,7 @@ class AdvancedScreenRequest(BaseModel):
 
 
 class MarketSyncRequest(BaseModel):
-    asset_type: Literal["stock", "fii"] = "stock"
+    asset_type: Literal["stock", "fii", "other_b3"] = "stock"
 
 
 class AccessRegisterRequest(BaseModel):
@@ -358,6 +360,7 @@ class AccessPolicyUpdateRequest(BaseModel):
     can_write_portfolio: bool | None = None
     can_view_backtests: bool | None = None
     can_run_backtests: bool | None = None
+    can_refresh_backtest_signals: bool | None = None
     can_sync_market: bool | None = None
     custom_filter_limit: int | None = Field(default=None, ge=0, le=3)
 
@@ -375,7 +378,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.9.1", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.11.0", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -389,7 +392,7 @@ def health_db(db: Session = Depends(get_db)):
 
 @app.get("/debug/db-counts")
 def debug_db_counts(_access=Depends(require_owner), db: Session = Depends(get_db)):
-    names = ["assets", "fundamental_snapshots", "technical_snapshots", "score_snapshots", "valuation_snapshots", "price_bars", "portfolios", "portfolio_positions", "backtest_runs", "backtest_trades"]
+    names = ["assets", "fundamental_snapshots", "technical_snapshots", "score_snapshots", "valuation_snapshots", "price_bars", "portfolios", "portfolio_positions", "backtest_runs", "backtest_trades", "backtest_batch_jobs"]
     counts = {}
     for name in names:
         counts[name] = db.execute(text(f"SELECT COUNT(*) FROM {name}")).scalar_one()
@@ -437,7 +440,7 @@ def update_access_user(
         changes["can_view_market"] = True
     if changes.get("can_write_portfolio"):
         changes["can_view_portfolio"] = True
-    if changes.get("can_run_backtests"):
+    if changes.get("can_run_backtests") or changes.get("can_refresh_backtest_signals"):
         changes["can_view_backtests"] = True
     if changes.get("can_view_market") is False:
         changes["can_use_advanced_filters"] = False
@@ -447,6 +450,7 @@ def update_access_user(
         changes["can_write_portfolio"] = False
     if changes.get("can_view_backtests") is False:
         changes["can_run_backtests"] = False
+        changes["can_refresh_backtest_signals"] = False
     row = AccessPolicyRepository(db).update(clean, **changes)
     if row is None:
         raise HTTPException(404, "user_not_found")
@@ -598,6 +602,7 @@ def sync_market(req: MarketSyncRequest, _access=Depends(require_permission("can_
                 "received": result.rows_received,
                 "saved": result.rows_valid,
                 "rejected": result.rows_rejected,
+                "warnings": result.warnings,
             }
         except Exception as exc:
             db.rollback()
@@ -605,19 +610,28 @@ def sync_market(req: MarketSyncRequest, _access=Depends(require_permission("can_
 
     if req.asset_type == "stock":
         run_step("fundamentals", pipeline.ingest_stocks)
-    else:
+        run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals("stock"))
+    elif req.asset_type == "fii":
         run_step("fundamentals", pipeline.ingest_fiis)
-    run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals(req.asset_type))
+        run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals("fii"))
+    else:
+        run_step("catalog_and_technicals", pipeline.ingest_other_b3)
 
-    try:
-        score_count = _refresh_intelligence_scores(db, req.asset_type)
-        db.commit()
-        steps["scores"] = {"status": "ok", "saved": score_count}
-    except Exception as exc:
-        db.rollback()
-        steps["scores"] = {"status": "error", "message": str(exc)}
+    if req.asset_type in {"stock", "fii"}:
+        try:
+            score_count = _refresh_intelligence_scores(db, req.asset_type)
+            db.commit()
+            steps["scores"] = {"status": "ok", "saved": score_count}
+        except Exception as exc:
+            db.rollback()
+            steps["scores"] = {"status": "error", "message": str(exc)}
+    else:
+        steps["scores"] = {"status": "ok", "saved": 0, "note": "not_applicable_to_other_b3"}
 
-    catalog_count = len(AssetRepository(db).list_assets(asset_type=req.asset_type, limit=5000))
+    if req.asset_type == "other_b3":
+        catalog_count = sum(len(AssetRepository(db).list_assets(asset_type=value, limit=5000)) for value in ("etf", "bdr", "future"))
+    else:
+        catalog_count = len(AssetRepository(db).list_assets(asset_type=req.asset_type, limit=5000))
     if catalog_count == 0:
         raise HTTPException(502, detail={"market_sync_failed": steps})
     return {"asset_type": req.asset_type, "catalog_count": catalog_count, "steps": steps}
@@ -639,7 +653,7 @@ def market_index_members(
 
 @app.get("/assets")
 def assets(
-    asset_type: str | None = Query(default=None, pattern="^(stock|fii|etf|bdr|fixed_income|crypto|other)$"),
+    asset_type: str | None = Query(default=None, pattern="^(stock|fii|etf|bdr|future|fixed_income|crypto|other)$"),
     limit: int = Query(default=100, ge=1, le=1200),
     offset: int = Query(default=0, ge=0),
     _access=Depends(require_permission("can_view_market")),
@@ -824,9 +838,31 @@ def _fii_screen_result(rows):
     return [_fii_screen_row(asset, fundamental, score) for asset, fundamental, score in rows]
 
 
+def _other_b3_screen_row(asset, technical, score):
+    metadata=asset.metadata_json if isinstance(asset.metadata_json,dict) else {}
+    category_labels={"etf":"ETF","bdr":"BDR","future":"Futuro / derivativo"}
+    return {
+        **_screen_identity(asset),
+        "asset_type":asset.asset_type,
+        "asset_type_label":category_labels.get(asset.asset_type,"Outro ativo B3"),
+        "classification":category_labels.get(asset.asset_type) or metadata.get("b3_category") or asset.segment,
+        "price":_num(technical.close) if technical else None,
+        "daily_liquidity":_num(technical.daily_liquidity) if technical else None,
+        "signal_tv":technical.signal_tv if technical else None,
+        "rsi14_screen":_num(technical.rsi14) if technical else None,
+        "sma20":_num(technical.sma20) if technical else None,
+        "sma50":_num(technical.sma50) if technical else None,
+        "sma200":_num(technical.sma200) if technical else None,
+        **_screen_scores(score),
+    }
+
+
 def _universe_screen_result(rows, asset_type: str):
-    converter = _stock_screen_row if asset_type == "stock" else _fii_screen_row
-    return [converter(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
+    if asset_type == "stock":
+        return [_stock_screen_row(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
+    if asset_type == "fii":
+        return [_fii_screen_row(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
+    return [_other_b3_screen_row(asset, technical, score) for asset, _fundamental, technical, score in rows]
 
 @app.get("/screen/db/stocks/{strategy_id}")
 def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, _access=Depends(require_permission("can_view_market")), db: Session=Depends(get_db)):
@@ -851,7 +887,7 @@ def screen_db_universe(
     _access=Depends(require_permission("can_view_market")),
     db: Session = Depends(get_db),
 ):
-    if asset_type not in {"stock", "fii"}:
+    if asset_type not in {"stock", "fii", "other_b3"}:
         raise HTTPException(422, "invalid_asset_type")
     rows = AssetRepository(db).latest_universe(asset_type=asset_type, limit=limit)
     return _universe_screen_result(rows, asset_type)
@@ -1056,7 +1092,7 @@ def backtest_strategies(_access=Depends(require_permission("can_view_backtests")
 
 
 @app.post("/backtests/run")
-def backtest_run(req: BacktestRequest, _access=Depends(require_permission("can_run_backtests")), db: Session = Depends(get_db)):
+def backtest_run(req: BacktestRequest, access=Depends(require_permission("can_run_backtests")), db: Session = Depends(get_db)):
     if req.strategy_id not in STRATEGIES: raise HTTPException(404, "strategy_not_found")
     try:
         result = BacktestService(db).run(
@@ -1065,6 +1101,7 @@ def backtest_run(req: BacktestRequest, _access=Depends(require_permission("can_r
             slippage_pct=req.slippage_pct, risk_free_rate_pct=req.risk_free_rate_pct, params=req.params,
             cash_yield_rate_pct=req.cash_yield_rate_pct, apply_cash_yield=req.apply_cash_yield,
             filters=req.filters.model_dump(exclude_none=True), persist=req.persist,
+            owner_email=access["email"], scope="personal", deduplicate_day=True,
         )
         db.commit(); return result
     except ValueError as exc:
@@ -1074,7 +1111,7 @@ def backtest_run(req: BacktestRequest, _access=Depends(require_permission("can_r
 
 
 @app.post("/backtests/compare")
-def backtest_compare(req: BacktestCompareRequest, _access=Depends(require_permission("can_run_backtests")), db: Session = Depends(get_db)):
+def backtest_compare(req: BacktestCompareRequest, access=Depends(require_permission("can_run_backtests")), db: Session = Depends(get_db)):
     unknown = [s for s in req.strategy_ids if s not in STRATEGIES]
     if unknown: raise HTTPException(404, detail={"strategies_not_found": unknown})
     try:
@@ -1084,6 +1121,7 @@ def backtest_compare(req: BacktestCompareRequest, _access=Depends(require_permis
             slippage_pct=req.slippage_pct, risk_free_rate_pct=req.risk_free_rate_pct,
             cash_yield_rate_pct=req.cash_yield_rate_pct, apply_cash_yield=req.apply_cash_yield,
             filters=req.filters.model_dump(exclude_none=True),
+            owner_email=access["email"],
         )
         db.commit(); return rows
     except ValueError as exc:
@@ -1111,32 +1149,128 @@ def backtest_basket(req: BacktestBasketRequest, _access=Depends(require_permissi
 
 
 @app.get("/backtests/runs")
-def backtest_runs(ticker: str | None = None, limit: int = Query(default=50, ge=1, le=200), _access=Depends(require_permission("can_view_backtests")), db: Session = Depends(get_db)):
-    rows = BacktestRepository(db).list_runs(ticker=ticker, limit=limit)
-    return [{
-        "id": str(run.id), "ticker": asset.ticker, "asset_name": asset.name, "strategy_id": run.strategy_id,
-        "strategy_name": run.strategy_name, "requested_start": run.requested_start, "requested_end": run.requested_end,
-        "actual_start": run.actual_start, "actual_end": run.actual_end, "created_at": run.created_at,
-        "metrics": run.metrics_json, "parameters": run.parameters_json, "status": run.status,
-    } for run, asset in rows]
+def backtest_runs(
+    ticker: str | None = None, sector: str | None = None, scope: str | None = Query(default=None, pattern="^(personal|official)$"),
+    limit: int = Query(default=100, ge=1, le=200), access=Depends(require_permission("can_view_backtests")),
+    db: Session = Depends(get_db),
+):
+    rows = BacktestRepository(db).list_runs(
+        owner_email=access["email"], is_owner=bool(access.get("is_owner")), ticker=ticker,
+        sector=sector, scope=scope, limit=limit,
+    )
+    return [run_summary(run, asset) for run, asset in rows]
 
 
 @app.get("/backtests/runs/{run_id}")
-def backtest_run_detail(run_id: UUID, _access=Depends(require_permission("can_view_backtests")), db: Session = Depends(get_db)):
-    repo = BacktestRepository(db); run = repo.get_run(run_id)
+def backtest_run_detail(run_id: UUID, access=Depends(require_permission("can_view_backtests")), db: Session = Depends(get_db)):
+    repo = BacktestRepository(db)
+    run = repo.get_run(run_id, owner_email=access["email"], is_owner=bool(access.get("is_owner")))
     if run is None: raise HTTPException(404, "backtest_run_not_found")
     asset = db.get(AssetORM, run.asset_id)
     trades = repo.trades(run.id)
-    return {
+    detail = {
         "id": str(run.id), "ticker": asset.ticker if asset else None, "asset_name": asset.name if asset else None,
         "strategy_id": run.strategy_id, "strategy_name": run.strategy_name, "requested_start": run.requested_start,
         "requested_end": run.requested_end, "actual_start": run.actual_start, "actual_end": run.actual_end,
         "initial_capital": _num(run.initial_capital), "fee_pct": _num(run.fee_pct), "slippage_pct": _num(run.slippage_pct),
         "risk_free_rate_pct": _num(run.risk_free_rate_pct), "parameters": run.parameters_json, "metrics": run.metrics_json,
         "equity_curve": run.equity_curve_json, "status": run.status, "created_at": run.created_at,
+        "scope": run.scope, "engine_version": run.engine_version, "ranking_score": _num(run.ranking_score),
+        "sample_status": run.sample_status,
+        "current_signal": {"status": run.current_signal, "as_of": run.signal_as_of},
         "trades": [{
             "sequence": t.sequence, "entry_date": t.entry_date, "entry_price": _num(t.entry_price),
             "exit_date": t.exit_date, "exit_price": _num(t.exit_price), "return_pct": _num(t.return_pct),
             "pnl_value": _num(t.pnl_value), "holding_days": t.holding_days, "exit_reason": t.exit_reason,
         } for t in trades],
     }
+    if run.result_json:
+        detail = {**detail, **run.result_json}
+        detail.update({
+            "id": str(run.id), "run_id": str(run.id), "created_at": run.created_at,
+            "scope": run.scope, "engine_version": run.engine_version,
+        })
+    return detail
+
+
+@app.get("/backtests/leaderboard")
+def backtest_leaderboard(
+    tickers: str = Query(default="", max_length=2400), sector: str | None = None,
+    per_asset: int = Query(default=3, ge=1, le=5),
+    _access=Depends(require_permission("can_view_backtests")), db: Session = Depends(get_db),
+):
+    requested = [item.strip().upper() for item in tickers.replace(";", ",").split(",") if item.strip()]
+    if len(requested) > 200:
+        raise HTTPException(400, "leaderboard_ticker_limit_200")
+    grouped = BacktestRepository(db).leaderboard(
+        tickers=requested or None, sector=sector, per_asset=per_asset,
+    )
+    return {
+        "items": {
+            ticker: [run_summary(run, asset) for run, asset in rows]
+            for ticker, rows in grouped.items()
+        },
+        "requested": requested, "per_asset": per_asset,
+    }
+
+
+@app.get("/backtests/top")
+def top_backtests(
+    ticker: str | None = None, sector: str | None = None, limit: int = Query(default=5, ge=1, le=20),
+    _access=Depends(require_permission("can_view_backtests")), db: Session = Depends(get_db),
+):
+    grouped = BacktestRepository(db).leaderboard(
+        tickers=[ticker] if ticker else None, sector=sector, per_asset=limit,
+    )
+    rows = [item for values in grouped.values() for item in values]
+    rows.sort(key=lambda item: float(item[0].ranking_score or 0), reverse=True)
+    return [run_summary(run, asset) for run, asset in rows[:limit]]
+
+
+@app.post("/backtests/signals/{ticker}/refresh")
+def refresh_backtest_signals(
+    ticker: str, access=Depends(require_permission("can_refresh_backtest_signals")), db: Session = Depends(get_db),
+):
+    grouped = BacktestRepository(db).leaderboard(tickers=[ticker.upper()], per_asset=3)
+    leaders = grouped.get(ticker.upper()) or []
+    if not leaders:
+        raise HTTPException(404, "official_backtests_not_available_for_asset")
+    results = []
+    try:
+        service = BacktestService(db)
+        for previous, _asset in leaders:
+            if previous.market_date == backtest_market_date():
+                results.append({
+                    "run_id": str(previous.id), "strategy_name": previous.strategy_name,
+                    "current_signal": {"status": previous.current_signal, "as_of": previous.signal_as_of},
+                    "cached": True,
+                })
+                continue
+            parameters = previous.parameters_json or {}
+            financial = parameters.get("financial") or {}
+            result = service.run(
+                ticker=ticker.upper(), asset_type="stock", strategy_id=previous.strategy_id, period="5y",
+                initial_capital=float(previous.initial_capital), fee_pct=float(previous.fee_pct),
+                slippage_pct=float(previous.slippage_pct), risk_free_rate_pct=float(previous.risk_free_rate_pct),
+                cash_yield_rate_pct=float(financial.get("cash_yield_rate_pct") or 0),
+                apply_cash_yield=bool(financial.get("apply_cash_yield")),
+                params=parameters.get("strategy") or {}, filters=parameters.get("filters") or {}, persist=True,
+                owner_email=OFFICIAL_OWNER, scope="official", deduplicate_day=True,
+            )
+            results.append({
+                "run_id": result.get("run_id"), "strategy_name": (result.get("strategy") or {}).get("name"),
+                "current_signal": result.get("current_signal"), "cached": result.get("cached", False),
+            })
+        db.commit()
+        return {"ticker": ticker.upper(), "updated": results}
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(400, str(exc))
+    except Exception as exc:
+        db.rollback(); raise HTTPException(502, detail={"signal_refresh_failed": str(exc)})
+
+
+@app.get("/backtests/batch/jobs")
+def backtest_batch_jobs(
+    limit: int = Query(default=20, ge=1, le=100), _access=Depends(require_owner), db: Session = Depends(get_db),
+):
+    return [BacktestBatchService.job_dict(job) for job in BacktestBatchService(db).list_jobs(limit)]

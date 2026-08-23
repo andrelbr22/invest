@@ -1,5 +1,6 @@
 from investment_engine.core.screening.universe import (
     BESST_LABELS,
+    apply_universe_subfilters,
     besst_category,
     company_size_category,
     company_size_from_market_cap,
@@ -59,3 +60,22 @@ def test_company_size_uses_visible_market_cap_thresholds_and_saved_metadata():
     ]
     assert universe_tickers(sized, "company_size", company_size="mid") == ["MID3"]
     assert universe_tickers(sized, "index", selected_tickers=["BIG3", "SML3"]) == ["BIG3", "SML3"]
+
+
+def test_size_ibov_and_sector_are_cumulative_subfilters_of_the_base_universe():
+    catalog = [
+        {"ticker": "AAA3", "company_size": "large", "sector_label": "Energia"},
+        {"ticker": "BBB3", "company_size": "mid", "sector_label": "Energia"},
+        {"ticker": "CCC3", "company_size": "large", "sector_label": "Bancos"},
+        {"ticker": "OUT3", "company_size": "large", "sector_label": "Energia"},
+    ]
+    assert apply_universe_subfilters(
+        catalog,["AAA3","BBB3","CCC3"],company_sizes=["large"],
+        ibov_members=["AAA3","BBB3"],ibov_inside=True,
+        classification_field="sector_label",classification_values=["energia"],
+    ) == ["AAA3"]
+
+
+def test_an_enabled_subfilter_without_a_selection_returns_no_assets():
+    catalog = [{"ticker": "AAA3", "company_size": "large"}]
+    assert apply_universe_subfilters(catalog,["AAA3"],company_sizes=[]) == []

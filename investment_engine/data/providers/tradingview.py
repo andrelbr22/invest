@@ -5,7 +5,7 @@ from ...core.valuation.technical import tradingview_signal
 # Keep fields named and map by key instead of positional indexes. This makes
 # the adapter much less fragile when new descriptive fields are added.
 TV_COLUMNS = [
-    "name", "description", "exchange", "sector", "industry",
+    "name", "description", "exchange", "sector", "industry", "type", "typespecs", "currency",
     "Recommend.All", "market_cap_basic", "Value.Traded",
     "SMA20", "SMA50", "SMA200", "SMA20|1W", "SMA50|1W", "SMA20|1M", "SMA50|1M",
     "high", "low", "close", "RSI", "BB.lower", "BB.upper",
@@ -18,9 +18,12 @@ class TradingViewScannerProvider:
     def __init__(self, http: HttpClient | None = None):
         self.http = http or HttpClient()
 
-    def fetch(self, asset_type: str = "stock") -> list[dict]:
+    def fetch(self, asset_type: str = "stock", *, type_specs: list[str] | None = None) -> list[dict]:
+        filters = [{"left": "type", "operation": "equal", "right": asset_type}]
+        if type_specs:
+            filters.append({"left": "typespecs", "operation": "has", "right": list(type_specs)})
         payload = {
-            "filter": [{"left": "type", "operation": "equal", "right": asset_type}],
+            "filter": filters,
             "options": {"lang": "pt"},
             "symbols": {"query": {"types": []}, "tickers": []},
             "columns": TV_COLUMNS,
@@ -43,6 +46,9 @@ class TradingViewScannerProvider:
                 "exchange": row.get("exchange") or None,
                 "sector": row.get("sector") or None,
                 "industry": row.get("industry") or None,
+                "instrument_type": row.get("type") or asset_type,
+                "type_specs": row.get("typespecs") if isinstance(row.get("typespecs"), list) else [],
+                "currency": row.get("currency") or "BRL",
                 "score_tv": score,
                 "signal_tv": tradingview_signal(score).value,
                 "market_cap": row.get("market_cap_basic"),

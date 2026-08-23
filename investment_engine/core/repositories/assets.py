@@ -349,12 +349,13 @@ class AssetRepository:
         f, fq = self._latest_fundamental_alias()
         t, tq = self._latest_technical_alias("1D")
         sc, sq = self._latest_score_alias()
+        accepted_types = {"etf", "bdr", "future"} if asset_type == "other_b3" else {asset_type}
         stmt = (
             select(AssetORM, f, t, sc)
             .outerjoin(f, and_(f.asset_id == AssetORM.id, fq.c.rn == 1))
             .outerjoin(t, and_(t.asset_id == AssetORM.id, tq.c.rn == 1))
             .outerjoin(sc, and_(sc.asset_id == AssetORM.id, sq.c.rn == 1))
-            .where(AssetORM.asset_type == asset_type, AssetORM.is_active.is_(True))
+            .where(AssetORM.asset_type.in_(accepted_types), AssetORM.is_active.is_(True))
             .order_by(AssetORM.ticker)
             .limit(limit)
         )

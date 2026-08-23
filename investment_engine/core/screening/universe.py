@@ -163,3 +163,37 @@ def filter_rows_by_tickers(rows: Iterable[dict], tickers: Iterable[str], *, limi
     allowed = {str(ticker).strip().upper() for ticker in tickers or [] if str(ticker).strip()}
     result = [row for row in (rows or []) if str(row.get("ticker") or "").upper() in allowed]
     return result if limit is None else result[: max(int(limit), 0)]
+
+
+def apply_universe_subfilters(
+    catalog: Iterable[dict],
+    base_tickers: Iterable[str],
+    *,
+    company_sizes: Iterable[str] | None = None,
+    ibov_members: Iterable[str] | None = None,
+    ibov_inside: bool = True,
+    classification_field: str | None = None,
+    classification_values: Iterable[str] | None = None,
+) -> list[str]:
+    """Apply cumulative Porte/IBOV/classification constraints to a base universe."""
+    base = {str(value).strip().upper() for value in (base_tickers or []) if str(value).strip()}
+    sizes = None if company_sizes is None else {str(value) for value in company_sizes}
+    members = None if ibov_members is None else {str(value).strip().upper() for value in ibov_members}
+    classes = None if classification_values is None else {normalize_text(value) for value in classification_values}
+    allowed_fields = {"classification", "sector_label", "segment_label", "market_cap_category_label"}
+    if classification_field is not None and classification_field not in allowed_fields:
+        raise ValueError("invalid_classification_field")
+
+    result = []
+    for asset in catalog or []:
+        ticker = str(asset.get("ticker") or "").strip().upper()
+        if not ticker or ticker not in base:
+            continue
+        if sizes is not None and company_size_category(asset) not in sizes:
+            continue
+        if members is not None and ((ticker in members) != bool(ibov_inside)):
+            continue
+        if classes is not None and normalize_text(asset.get(classification_field or "classification")) not in classes:
+            continue
+        result.append(ticker)
+    return result

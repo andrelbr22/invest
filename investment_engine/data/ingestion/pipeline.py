@@ -123,6 +123,12 @@ class MarketIngestionPipeline:
         summary = PipelineSummary(f"tradingview_{asset_type}", rows_received=len(rows))
         rejected: list[dict] = []
         for raw in rows:
+            existing = self.repo.get_by_ticker(str(raw.get("ticker") or "").upper())
+            # TradingView classifies FIIs and ETFs broadly as funds.  The
+            # Fundamentus FII catalog is the authority here, so the technical
+            # import must never turn every fund into an FII.
+            if asset_type == "fii" and (existing is None or existing.asset_type != "fii"):
+                continue
             result = validate_technical(raw)
             summary.warnings += len(result.warnings)
             if not result.valid:
@@ -155,10 +161,67 @@ class MarketIngestionPipeline:
         self._finish_run(run, summary, {"rejected": rejected[:100]})
         return summary
 
+    def ingest_other_b3(self) -> PipelineSummary:
+        """Import technical catalogs that do not use company/FII fundamentals."""
+        run = self._new_run("tradingview_other_b3")
+        now = self._now()
+        summary = PipelineSummary("tradingview_other_b3")
+        rejected: list[dict] = []
+        source_errors: list[dict] = []
+        groups = (
+            ("etf", "fund", ["etf"], "ETF"),
+            ("bdr", "dr", None, "BDR"),
+            ("future", "futures", None, "Futuro / derivativo"),
+        )
+        for saved_type, provider_type, type_specs, segment_label in groups:
+            try:
+                rows = self.technical_provider.fetch(provider_type, type_specs=type_specs)
+            except Exception as exc:
+                summary.warnings += 1
+                source_errors.append({"asset_type": saved_type, "error": str(exc)})
+                continue
+            summary.rows_received += len(rows)
+            for raw in rows:
+                result = validate_technical(raw)
+                summary.warnings += len(result.warnings)
+                if not result.valid:
+                    summary.rows_rejected += 1
+                    rejected.append({"ticker": raw.get("ticker"), "asset_type": saved_type, "errors": result.errors})
+                    continue
+                ticker = str(raw.get("ticker") or "").strip().upper()
+                existing = self.repo.get_by_ticker(ticker)
+                if existing is not None and existing.asset_type in {"stock", "fii"}:
+                    # Repair ETFs that an older broad "fund" scan may have
+                    # labeled as FII, but never reclassify a genuine asset that
+                    # already has fundamental history.
+                    can_repair = saved_type == "etf" and existing.asset_type == "fii" and self.repo.latest_fundamentals(existing.id) is None
+                    if not can_repair:
+                        continue
+                    existing.asset_type = "etf"
+                asset = self.repo.upsert_asset(
+                    ticker=ticker,
+                    asset_type=saved_type,
+                    name=raw.get("name"), exchange=raw.get("exchange"),
+                    sector=raw.get("sector"), industry=raw.get("industry"), segment=segment_label,
+                    metadata_json={
+                        "b3_category": saved_type,
+                        "instrument_type": raw.get("instrument_type") or provider_type,
+                        "type_specs": raw.get("type_specs") or [],
+                    },
+                )
+                self.repo.upsert_technical(
+                    asset, source="tradingview", timeframe="1D", as_of=now, retrieved_at=now,
+                    status="valid", quality_score=result.quality_score, data=raw, raw_payload=raw,
+                )
+                summary.rows_valid += 1
+        self._finish_run(run, summary, {"rejected": rejected[:100], "source_errors": source_errors})
+        return summary
+
     def run_full(self) -> dict[str, PipelineSummary]:
         return {
             "stocks": self.ingest_stocks(),
             "stock_technicals": self.ingest_technicals("stock"),
             "fiis": self.ingest_fiis(),
             "fii_technicals": self.ingest_technicals("fii"),
+            "other_b3": self.ingest_other_b3(),
         }

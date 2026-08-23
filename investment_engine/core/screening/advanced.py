@@ -242,6 +242,10 @@ def filter_row(fund: dict, scores: dict, *, fundamental_filters: dict | None = N
 def row_from_orm(asset, fund, tech, score) -> dict:
     def g(obj, name): return _f(getattr(obj, name, None)) if obj is not None else None
     fund_dict = {field: g(fund, field) for field in FUNDAMENTAL_FIELDS}
+    if fund_dict.get("price") is None:
+        fund_dict["price"] = g(tech, "close")
+    if fund_dict.get("daily_liquidity") is None:
+        fund_dict["daily_liquidity"] = g(tech, "daily_liquidity")
     score_dict = {field: g(score, field) for field in SCORE_FIELDS}
     size = company_size_category({
         "market_cap_category": asset.market_cap_category,
@@ -251,6 +255,7 @@ def row_from_orm(asset, fund, tech, score) -> dict:
     return {
         "asset": {
             "id": str(asset.id), "ticker": asset.ticker, "name": asset.name, "asset_type": asset.asset_type,
+            "asset_type_label": {"stock": "Ação", "fii": "FII", "etf": "ETF", "bdr": "BDR", "future": "Futuro / derivativo"}.get(asset.asset_type, "Outro"),
             "sector": asset.sector, "industry": asset.industry, "segment": asset.segment,
             "classification": classification_for(
                 asset.asset_type, asset.sector, asset.segment,
@@ -283,7 +288,7 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
         universe = [row for row in universe if str(row[0].ticker).upper() in allowed]
     preliminary = []
     for asset, fund, tech, score in universe:
-        if fund is None:
+        if fund is None and asset_type in {"stock", "fii"}:
             continue
         row = row_from_orm(asset, fund, tech, score)
         if filter_row(row["fundamentals"], row["scores"], fundamental_filters=fundamental_filters,
