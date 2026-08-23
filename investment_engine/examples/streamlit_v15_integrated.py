@@ -12,6 +12,10 @@ from investment_engine.core.screening.universe import (
     filter_rows_by_tickers,
     universe_tickers,
 )
+from investment_engine.integrations.github_actions import (
+    GitHubActionsError,
+    dispatch_official_backtests,
+)
 
 st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
@@ -87,6 +91,15 @@ def api_patch(path,json=None,timeout=120):return _request("PATCH",path,json=json
 def api_delete(path,timeout=120):return _request("DELETE",path,timeout=timeout)
 
 def can(permission):return bool(PERMISSIONS.get(permission,False))
+
+
+def _private_setting(name,default=""):
+    """Lê uma configuração do servidor sem exibi-la nem enviá-la ao navegador."""
+    try:
+        value=st.secrets.get(name,os.getenv(name,default))
+    except Exception:
+        value=os.getenv(name,default)
+    return str(value or "").strip()
 
 
 def _reset_market_refinements(asset_type,reason="O universo de ativos foi alterado."):
@@ -1893,19 +1906,55 @@ def _render_official_backtest_admin():
         st.write("Use a tela normal de Backtests para executar uma estratégia, comparar estratégias ou testar uma cesta. O resultado fica salvo no seu histórico.")
         st.button("Ir para Backtests individuais",type="primary",key="admin_go_backtests",on_click=_navigate_to,args=("backtests",))
     with batch:
-        st.write("O lote oficial testa as configurações do catálogo em até 100 ativos. Ele roda no GitHub para continuar funcionando mesmo que a página seja fechada.")
+        st.write("O lote oficial testa as configurações do catálogo em até 100 ativos. Escolha os códigos e envie o processamento diretamente por esta tela.")
         st.info("Execução automática: todos os sábados, às 00h01 de Brasília, usando as 50 ações do filtro Padrão.")
-        st.link_button(
-            "▶ Abrir execução manual no GitHub",
-            "https://github.com/andrelbr22/invest/actions/workflows/backtests-semanais.yml",
-            type="primary",use_container_width=True,
-        )
-        st.markdown("""
-1. Na página que abrir, clique em **Run workflow**.
-2. Deixe **tickers** vazio para usar as 50 ações do Padrão, ou informe até 100 códigos separados por vírgula.
-3. Mantenha **max_combinations = 200** para o lote completo e confirme em **Run workflow**.
-4. Volte a esta tela para acompanhar a situação registrada no banco.
-""")
+        github_token=_private_setting("GITHUB_ACTIONS_TOKEN")
+        github_repository=_private_setting("GITHUB_ACTIONS_REPOSITORY","andrelbr22/invest")
+        github_workflow=_private_setting("GITHUB_BACKTEST_WORKFLOW","backtests-semanais.yml")
+        github_ref=_private_setting("GITHUB_ACTIONS_REF","main")
+        if not github_token:
+            st.warning("A conexão segura com o GitHub ainda não foi configurada. Adicione GITHUB_ACTIONS_TOKEN aos Secrets do aplicativo.")
+        default_rows,default_error=api_get("/screen/db/stocks/default",{"limit":50,"offset":0})
+        stock_rows,stock_error=api_get("/assets",{"asset_type":"stock","limit":1200,"offset":0})
+        if default_error or stock_error:
+            st.error(f"Não foi possível montar a lista de ativos: {default_error or stock_error}")
+        else:
+            stock_rows=stock_rows or []
+            default_tickers=[row.get("ticker") for row in (default_rows or []) if row.get("ticker")]
+            catalog={row.get("ticker"):row for row in stock_rows if row.get("ticker")}
+            available=sorted(catalog)
+            defaults=[ticker for ticker in default_tickers if ticker in catalog][:50]
+            selection_key="official_batch_selected_tickers"
+            if selection_key not in st.session_state:
+                st.session_state[selection_key]=defaults
+            current_selection=[ticker for ticker in st.session_state.get(selection_key,defaults) if ticker in catalog][:100]
+            st.caption(f"Filtro Padrão encontrado: {len(defaults)} ativo(s). O limite por pedido é de 100.")
+            with st.form("official_batch_dispatch_form"):
+                selected=st.multiselect(
+                    "Ativos que serão processados",
+                    available,
+                    default=current_selection,
+                    max_selections=100,
+                    format_func=lambda ticker:f"{ticker} — {catalog[ticker].get('name') or 'Sem nome'}",
+                    help="Começa com as ações do filtro Padrão. Você pode retirar ou acrescentar códigos antes de enviar.",
+                )
+                submitted=st.form_submit_button(
+                    "▶ Gerar backtests dos ativos selecionados",
+                    type="primary",use_container_width=True,disabled=not bool(github_token),
+                )
+            st.session_state[selection_key]=selected
+            if submitted:
+                try:
+                    dispatched=dispatch_official_backtests(
+                        token=github_token,tickers=selected,repository=github_repository,
+                        workflow=github_workflow,ref=github_ref,max_combinations=200,
+                    )
+                except (GitHubActionsError,ValueError) as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(f"Pedido enviado. O GitHub começou a preparar os backtests de {len(dispatched['tickers'])} ativo(s). Você já pode fechar esta página.")
+                    st.link_button("Acompanhar processamento no GitHub",dispatched["actions_url"],use_container_width=True)
+        st.caption("A credencial fica guardada apenas nos Secrets do Streamlit e nunca é mostrada aos usuários.")
 
     st.markdown("#### Histórico dos lotes oficiais")
     jobs,jobs_error=api_get("/backtests/batch/jobs",{"limit":20})
@@ -2037,4 +2086,4 @@ elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.10.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.10.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

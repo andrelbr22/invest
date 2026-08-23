@@ -36,8 +36,8 @@ from ..data.providers.b3_indices import B3IndexProvider
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.10.0",
-    version="0.11.0",
+    title="Investment Engine V1.10.1",
+    version="0.11.1",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -378,7 +378,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.11.0", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.11.1", "environment": settings.app_environment}
 
 
 @app.get("/health/db")

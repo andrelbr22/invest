@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
-version = "0.11.0"
-description = "Formação do Investidor V1.10.0 with hierarchical universes, other B3 assets and owner administration."
+version = "0.11.1"
+description = "Formação do Investidor V1.10.1 with in-app official backtest dispatch."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

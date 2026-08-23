@@ -37,7 +37,10 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Atualização agendada
         if: github.event_name == 'schedule'
-        run: python scripts/run_weekly_backtests.py --source scheduled --max-combinations 200
+        run: python -m scripts.run_weekly_backtests --source scheduled --max-combinations 200
       - name: Atualização manual do proprietário
         if: github.event_name == 'workflow_dispatch'
-        run: python scripts/run_weekly_backtests.py --source manual --max-combinations "${{ inputs.max_combinations }}" --tickers "${{ inputs.tickers }}"
+        env:
+          MANUAL_TICKERS: ${{ inputs.tickers }}
+          MANUAL_MAX_COMBINATIONS: ${{ inputs.max_combinations }}
+        run: python -m scripts.run_weekly_backtests --source manual --max-combinations "$MANUAL_MAX_COMBINATIONS" --tickers "$MANUAL_TICKERS"
