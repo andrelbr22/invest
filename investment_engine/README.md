@@ -1,4 +1,4 @@
-# Formação do Investidor • Investment Engine V1.10.1
+# Formação do Investidor • Investment Engine V1.10.2
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
@@ -7,6 +7,16 @@
 > externo e as credenciais devem ser configuradas no painel Secrets.
 
 Backend Python/FastAPI/PostgreSQL + Streamlit para triagem fundamentalista/técnica, valuation, carteira e backtests.
+
+## Novidades da V1.10.2
+
+- menu lateral redesenhado com identidade visual própria;
+- conta, perfil e situação do acesso reunidos em um cartão compacto;
+- estado do motor apresentado de forma mais clara;
+- opções de navegação com largura e espaçamento uniformes;
+- seleção ativa mais evidente, sem os antigos círculos de rádio;
+- textos redundantes removidos e perfis traduzidos para português;
+- não exige migração de banco.
 
 ## Novidades da V1.10.1
 

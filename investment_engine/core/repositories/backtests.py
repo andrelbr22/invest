@@ -67,7 +67,7 @@ class BacktestRepository:
         metrics: dict, equity_curve: list, trades: list, snapshot: dict | None = None,
         ranking_score: float | None = None, sample_status: str = "insufficient",
         current_signal: dict | None = None, data_source: str = "yahoo", status: str = "valid",
-        engine_version: str = "0.11.1", sector_label: str | None = None, batch_job_id=None,
+        engine_version: str = "0.11.2", sector_label: str | None = None, batch_job_id=None,
         compact_curve: bool = False,
     ) -> BacktestRunORM:
         signal = current_signal or {}

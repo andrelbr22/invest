@@ -1,5 +1,6 @@
 import math
 import os
+import html
 from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import requests
@@ -22,10 +23,95 @@ st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layo
 st.markdown("""
 <style>
     .block-container {padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1500px;}
-    section[data-testid="stSidebar"] {border-right: 1px solid rgba(128,128,128,.20);}
-    section[data-testid="stSidebar"] div[role="radiogroup"] {gap: .35rem;}
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #f4faf7 0%, #edf6f2 52%, #f8fbfa 100%);
+        border-right: 1px solid rgba(20, 103, 78, .14);
+        box-shadow: 8px 0 30px rgba(21, 77, 60, .035);
+    }
+    section[data-testid="stSidebar"][aria-expanded="true"] {width:20rem !important; min-width:20rem !important; max-width:20rem !important;}
+    section[data-testid="stSidebar"][aria-expanded="true"] > div {width:20rem !important; min-width:20rem !important; max-width:20rem !important;}
+    section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {padding-top: .55rem;}
+    section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {gap: .55rem;}
+    .ie-brand {
+        display:flex; align-items:center; gap:.8rem; padding:.35rem .05rem 1rem;
+        border-bottom:1px solid rgba(20,103,78,.12); margin-bottom:.15rem;
+    }
+    .ie-brand-mark {
+        width:46px; height:46px; flex:0 0 46px; display:grid; place-items:center;
+        color:#fff; font-weight:800; font-size:1rem; letter-spacing:-.04em;
+        border-radius:14px; background:linear-gradient(145deg,#168765,#0b634b);
+        box-shadow:0 8px 18px rgba(18,126,94,.22);
+    }
+    .ie-brand-title {font-size:1rem; line-height:1.15; font-weight:750; color:#133f33;}
+    .ie-brand-subtitle {font-size:.72rem; color:#658078; margin-top:.2rem; letter-spacing:.02em;}
+    .ie-account-card {
+        padding:.85rem; border:1px solid rgba(20,103,78,.13); border-radius:14px;
+        background:rgba(255,255,255,.76); box-shadow:0 5px 16px rgba(36,77,65,.045);
+    }
+    .ie-account-row {display:flex; align-items:center; gap:.7rem; min-width:0;}
+    .ie-avatar {
+        width:38px; height:38px; flex:0 0 38px; display:grid; place-items:center;
+        border-radius:50%; color:#12684f; font-weight:750; font-size:.8rem;
+        background:#dff3ea; border:1px solid rgba(18,104,79,.13);
+    }
+    .ie-account-copy {min-width:0; flex:1;}
+    .ie-account-name {font-size:.86rem; font-weight:700; color:#173e34; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+    .ie-account-email {font-size:.68rem; color:#71847e; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:.1rem;}
+    .ie-account-meta {display:flex; align-items:center; justify-content:space-between; gap:.4rem; margin-top:.65rem;}
+    .ie-profile-badge {
+        display:inline-flex; align-items:center; border-radius:999px; padding:.2rem .48rem;
+        color:#17664f; background:#e1f3eb; font-size:.66rem; font-weight:650;
+    }
+    .ie-approved {font-size:.66rem; color:#54736a;}
+    .ie-engine-card {
+        display:flex; align-items:center; gap:.7rem; padding:.72rem .82rem; margin-top:.1rem;
+        border-radius:13px; color:#174f3e; background:linear-gradient(135deg,#d8f2e5,#cdebdc);
+        border:1px solid rgba(24,128,94,.09);
+    }
+    .ie-status-dot {width:9px; height:9px; border-radius:50%; flex:0 0 9px; background:#14a36f; box-shadow:0 0 0 4px rgba(20,163,111,.13);}
+    .ie-engine-title {font-size:.78rem; font-weight:700; line-height:1.15;}
+    .ie-engine-version {font-size:.66rem; opacity:.72; margin-top:.12rem;}
+    .ie-menu-title {font-size:.68rem; font-weight:750; color:#698078; letter-spacing:.1em; margin:1rem 0 .15rem;}
+    section[data-testid="stSidebar"] div[role="radiogroup"] {gap:.55rem; width:100%;}
     section[data-testid="stSidebar"] div[role="radiogroup"] label {
-        border: 1px solid rgba(128,128,128,.22); border-radius: .65rem; padding: .55rem .65rem;
+        position:relative; width:100%; min-height:49px; box-sizing:border-box;
+        display:flex; align-items:center; margin:0; padding:.7rem .82rem;
+        border:1px solid rgba(33,91,73,.14); border-radius:13px;
+        color:#2a4a40; background:rgba(255,255,255,.58);
+        box-shadow:0 2px 8px rgba(36,77,65,.025);
+        transition:background .16s ease,border-color .16s ease,box-shadow .16s ease,transform .16s ease;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+        border-color:rgba(20,126,92,.28); background:#fff; transform:translateX(2px);
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
+        color:#0f6249; font-weight:700; border-color:rgba(17,137,98,.32);
+        background:linear-gradient(135deg,#e0f5eb,#d5efe3);
+        box-shadow:0 6px 15px rgba(26,121,91,.10);
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked)::before {
+        content:""; position:absolute; left:-1px; top:10px; bottom:10px; width:4px;
+        border-radius:0 6px 6px 0; background:#13966b;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] input[type="radio"] {
+        position:absolute; opacity:0; width:1px; height:1px;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:focus-visible) {
+        outline:3px solid rgba(20,139,99,.22); outline-offset:2px;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] [data-testid="stMarkdownContainer"] p {
+        margin:0; font-size:.82rem; line-height:1.25;
+    }
+    section[data-testid="stSidebar"] [data-testid="stButton"] button {
+        width:100%; min-height:40px; border-radius:11px; border-color:rgba(33,91,73,.16);
+        color:#36584e; background:rgba(255,255,255,.58);
+    }
+    section[data-testid="stSidebar"] [data-testid="stButton"] button:hover {
+        color:#0e684c; border-color:rgba(20,126,92,.28); background:#fff;
+    }
+    .ie-sidebar-footer {
+        margin-top:1.05rem; padding-top:.8rem; border-top:1px solid rgba(20,103,78,.12);
+        color:#7a8c86; font-size:.65rem; text-align:center; letter-spacing:.02em;
     }
     div[data-testid="stMetric"] {
         border: 1px solid rgba(128,128,128,.20); border-radius: .75rem; padding: .75rem 1rem;
@@ -63,9 +149,6 @@ def _protect_private_beta():
     email=str(getattr(st.user,"email","") or "").strip().lower()
     CURRENT_USER_EMAIL=email
     CURRENT_USER_NAME=str(getattr(st.user,"name","") or getattr(st.user,"given_name","") or "").strip()
-    st.sidebar.caption(f"Acesso privado: {email or 'usuário autenticado'}")
-    if st.sidebar.button("Sair da conta",key="app_logout"):
-        st.logout()
 
 _protect_private_beta()
 
@@ -91,6 +174,40 @@ def api_patch(path,json=None,timeout=120):return _request("PATCH",path,json=json
 def api_delete(path,timeout=120):return _request("DELETE",path,timeout=timeout)
 
 def can(permission):return bool(PERMISSIONS.get(permission,False))
+
+
+def _render_sidebar_identity(health):
+    display_name=CURRENT_USER_NAME or (CURRENT_USER_EMAIL.split("@",1)[0] if CURRENT_USER_EMAIL else "Ambiente local")
+    name_parts=[part for part in display_name.replace("."," ").split() if part]
+    initials="".join(part[0] for part in name_parts[:2]).upper() or "FI"
+    role_labels={"owner":"Proprietário","admin":"Administrador","member":"Membro","visitor":"Visitante"}
+    status_labels={"approved":"Acesso aprovado","pending":"Aguardando aprovação","blocked":"Acesso bloqueado"}
+    role=role_labels.get(PERMISSIONS.get("role"),"Usuário")
+    status=status_labels.get(PERMISSIONS.get("status"),"Acesso local")
+    version=html.escape(str(health.get("version") or "?"))
+    st.sidebar.markdown(f"""
+<div class="ie-brand">
+  <div class="ie-brand-mark">FI</div>
+  <div><div class="ie-brand-title">Formação do Investidor</div><div class="ie-brand-subtitle">Investment Engine</div></div>
+</div>
+<div class="ie-account-card">
+  <div class="ie-account-row">
+    <div class="ie-avatar">{html.escape(initials)}</div>
+    <div class="ie-account-copy">
+      <div class="ie-account-name">{html.escape(display_name)}</div>
+      <div class="ie-account-email">{html.escape(CURRENT_USER_EMAIL or "Execução local")}</div>
+    </div>
+  </div>
+  <div class="ie-account-meta"><span class="ie-profile-badge">{html.escape(role)}</span><span class="ie-approved">{html.escape(status)}</span></div>
+</div>
+<div class="ie-engine-card">
+  <span class="ie-status-dot"></span>
+  <div><div class="ie-engine-title">Motor operacional</div><div class="ie-engine-version">Versão {version}</div></div>
+</div>
+""",unsafe_allow_html=True)
+    if CURRENT_USER_EMAIL and st.sidebar.button("↪  Sair da conta",key="app_logout",use_container_width=True):
+        st.logout()
+    st.sidebar.markdown('<div class="ie-menu-title">MENU PRINCIPAL</div>',unsafe_allow_html=True)
 
 
 def _private_setting(name,default=""):
@@ -2050,7 +2167,6 @@ if err:
     st.error("Não consegui falar com o Investment Engine. Ligue a API primeiro.")
     st.code("python -m uvicorn investment_engine.api.app:app --host 127.0.0.1 --port 8000")
     st.stop()
-st.sidebar.success(f"Motor online • versão {health.get('version','?')}")
 registered=None; registration_err=None
 if st.session_state.get("access_registered_email") != CURRENT_USER_EMAIL:
     registered,registration_err=api_post("/access/register",{"display_name":CURRENT_USER_NAME})
@@ -2060,8 +2176,6 @@ if registration_err or access_err:
     st.error(f"Não foi possível validar as permissões desta conta: {registration_err or access_err}")
     st.stop()
 PERMISSIONS=access or registered or {}
-st.sidebar.caption(f"Perfil: {PERMISSIONS.get('role','visitor')} • {PERMISSIONS.get('status','pending')}")
-st.sidebar.markdown("## 🧭 Navegação")
 module_labels={
     "market":"📊 Mercado e análise",
     "portfolio":"💼 Minha carteira",
@@ -2077,13 +2191,13 @@ if not modules:
     st.title("Acesso aguardando autorização")
     st.info("Sua conta Google foi identificada, mas ainda não possui menus liberados. Solicite ao proprietário a autorização necessária.")
     st.stop()
+_render_sidebar_identity(health)
 if st.session_state.get("main_navigation") not in modules:st.session_state["main_navigation"]=modules[0]
 module=st.sidebar.radio("Escolha uma área",modules,index=0,format_func=lambda value:module_labels[value],label_visibility="collapsed",key="main_navigation")
-st.sidebar.caption(f"Você está em: {module_labels[module]}")
-st.sidebar.markdown("---")
+st.sidebar.markdown('<div class="ie-sidebar-footer">Ambiente privado e protegido</div>',unsafe_allow_html=True)
 if module=="market":render_market()
 elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.10.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.10.2. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
