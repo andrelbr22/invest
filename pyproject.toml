@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
-version = "0.13.3"
-description = "Formação do Investidor V1.12.3 with compact, visual and progressive-disclosure navigation."
+version = "0.13.4"
+description = "Formação do Investidor V1.12.4 with compact navigation and unobstructed responsive page headers."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

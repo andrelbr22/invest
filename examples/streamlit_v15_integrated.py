@@ -24,7 +24,14 @@ st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layo
 
 st.markdown("""
 <style>
-    .block-container {padding-top: .75rem; padding-bottom: 2rem; max-width: 1500px;}
+    /* A barra fixa do Streamlit ocupa o topo da janela. A compactação anterior
+       colocava o primeiro título por baixo dela. Mantemos o conteúdo compacto,
+       mas reservamos a altura real da barra antes do primeiro elemento. */
+    header[data-testid="stHeader"] {
+        background:rgba(248,251,250,.96); border-bottom:1px solid rgba(20,103,78,.08);
+        backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    }
+    .block-container {padding-top: 4rem; padding-bottom: 2rem; max-width: 1500px;}
     .block-container h1 {font-size:2rem; line-height:1.12; margin:.15rem 0 .2rem;}
     .block-container h2 {font-size:1.38rem; margin:.35rem 0 .15rem;}
     .block-container h3 {font-size:1.12rem; margin:.3rem 0 .1rem;}
@@ -151,6 +158,10 @@ st.markdown("""
     }
     .ie-filter-chip-muted {background:#edf1ef; color:#65736e;}
     .ie-section-hint {font-size:.7rem; color:#6b8179; margin:-.15rem 0 .2rem;}
+    @media (max-width: 768px) {
+        .block-container {padding-top:4.35rem; padding-left:1rem; padding-right:1rem;}
+        .block-container h1 {font-size:1.72rem; line-height:1.16;}
+    }
 </style>
 """,unsafe_allow_html=True)
 
@@ -2943,4 +2954,4 @@ elif module=="backtests":render_backtests()
 elif module=="research":render_research()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.12.3. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.12.4. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

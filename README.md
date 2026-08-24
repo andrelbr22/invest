@@ -1,4 +1,12 @@
-# Formação do Investidor • Investment Engine V1.12.3
+# Formação do Investidor • Investment Engine V1.12.4
+
+## Novidades da V1.12.4
+
+- o título da página agora começa abaixo da barra fixa do Streamlit, sem cortes;
+- o cabeçalho superior recebeu fundo consistente, evitando a sensação de uma área vazia sobre o conteúdo;
+- o espaçamento do topo se adapta a telas de computador, tablet e celular;
+- a organização compacta, os filtros recolhidos e todas as regras da V1.12.3 foram preservados;
+- nenhuma migração de banco é necessária.
 
 ## Novidades da V1.12.3
 

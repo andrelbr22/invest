@@ -14,7 +14,9 @@ def test_compact_visual_system_is_applied_globally():
     assert ".ie-compact-summary" in source
     assert ".ie-filter-chip" in source
     assert "[data-testid=\"stExpander\"]" in source
-    assert "padding-top: .75rem" in source
+    assert 'header[data-testid="stHeader"]' in source
+    assert "padding-top: 4rem" in source
+    assert "padding-top:4.35rem" in source
 
 
 def test_market_filters_use_progressive_disclosure_and_visible_summaries():
@@ -41,6 +43,6 @@ def test_portfolio_keeps_metrics_visible_and_movements_collapsed():
 
 
 def test_release_version_is_consistent():
-    assert (ROOT / "investment_engine" / "__init__.py").read_text(encoding="utf-8").strip() == '__version__ = "0.13.3"'
-    assert 'version = "0.13.3"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'EXPECTED_EMBEDDED_API_VERSION"] = "0.13.3"' in (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+    assert (ROOT / "investment_engine" / "__init__.py").read_text(encoding="utf-8").strip() == '__version__ = "0.13.4"'
+    assert 'version = "0.13.4"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'EXPECTED_EMBEDDED_API_VERSION"] = "0.13.4"' in (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
