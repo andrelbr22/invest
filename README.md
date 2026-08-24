@@ -1,4 +1,15 @@
-# Formação do Investidor • Investment Engine V1.10.4
+# Formação do Investidor • Investment Engine V1.11.0
+
+## Novidades da V1.11.0
+
+- histórico de backtests explicitamente ordenado pela data/hora da análise, do mais recente para o mais antigo;
+- estudo restrito das cinco estratégias mais consistentes do catálogo oficial;
+- pontuação por recorrência no Top 3, qualidade de colocação, robustez e cobertura, sem permitir que várias configurações da mesma estratégia ocupem o mesmo pódio;
+- nova área restrita **Estudos e notícias**;
+- três notícias importantes por ação efetivamente mantida na carteira;
+- notícias sobre ações recomendadas, carteiras e preços-alvo de bancos brasileiros e mundiais;
+- duas novas permissões independentes, controladas exclusivamente pelo proprietário;
+- atualização automática do banco por migração Alembic, sem edição manual do Neon.
 
 > Edição preparada para substituir o aplicativo atual no Streamlit Community
 > Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,

@@ -67,7 +67,7 @@ class BacktestRepository:
         metrics: dict, equity_curve: list, trades: list, snapshot: dict | None = None,
         ranking_score: float | None = None, sample_status: str = "insufficient",
         current_signal: dict | None = None, data_source: str = "yahoo", status: str = "valid",
-        engine_version: str = "0.11.4", sector_label: str | None = None, batch_job_id=None,
+        engine_version: str = "0.12.0", sector_label: str | None = None, batch_job_id=None,
         compact_curve: bool = False,
     ) -> BacktestRunORM:
         signal = current_signal or {}
@@ -132,7 +132,23 @@ class BacktestRepository:
             stmt = stmt.where(BacktestRunORM.sector_label.ilike(f"%{sector.strip()}%"))
         if scope:
             stmt = stmt.where(BacktestRunORM.scope == scope)
-        return list(self.session.execute(stmt.order_by(BacktestRunORM.created_at.desc()).limit(limit)).all())
+        return list(self.session.execute(
+            stmt.order_by(BacktestRunORM.created_at.desc(), BacktestRunORM.id.desc()).limit(limit)
+        ).all())
+
+    def strategy_study_runs(self, *, limit: int = 50000):
+        """Return the newest official run for every configuration identity."""
+        stmt = (
+            select(BacktestRunORM, AssetORM)
+            .join(AssetORM, AssetORM.id == BacktestRunORM.asset_id)
+            .where(BacktestRunORM.scope == "official", BacktestRunORM.status == "valid")
+            .order_by(BacktestRunORM.created_at.desc(), BacktestRunORM.id.desc())
+            .limit(max(1, min(100000, int(limit))))
+        )
+        newest_by_configuration = {}
+        for run, asset in self.session.execute(stmt):
+            newest_by_configuration.setdefault((run.asset_id, run.config_hash), (run, asset))
+        return list(newest_by_configuration.values())
 
     def get_run(self, run_id, *, owner_email: str, is_owner: bool = False):
         stmt = select(BacktestRunORM).where(BacktestRunORM.id == run_id)

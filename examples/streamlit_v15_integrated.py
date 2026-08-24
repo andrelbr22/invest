@@ -313,6 +313,15 @@ def br_datetime(value):
     except Exception:
         return str(value)
 
+def _datetime_sort_value(value):
+    try:
+        timestamp=pd.Timestamp(value)
+        if pd.isna(timestamp):return -1
+        if timestamp.tzinfo is None:timestamp=timestamp.tz_localize("UTC")
+        return int(timestamp.tz_convert("UTC").value)
+    except Exception:
+        return -1
+
 def score_label(v):
     if v is None:return "N/D"
     if v>=85:return "Excelente"
@@ -1040,12 +1049,18 @@ def render_market():
             leaderboard_rows=[]
             for current_ticker in displayed_tickers:
                 row={"Ativo":current_ticker}
-                for position,item in enumerate(leaders.get(current_ticker) or [],start=1):
+                ticker_leaders=leaders.get(current_ticker) or []
+                for position,item in enumerate(ticker_leaders,start=1):
                     row[f"{position}º backtest"]=f"{item.get('strategy_name')} • {br_num(item.get('ranking_score'),1)}"
                     row[f"Sinal {position}"]=signal_labels.get(item.get("current_signal"),"⚪ Neutro")
-                row["Atualizado em"]=str(next(iter(leaders.get(current_ticker) or []),{}).get("signal_as_of") or "")[:10] or "N/D"
+                newest_analysis=max((_datetime_sort_value(item.get("created_at")) for item in ticker_leaders),default=-1)
+                newest_item=max(ticker_leaders,key=lambda item:_datetime_sort_value(item.get("created_at")),default={})
+                row["Analisado em"]=br_datetime(newest_item.get("created_at"))
+                row["Sinal atualizado em"]=br_datetime(newest_item.get("signal_as_of"))
+                row["_analysis_order"]=newest_analysis
                 leaderboard_rows.append(row)
-            st.dataframe(pd.DataFrame(leaderboard_rows),hide_index=True,use_container_width=True,height=420)
+            leaderboard_frame=pd.DataFrame(leaderboard_rows).sort_values("_analysis_order",ascending=False,kind="stable")
+            st.dataframe(leaderboard_frame.drop(columns=["_analysis_order"]),hide_index=True,use_container_width=True,height=420)
             if not any(leaders.values()):
                 st.info("O catálogo oficial ainda não foi processado. O primeiro lote será criado pela atualização semanal ou por uma execução manual do proprietário.")
             refreshable=[ticker for ticker in displayed_tickers if leaders.get(ticker)]
@@ -2053,6 +2068,8 @@ def render_backtests():
         if e:st.error(e)
         elif not runs:st.info("Nenhum backtest salvo atende aos filtros escolhidos.")
         else:
+            runs=sorted(runs,key=lambda item:_datetime_sort_value(item.get("created_at")),reverse=True)
+            st.caption("Ordem da tabela: análise mais recente primeiro.")
             rows=[]
             for r in runs:
                 m=r.get("metrics") or {}
@@ -2076,6 +2093,143 @@ def render_backtests():
                         detail["strategy"]={"name":detail.get("strategy_name"),"rules":"Execução histórica salva; consulte os parâmetros abaixo."}
                     detail.setdefault("assumptions",{"fee_pct":detail.get("fee_pct"),"slippage_pct":detail.get("slippage_pct"),"risk_free_rate_pct":detail.get("risk_free_rate_pct")})
                     _render_backtest_result(detail)
+
+
+def _render_backtest_study():
+    st.subheader("🏆 Estratégias mais consistentes do catálogo oficial")
+    st.caption("O estudo compara a melhor configuração de cada estratégia em cada ativo e premia principalmente a recorrência entre os três primeiros.")
+    result,error=api_get("/backtests/study",{"limit":5})
+    if error:
+        st.error(f"Não foi possível calcular o estudo: {error}"); return
+    result=result or {}
+    ranking=result.get("ranking") or []
+    m1,m2,m3=st.columns(3)
+    m1.metric("Ativos comparáveis",result.get("eligible_assets",0))
+    m2.metric("Pares estratégia/ativo",result.get("eligible_strategy_asset_pairs",0))
+    m3.metric("Amostra mínima por estratégia",result.get("minimum_assets_per_strategy",0))
+    if not ranking:
+        st.info("Ainda não há resultados oficiais suficientes. O estudo começa quando pelo menos três estratégias válidas puderem ser comparadas nos mesmos ativos.")
+    else:
+        rows=[]
+        for item in ranking:
+            rows.append({
+                "Posição":item.get("position"),"Estratégia":item.get("strategy_name"),
+                "Nota do estudo":item.get("study_score"),"Top 3":item.get("top3_count"),
+                "Recorrência Top 3 %":item.get("top3_frequency_pct"),"1º lugares":item.get("first_places"),
+                "2º lugares":item.get("second_places"),"3º lugares":item.get("third_places"),
+                "Ativos testados":item.get("assets_tested"),"Cobertura %":item.get("coverage_pct"),
+                "Qualidade robusta média":item.get("mean_robust_score"),"Acerto médio %":item.get("mean_win_rate_pct"),
+            })
+        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True,height=280)
+        leader=ranking[0]
+        st.success(
+            f"Líder atual: **{leader.get('strategy_name')}** — apareceu {leader.get('top3_count')} vez(es) "
+            f"entre os três primeiros, em {leader.get('assets_tested')} ativo(s) testado(s)."
+        )
+    methodology=result.get("methodology") or {}
+    with st.expander("Como a pontuação foi calculada",expanded=False):
+        weights=methodology.get("weights_pct") or {}
+        st.write(
+            f"A nota dá **{weights.get('top3_recurrence',55)}%** à recorrência no Top 3, "
+            f"**{weights.get('placement_quality',25)}%** à posição obtida, "
+            f"**{weights.get('robust_backtest_quality',15)}%** à qualidade robusta do backtest e "
+            f"**{weights.get('catalog_coverage',5)}%** à cobertura do catálogo."
+        )
+        st.write("Pontos por posição: 1º = 10, 2º = 7, 3º = 5, 4º = 2 e 5º = 1.")
+        for rule in methodology.get("rules") or []:st.write(f"• {rule}")
+        st.caption("A taxa de acerto é exibida para consulta, mas não decide o ranking sozinha: uma taxa alta pode esconder poucas perdas muito grandes.")
+
+
+def _render_news_items(items,empty_message,key_prefix):
+    if not items:
+        st.info(empty_message); return
+    for index,item in enumerate(items):
+        with st.container(border=True):
+            st.write(f"**{item.get('title') or 'Notícia sem título'}**")
+            details=[item.get("institution"),item.get("source"),br_datetime(item.get("published_at"))]
+            st.caption(" • ".join(str(value) for value in details if value and value!="N/D"))
+            tickers=item.get("mentioned_tickers") or []
+            if tickers:st.caption("Ativos identificados no título: "+", ".join(tickers))
+            if item.get("url"):
+                context=str(key_prefix).replace("_"," ").strip().upper()
+                st.link_button(f"Abrir na fonte · {context}",item["url"])
+
+
+def _render_market_news():
+    st.subheader("📰 Notícias da carteira")
+    st.caption("Consulte, de uma só vez, três notícias recentes para cada ação da carteira, priorizadas por relevância, impacto e atualidade.")
+    portfolios,error=api_get("/portfolios")
+    if error:
+        st.error(f"Não foi possível consultar sua carteira: {error}"); return
+    portfolios=portfolios or []
+    if not portfolios:
+        st.info("Cadastre uma carteira e ao menos uma ação para habilitar esta consulta."); return
+    portfolio_by_id={item["id"]:item for item in portfolios}
+    portfolio_id=st.selectbox(
+        "Carteira",list(portfolio_by_id),
+        format_func=lambda value:portfolio_by_id[value].get("name") or value,
+        key="news_portfolio_id",
+    )
+    detail,detail_error=api_get(f"/portfolios/{portfolio_id}")
+    if detail_error:
+        st.error(f"Não foi possível abrir a carteira: {detail_error}"); return
+    positions=[item for item in (detail or {}).get("positions") or [] if item.get("asset_type")=="stock" and float(item.get("quantity") or 0)>0]
+    if not positions:
+        st.info("Esta carteira ainda não possui ações com quantidade maior que zero."); return
+    st.metric("Ações na carteira",len(positions))
+    if st.button("Buscar 3 notícias para cada ação",type="primary",use_container_width=True,key="load_portfolio_news"):
+        with st.spinner(f"Consultando notícias de {len(positions)} ação(ões)..."):
+            news,news_error=api_get(f"/insights/news/portfolios/{portfolio_id}",{"limit_assets":50})
+        if news_error:
+            st.session_state.pop("portfolio_news_result",None)
+            st.error(f"Consulta não concluída: {news_error}")
+        else:st.session_state["portfolio_news_result"]={"portfolio_id":portfolio_id,"data":news}
+    stored=st.session_state.get("portfolio_news_result") or {}
+    if stored.get("portfolio_id")==portfolio_id:
+        news=stored.get("data") or {}
+        if news.get("truncated"):st.warning("A carteira possui mais de 50 ações; esta consulta mostrou as 50 primeiras em ordem alfabética.")
+        for asset_news in news.get("assets") or []:
+            current_ticker=asset_news.get("ticker") or "Ativo"
+            title=f"{current_ticker} — {asset_news.get('company_name') or 'Nome não disponível'}"
+            with st.expander(title,expanded=False):
+                if asset_news.get("warning"):st.warning("A fonte externa não respondeu para este ativo. Tente novamente mais tarde.")
+                _render_news_items(
+                    asset_news.get("items") or [],
+                    f"Nenhuma notícia recente e suficientemente relacionada a {current_ticker} foi localizada.",
+                    current_ticker,
+                )
+
+    st.markdown("---")
+    st.subheader("🏦 Recomendações publicadas por grandes bancos")
+    st.caption("Esta lista reúne notícias que citam recomendações, carteiras, mudanças de avaliação ou preços-alvo. Ela reproduz links jornalísticos e não é uma recomendação do aplicativo.")
+    category_labels={"all":"Bancos brasileiros e mundiais","brazil":"Somente bancos brasileiros","global":"Somente bancos mundiais"}
+    category=st.selectbox("Instituições",list(category_labels),format_func=lambda value:category_labels[value],key="recommendation_news_category")
+    if st.button("Buscar notícias de recomendações",use_container_width=True,key="load_recommendation_news"):
+        with st.spinner("Consultando as publicações mais recentes..."):
+            recommendations,recommendation_error=api_get("/insights/news/recommendations",{"category":category,"limit":20})
+        if recommendation_error:
+            st.session_state.pop("recommendation_news_result",None)
+            st.error(f"Consulta não concluída: {recommendation_error}")
+        else:st.session_state["recommendation_news_result"]={"category":category,"data":recommendations}
+    stored_recommendations=st.session_state.get("recommendation_news_result") or {}
+    if stored_recommendations.get("category")==category:
+        recommendations=stored_recommendations.get("data") or {}
+        if recommendations.get("warnings"):st.warning("Parte das fontes externas não respondeu; os resultados disponíveis foram mantidos.")
+        _render_news_items(recommendations.get("items") or [],"Nenhuma publicação recente foi encontrada para este grupo de instituições.",f"bank_news_{category}")
+    st.caption("Fonte de descoberta: GDELT DOC 2.0. Títulos, datas e links pertencem às publicações indicadas. Sempre leia a matéria completa e verifique a data antes de tomar qualquer decisão.")
+
+
+def render_research():
+    st.title("📚 Estudos e notícias")
+    st.caption("Área restrita liberada individualmente pelo proprietário.")
+    tabs=[]
+    if can("can_view_backtest_studies"):tabs.append(("🏆 Estudo dos backtests",_render_backtest_study))
+    if can("can_view_news_insights"):tabs.append(("📰 Notícias e bancos",_render_market_news))
+    if not tabs:
+        st.info("Nenhuma função desta área foi liberada para esta conta."); return
+    containers=st.tabs([label for label,_renderer in tabs])
+    for container,(_label,renderer) in zip(containers,tabs):
+        with container:renderer()
 
 
 def _render_official_backtest_admin():
@@ -2263,6 +2417,8 @@ def _render_users_admin():
             "Ver carteira":user.get("can_view_portfolio"),"Alterar carteira":user.get("can_write_portfolio"),
             "Ver backtests":user.get("can_view_backtests"),"Executar backtests":user.get("can_run_backtests"),
             "Atualizar sinais":user.get("can_refresh_backtest_signals"),
+            "Estudo dos backtests":user.get("can_view_backtest_studies"),
+            "Notícias e bancos":user.get("can_view_news_insights"),
             "Atualizar banco":user.get("can_sync_market"),"Último acesso":user.get("last_seen_at"),
         })
     st.dataframe(pd.DataFrame(table),hide_index=True,use_container_width=True)
@@ -2290,6 +2446,8 @@ def _render_users_admin():
         view_backtests=c2.checkbox("Ver Backtests e históricos",value=bool(current.get("can_view_backtests")))
         run_backtests=c2.checkbox("Executar novos Backtests",value=bool(current.get("can_run_backtests")))
         refresh_signals=c2.checkbox("Atualizar os sinais dos backtests oficiais",value=bool(current.get("can_refresh_backtest_signals")))
+        backtest_studies=c2.checkbox("Ver estudo e ranking dos backtests",value=bool(current.get("can_view_backtest_studies")))
+        news_insights=c2.checkbox("Ver notícias da carteira e recomendações de bancos",value=bool(current.get("can_view_news_insights")))
         sync_market=c2.checkbox("Atualizar dados do Mercado no banco",value=bool(current.get("can_sync_market")))
         custom_filter_limit=c2.selectbox(
             "Quantidade de filtros personalizados",[0,1,2,3],
@@ -2303,7 +2461,8 @@ def _render_users_admin():
             "status":status,"role":role,"can_view_market":view_market,"can_use_advanced_filters":advanced,
             "can_view_portfolio":view_portfolio,"can_write_portfolio":write_portfolio,
             "can_view_backtests":view_backtests,"can_run_backtests":run_backtests,
-            "can_refresh_backtest_signals":refresh_signals,"can_sync_market":sync_market,
+            "can_refresh_backtest_signals":refresh_signals,"can_view_backtest_studies":backtest_studies,
+            "can_view_news_insights":news_insights,"can_sync_market":sync_market,
             "custom_filter_limit":custom_filter_limit,
         }
         _,save_err=api_put(f"/access/users/{selected}",payload)
@@ -2337,12 +2496,14 @@ module_labels={
     "market":"📊 Mercado e análise",
     "portfolio":"💼 Minha carteira",
     "backtests":"🧪 Backtests",
+    "research":"📚 Estudos e notícias",
     "access":"⚙️ Administração",
 }
 modules=[]
 if can("can_view_market"):modules.append("market")
 if can("can_view_portfolio"):modules.append("portfolio")
 if can("can_view_backtests"):modules.append("backtests")
+if can("can_view_backtest_studies") or can("can_view_news_insights"):modules.append("research")
 if PERMISSIONS.get("is_owner"):modules.append("access")
 if not modules:
     st.title("Acesso aguardando autorização")
@@ -2355,6 +2516,7 @@ st.sidebar.markdown('<div class="ie-sidebar-footer">Ambiente privado e protegido
 if module=="market":render_market()
 elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
+elif module=="research":render_research()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.10.4. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.11.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

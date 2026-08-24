@@ -26,6 +26,7 @@ from ..core.portfolio.service import build_portfolio_snapshot, classification_fo
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
 from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
 from ..core.backtesting.batch import BacktestBatchService, OFFICIAL_OWNER
+from ..core.backtesting.study import build_strategy_study
 from ..infrastructure.db.models import AssetORM
 from ..core.models.strategy import StockFilterSet, FiiFilterSet
 from ..infrastructure.db.session import get_session_factory
@@ -33,11 +34,12 @@ from ..core.services_v14 import calculate_asset_intelligence
 from ..data.ingestion.prices import PriceIngestionService
 from ..data.ingestion.pipeline import MarketIngestionPipeline
 from ..data.providers.b3_indices import B3IndexProvider
+from ..data.providers.news import MarketNewsService
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.10.4",
-    version="0.11.4",
+    title="Investment Engine V1.11.0",
+    version="0.12.0",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -46,6 +48,7 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts_l
 
 _INDEX_PORTFOLIO_CACHE: dict[str, tuple[float, dict]] = {}
 _INDEX_PORTFOLIO_TTL_SECONDS = 6 * 60 * 60
+_MARKET_NEWS = MarketNewsService()
 
 
 @app.middleware("http")
@@ -54,7 +57,7 @@ async def security_headers(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    private_path = request.url.path.startswith(("/portfolios", "/backtests", "/access"))
+    private_path = request.url.path.startswith(("/portfolios", "/backtests", "/access", "/insights"))
     response.headers["Cache-Control"] = "no-store" if private_path else "no-cache"
     return response
 
@@ -372,6 +375,8 @@ class AccessPolicyUpdateRequest(BaseModel):
     can_view_backtests: bool | None = None
     can_run_backtests: bool | None = None
     can_refresh_backtest_signals: bool | None = None
+    can_view_backtest_studies: bool | None = None
+    can_view_news_insights: bool | None = None
     can_sync_market: bool | None = None
     custom_filter_limit: int | None = Field(default=None, ge=0, le=3)
 
@@ -389,7 +394,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.11.4", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.12.0", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -449,9 +454,9 @@ def update_access_user(
     changes = req.model_dump(exclude_none=True)
     if changes.get("can_use_advanced_filters") or changes.get("can_sync_market") or int(changes.get("custom_filter_limit") or 0)>0:
         changes["can_view_market"] = True
-    if changes.get("can_write_portfolio"):
+    if changes.get("can_write_portfolio") or changes.get("can_view_news_insights"):
         changes["can_view_portfolio"] = True
-    if changes.get("can_run_backtests") or changes.get("can_refresh_backtest_signals"):
+    if changes.get("can_run_backtests") or changes.get("can_refresh_backtest_signals") or changes.get("can_view_backtest_studies"):
         changes["can_view_backtests"] = True
     if changes.get("can_view_market") is False:
         changes["can_use_advanced_filters"] = False
@@ -459,9 +464,11 @@ def update_access_user(
         changes["custom_filter_limit"] = 0
     if changes.get("can_view_portfolio") is False:
         changes["can_write_portfolio"] = False
+        changes["can_view_news_insights"] = False
     if changes.get("can_view_backtests") is False:
         changes["can_run_backtests"] = False
         changes["can_refresh_backtest_signals"] = False
+        changes["can_view_backtest_studies"] = False
     row = AccessPolicyRepository(db).update(clean, **changes)
     if row is None:
         raise HTTPException(404, "user_not_found")
@@ -1094,6 +1101,69 @@ def refresh_portfolio_prices(portfolio_id: UUID, access=Depends(require_permissi
 
 
 # -----------------------------
+# V1.11 Restricted research/news
+# -----------------------------
+
+@app.get("/insights/news/assets/{ticker}")
+def portfolio_asset_news(
+    ticker: str,
+    portfolio_id: UUID,
+    access=Depends(require_permission("can_view_news_insights")),
+    db: Session = Depends(get_db),
+):
+    portfolio_repo = PortfolioRepository(db)
+    portfolio = portfolio_repo.get_portfolio(portfolio_id, access["email"])
+    if portfolio is None:
+        raise HTTPException(404, "portfolio_not_found")
+    clean_ticker = ticker.strip().upper()
+    asset = next((
+        asset for position, asset in portfolio_repo.positions(portfolio.id)
+        if asset.ticker == clean_ticker and asset.asset_type == "stock" and float(position.quantity or 0) > 0
+    ), None)
+    if asset is None:
+        raise HTTPException(404, "stock_not_found_in_user_portfolio")
+    return _MARKET_NEWS.asset_news(asset.ticker, asset.name, limit=3)
+
+
+@app.get("/insights/news/portfolios/{portfolio_id}")
+def portfolio_all_asset_news(
+    portfolio_id: UUID,
+    limit_assets: int = Query(default=30, ge=1, le=50),
+    access=Depends(require_permission("can_view_news_insights")),
+    db: Session = Depends(get_db),
+):
+    portfolio_repo = PortfolioRepository(db)
+    portfolio = portfolio_repo.get_portfolio(portfolio_id, access["email"])
+    if portfolio is None:
+        raise HTTPException(404, "portfolio_not_found")
+    assets = []
+    for position, asset in portfolio_repo.positions(portfolio.id):
+        if asset.asset_type == "stock" and float(position.quantity or 0) > 0:
+            assets.append({"ticker": asset.ticker, "name": asset.name})
+    assets.sort(key=lambda item: item["ticker"])
+    result = _MARKET_NEWS.portfolio_news(assets[:limit_assets], limit_per_asset=3)
+    result.update({
+        "portfolio_id": str(portfolio.id),
+        "portfolio_name": portfolio.name,
+        "total_stocks": len(assets),
+        "truncated": len(assets) > limit_assets,
+    })
+    return result
+
+
+@app.get("/insights/news/recommendations")
+def bank_recommendation_news(
+    category: str = Query(default="all", pattern="^(all|brazil|global)$"),
+    limit: int = Query(default=20, ge=1, le=50),
+    _access=Depends(require_permission("can_view_news_insights")),
+    db: Session = Depends(get_db),
+):
+    assets = AssetRepository(db).list_assets("stock", limit=1200)
+    asset_names = {asset.ticker: asset.name or "" for asset in assets}
+    return _MARKET_NEWS.recommendations(category=category, limit=limit, asset_names=asset_names)
+
+
+# -----------------------------
 # V1.5 Backtesting
 # -----------------------------
 
@@ -1236,6 +1306,27 @@ def top_backtests(
     rows = [item for values in grouped.values() for item in values]
     rows.sort(key=lambda item: float(item[0].ranking_score or 0), reverse=True)
     return [run_summary(run, asset) for run, asset in rows[:limit]]
+
+
+@app.get("/backtests/study")
+def backtest_strategy_study(
+    limit: int = Query(default=5, ge=1, le=20),
+    _access=Depends(require_permission("can_view_backtest_studies")),
+    db: Session = Depends(get_db),
+):
+    records = []
+    for run, asset in BacktestRepository(db).strategy_study_runs():
+        records.append({
+            "ticker": asset.ticker,
+            "strategy_id": run.strategy_id,
+            "strategy_name": run.strategy_name,
+            "ranking_score": _num(run.ranking_score),
+            "sample_status": run.sample_status,
+            "metrics": run.metrics_json or {},
+        })
+    result = build_strategy_study(records, top_limit=limit)
+    result["generated_at"] = datetime.now(timezone.utc)
+    return result
 
 
 @app.post("/backtests/signals/{ticker}/refresh")

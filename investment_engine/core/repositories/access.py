@@ -16,6 +16,8 @@ PERMISSION_FIELDS = (
     "can_view_backtests",
     "can_run_backtests",
     "can_refresh_backtest_signals",
+    "can_view_backtest_studies",
+    "can_view_news_insights",
     "can_sync_market",
     "can_manage_users",
 )
