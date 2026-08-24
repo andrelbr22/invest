@@ -1,4 +1,15 @@
-# Formação do Investidor • Investment Engine V1.12.2
+# Formação do Investidor • Investment Engine V1.12.3
+
+## Novidades da V1.12.3
+
+- páginas mais compactas, com menor espaçamento e melhor aproveitamento da tela;
+- universo, subfiltros e filtros de análise ficam recolhidos e abrem com um clique;
+- resumos visuais permanentes mostram mercado, universo, filtro e quantidade de ativos ativos;
+- filtros e regras de backtest ficam em um painel recolhido, sem alterar a estratégia executada;
+- a estratégia selecionada e os filtros ativos aparecem em etiquetas de leitura rápida;
+- movimentações da carteira ficam recolhidas, mantendo patrimônio e composição em destaque;
+- screener avançado permanece disponível, mas deixa de ocupar a página quando não está em uso;
+- nenhuma migração de banco é necessária.
 
 ## Novidades da V1.12.2
 

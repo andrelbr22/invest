@@ -118,7 +118,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Publica Investment Engine V1.12.2 consolidado na Oracle"
+    & $gitPath commit -m "Publica Investment Engine V1.12.3 com interface compacta"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }

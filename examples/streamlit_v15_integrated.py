@@ -24,7 +24,23 @@ st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layo
 
 st.markdown("""
 <style>
-    .block-container {padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1500px;}
+    .block-container {padding-top: .75rem; padding-bottom: 2rem; max-width: 1500px;}
+    .block-container h1 {font-size:2rem; line-height:1.12; margin:.15rem 0 .2rem;}
+    .block-container h2 {font-size:1.38rem; margin:.35rem 0 .15rem;}
+    .block-container h3 {font-size:1.12rem; margin:.3rem 0 .1rem;}
+    .block-container [data-testid="stVerticalBlock"] {gap:.55rem;}
+    .block-container [data-testid="stHorizontalBlock"] {gap:.65rem;}
+    .block-container [data-testid="stAlert"] {padding:.55rem .75rem; border-radius:.7rem;}
+    .block-container [data-testid="stExpander"] {
+        border:1px solid rgba(20,103,78,.14); border-radius:.8rem;
+        background:rgba(248,252,250,.72); overflow:hidden;
+    }
+    .block-container [data-testid="stExpander"] details > summary {
+        padding:.25rem .55rem; color:#244f42; font-weight:650;
+    }
+    .block-container [data-testid="stExpander"] details[open] > summary {
+        background:rgba(222,243,234,.48); border-bottom:1px solid rgba(20,103,78,.10);
+    }
     section[data-testid="stSidebar"] {
         background: linear-gradient(180deg, #f4faf7 0%, #edf6f2 52%, #f8fbfa 100%);
         border-right: 1px solid rgba(20, 103, 78, .14);
@@ -116,10 +132,25 @@ st.markdown("""
         color:#7a8c86; font-size:.65rem; text-align:center; letter-spacing:.02em;
     }
     div[data-testid="stMetric"] {
-        border: 1px solid rgba(128,128,128,.20); border-radius: .75rem; padding: .75rem 1rem;
+        border: 1px solid rgba(128,128,128,.20); border-radius: .75rem; padding: .5rem .72rem;
         background: rgba(128,128,128,.035);
     }
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"] {font-size:.74rem;}
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size:1.35rem;}
     div[data-testid="stDataFrame"] {border-radius: .75rem; overflow: hidden;}
+    .ie-compact-summary {
+        display:flex; align-items:center; gap:.55rem; flex-wrap:wrap;
+        margin:.15rem 0 .45rem; padding:.58rem .72rem; border-radius:.8rem;
+        border:1px solid rgba(20,103,78,.13); background:linear-gradient(135deg,#f5fbf8,#eef8f3);
+    }
+    .ie-compact-summary-title {font-size:.72rem; font-weight:750; color:#315a4d; margin-right:.1rem;}
+    .ie-filter-chip {
+        display:inline-flex; align-items:center; min-height:24px; padding:.18rem .52rem;
+        border-radius:999px; background:#dff2e9; color:#17634d; font-size:.68rem; font-weight:650;
+        border:1px solid rgba(20,111,82,.10);
+    }
+    .ie-filter-chip-muted {background:#edf1ef; color:#65736e;}
+    .ie-section-hint {font-size:.7rem; color:#6b8179; margin:-.15rem 0 .2rem;}
 </style>
 """,unsafe_allow_html=True)
 
@@ -339,6 +370,40 @@ def _pct(v):
     return "N/D" if v is None else br_num(v,1,"%")
 
 
+def _compact_summary(title,items,muted_items=None):
+    """Render the current context without exposing the complete configuration panel."""
+    chips=[]
+    for item in items or []:
+        if item not in (None,""):
+            chips.append(f'<span class="ie-filter-chip">{html.escape(str(item))}</span>')
+    for item in muted_items or []:
+        if item not in (None,""):
+            chips.append(f'<span class="ie-filter-chip ie-filter-chip-muted">{html.escape(str(item))}</span>')
+    st.markdown(
+        '<div class="ie-compact-summary">'
+        f'<span class="ie-compact-summary-title">{html.escape(str(title))}</span>'
+        +"".join(chips)+"</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _backtest_filter_summary(filters):
+    trend_labels={"daily_trend":"Diária","weekly_trend":"Semanal","monthly_trend":"Mensal"}
+    technical_labels={
+        "adx_min":"ADX","volume_ratio_min":"Volume","rsi_min":"RSI","rsi_max":"RSI",
+        "atr_pct_min":"ATR","atr_pct_max":"ATR",
+    }
+    active_trends=[label for key,label in trend_labels.items() if (filters.get(key) or {}).get("enabled")]
+    active_technical=sorted({label for key,label in technical_labels.items() if filters.get(key) is not None})
+    fundamental_count=len(filters.get("fundamental_entry") or {})+len(filters.get("fundamental_exit") or {})
+    items=[]
+    if active_trends:items.append("Tendência: "+", ".join(active_trends))
+    if active_technical:items.append("Confirmação: "+", ".join(active_technical))
+    if fundamental_count:items.append(f"Fundamentos: {fundamental_count} regra(s)")
+    if filters.get("exit_on_filter_failure"):items.append("Saída ao falhar filtro")
+    return items or ["Sem filtros adicionais"]
+
+
 def _active_range(enabled, min_value=None, max_value=None):
     if not enabled:
         return None
@@ -349,8 +414,7 @@ def _active_range(enabled, min_value=None, max_value=None):
 
 
 def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Universo completo"):
-    st.markdown("---")
-    st.header("🧰 Screener configurável — Fundamentalista + Técnico")
+    st.subheader("Screener configurável — Fundamentalista + Técnico")
     st.caption(f"Universo atual: {universe_label}. Ative somente as regras que quiser. Filtros ativos são combinados por E (AND): o ativo precisa satisfazer todos eles. N/D nunca passa por um filtro ativo.")
     market_name={"stock":"Ações","fii":"FIIs","other_b3":"Demais Ativos B3"}.get(asset_type,"Ativos")
     if "advanced_screen_result" not in st.session_state:st.session_state.advanced_screen_result=None
@@ -464,7 +528,7 @@ def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Uni
         near_level=p2.selectbox("Proximidade de nível",list(near_labels),format_func=lambda x:near_labels[x])
         tolerance=p3.number_input("Tolerância da proximidade (%)",min_value=0.0,max_value=20.0,value=0.5,step=0.1)
 
-        with st.expander("Fórmulas de Pivot usadas pelo motor"):
+        with st.popover("Ver fórmulas de Pivot"):
             st.markdown("""
 - **PP** = (Máxima + Mínima + Fechamento) / 3
 - **R1** = (2 × PP) − Mínima
@@ -732,8 +796,8 @@ def render_market():
     scope_options.append("specific")
     if st.session_state[scope_key] not in scope_options:st.session_state[scope_key]="all"
 
-    with st.container(border=True):
-        st.subheader("1. Universo de ativos")
+    with st.expander("🎯 Universo e subfiltros — clique para ajustar",expanded=False):
+        st.subheader("Universo de ativos")
         st.caption("Primeiro escolha o grupo principal. Ao trocá-lo, os subfiltros e a análise anterior são limpos para que 100% do novo grupo fique disponível.")
         universe_mode=st.radio(
             "Onde deseja procurar?",scope_options,horizontal=True,
@@ -894,6 +958,12 @@ def render_market():
             disabled=universe_mode=="all" and not subfilters_active,on_click=_restore_full_market,args=(asset_type,),
         )
 
+    _compact_summary(
+        "UNIVERSO ATUAL",
+        [market,scope_label,f"{len(allowed_tickers)} ativo(s)"],
+        ["Filtros do universo recolhidos acima"],
+    )
+
     notice=st.session_state.pop(f"market_scope_notice_{asset_type}",None)
     if notice:
         st.info(f"{notice} Agora você pode aplicar novamente Padrão, CNPI, ALB, um filtro personalizado ou o screener avançado somente dentro dos {len(allowed_tickers)} ativo(s) deste universo.")
@@ -918,8 +988,8 @@ def render_market():
     st.session_state.setdefault(strategy_key,"preset:default")
     if st.session_state[strategy_key] not in strategy_options:st.session_state[strategy_key]="preset:default"
 
-    with st.container(border=True):
-        st.subheader("2. Refinar o universo")
+    with st.expander("🔎 Filtro de análise e localização — clique para ajustar",expanded=False):
+        st.subheader("Refinar o universo")
         st.caption("O filtro escolhido abaixo nunca traz ativos de fora do universo atual.")
         c1,c2=st.columns([3,1])
         strategy_ref=c1.selectbox("Filtro de análise",strategy_options,format_func=strategy_name,key=strategy_key)
@@ -932,6 +1002,12 @@ def render_market():
             "Localizar um ativo dentro deste universo",list(ticker_labels),
             format_func=lambda value:ticker_labels[value],key=f"market_table_ticker_{asset_type}",
         )
+
+    _compact_summary(
+        "VISUALIZAÇÃO",
+        [strategy_label,f"Até {limit} resultado(s)"],
+        [f"Ativo localizado: {selected_table_ticker}" if selected_table_ticker else "Todos os ativos aprovados"],
+    )
 
     if strategy_ref=="preset:all" or asset_type=="other_b3":
         endpoint=f"/screen/db/universe/{asset_type}"
@@ -1082,7 +1158,8 @@ def render_market():
         st.caption("Filtros personalizados fundamentalistas ficam ocultos em Demais Ativos B3; use o screener técnico abaixo.")
 
     if can("can_use_advanced_filters"):
-        render_advanced_screener(asset_type,allowed_tickers=allowed_tickers,universe_label=scope_label)
+        with st.expander("🧰 Screener avançado — clique para montar regras combinadas",expanded=False):
+            render_advanced_screener(asset_type,allowed_tickers=allowed_tickers,universe_label=scope_label)
     else:
         st.info("Os filtros avançados estão disponíveis somente mediante autorização do administrador.")
 
@@ -1292,6 +1369,11 @@ def render_portfolio():
     m3.metric("Custo das posições",br_money(summary.get("cost_basis")))
     m4.metric("Resultado não realizado",br_money(summary.get("unrealized_pnl")),_pct(summary.get("unrealized_pnl_pct")))
     m5.metric("Soma dos alvos",_pct(summary.get("target_total_pct")))
+    _compact_summary(
+        "CARTEIRA ATUAL",
+        [labels[pid],f"{len(positions)} ativo(s)",br_money(summary.get("market_value"))],
+        ["Configurações recolhidas acima"],
+    )
     if not summary.get("target_is_balanced"):
         st.warning(f"Os percentuais-alvo somam {_pct(summary.get('target_total_pct'))}. Para uma alocação completa, o ideal é totalizar 100% incluindo o caixa.")
 
@@ -1307,7 +1389,7 @@ def render_portfolio():
     stage_rev={v:k for k,v in stage_map.items()}
 
     left,right=st.columns([3,1])
-    with left:
+    with left.expander("➕ Movimentações e edição — clique para abrir",expanded=False):
         purchase_tab,edit_tab=st.tabs(["➕ Adicionar compra","✏️ Editar posição"])
         with purchase_tab:
             st.caption("Uma nova compra soma ações à posição existente e recalcula automaticamente o preço médio ponderado.")
@@ -1796,7 +1878,7 @@ def _backtest_filters_ui(asset_type):
         cfg["fundamental_entry"]=entry; cfg["fundamental_exit"]=exit_
         if exit_:
             cfg["fundamental_exit_logic"]=st.radio("Se houver mais de uma regra de venda",["any","all"],horizontal=True,format_func=lambda x:"Vender se QUALQUER regra ocorrer" if x=="any" else "Vender somente se TODAS ocorrerem",key="bt_fund_exit_logic")
-        with st.expander("Qualidade mínima do histórico fundamentalista",expanded=False):
+        with st.popover("Qualidade mínima do histórico fundamentalista"):
             cfg["fundamental_min_coverage_pct"]=st.slider("Cobertura mínima (%)",1,100,70,key="bt_fund_cov")
             cfg["fundamental_max_age_days"]=st.slider("Idade máxima de um snapshot (dias)",1,365,45,key="bt_fund_age")
     return cfg
@@ -1887,7 +1969,14 @@ def render_backtests():
         cash_yield_rate=y2.number_input("Rendimento anual do caixa (%)",min_value=-99.0,max_value=100.0,value=10.0,step=0.5,disabled=not apply_cash_yield,key="bt_cash_yield_rate")
         st.caption("Custos e slippage são descontados quando a posição muda. A taxa livre de risco afeta Sharpe/Sortino. A remuneração do caixa, quando ativada, entra efetivamente no retorno e usa uma taxa anual constante.")
 
-    filters=_backtest_filters_ui(type_map[type_label])
+    with st.expander("🧩 Filtros da estratégia — clique para configurar",expanded=False):
+        filters=_backtest_filters_ui(type_map[type_label])
+
+    _compact_summary(
+        "BACKTEST PREPARADO",
+        [ticker,type_label,periods.get(period,"Período personalizado")]+_backtest_filter_summary(filters),
+        ["Filtros e regras recolhidos acima"],
+    )
 
     st.markdown("#### Cinco melhores backtests oficiais")
     signal_labels={"buy":"🟢 Comprar","sell":"🔴 Vender","neutral":"⚪ Neutro"}
@@ -1914,7 +2003,9 @@ def render_backtests():
     with run_tab:
         sid=st.selectbox("Estratégia",list(by_id),format_func=lambda x:by_id[x]["name"],key="bt_strategy")
         definition=by_id[sid]
-        st.info(f"**{definition['family']}** — {definition['description']}\n\n**Regra:** {definition['rules']}")
+        with st.expander("📖 Entenda a estratégia e suas regras",expanded=False):
+            st.info(f"**{definition['family']}** — {definition['description']}\n\n**Regra:** {definition['rules']}")
+        _compact_summary("ESTRATÉGIA",[definition["name"],definition["family"]],["Parâmetros ajustáveis abaixo"])
         params={}
         if sid=="custom_ma_cross":
             st.markdown("##### Parâmetros personalizados")
@@ -2852,4 +2943,4 @@ elif module=="backtests":render_backtests()
 elif module=="research":render_research()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.12.2. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.12.3. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

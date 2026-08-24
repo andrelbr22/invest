@@ -40,8 +40,8 @@ from ..data.providers.news import MarketNewsService
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.12.2",
-    version="0.13.2",
+    title="Investment Engine V1.12.3",
+    version="0.13.3",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -432,7 +432,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.13.2", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.13.3", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
