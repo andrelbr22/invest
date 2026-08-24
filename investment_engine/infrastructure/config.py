@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # Backward compatibility: the former allow-list becomes the initial owner
     # list when APP_OWNER_EMAILS has not been configured yet.
     app_allowed_emails: str = ""
+    backtest_callback_token: str = ""
 
     @property
     def allowed_hosts_list(self) -> list[str]:

@@ -24,6 +24,17 @@ if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot "investment_engine"))) {
     Stop-Publication "a pasta investment_engine nao foi encontrada."
 }
 
+$packageRoot = Join-Path $sourceRoot "investment_engine"
+$nestedProjectIndicators = @(
+    (Join-Path $packageRoot "app.py"),
+    (Join-Path $packageRoot "requirements.txt"),
+    (Join-Path $packageRoot "pyproject.toml"),
+    (Join-Path $packageRoot ".github")
+) | Where-Object { Test-Path -LiteralPath $_ }
+if ($nestedProjectIndicators) {
+    Stop-Publication "foi encontrada uma copia completa do projeto dentro da pasta investment_engine. Use o pacote completo em uma pasta nova e limpa."
+}
+
 $forbiddenDirectories = Get-ChildItem -LiteralPath $sourceRoot -Directory -Recurse -Force |
     Where-Object { $_.Name -in @(".git", ".venv", "__pycache__") }
 if ($forbiddenDirectories) {
@@ -107,7 +118,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Publica Investment Engine V1.11.1 no Streamlit Cloud"
+    & $gitPath commit -m "Publica Investment Engine V1.12.2 consolidado na Oracle"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }

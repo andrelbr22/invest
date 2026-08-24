@@ -28,7 +28,9 @@ def test_landing_page_and_private_beta_configuration_are_present():
     page = (ROOT / "deployment" / "site" / "index.html").read_text(encoding="utf-8")
     ui = (ROOT / "examples" / "streamlit_v15_integrated.py").read_text(encoding="utf-8")
     assert "Formação do Investidor" in page
-    assert "https://app.formacaodoinvestidor.com.br" in page
+    assert "https://formacaodoinvestidor.com.br" in page
+    assert ".".join(("streamlit","app")) not in page
+    assert "app" + ".formacaodoinvestidor.com.br" not in page
     assert 'os.getenv("INVESTMENT_API_URL"' in ui
     assert "CURRENT_USER_EMAIL" in ui
     assert 'api_get("/access/me")' in ui

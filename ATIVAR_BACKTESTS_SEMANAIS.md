@@ -1,33 +1,12 @@
 # Ativar os backtests semanais
 
-O aplicativo e a migração funcionam assim que a V1.9.0 for publicada. Para ativar a rotina de sábado, faça estes passos uma única vez no GitHub.
+Desde a V1.12.0, o GitHub não acessa o PostgreSQL de produção. Ele calcula em
+um banco temporário e entrega os resultados por uma rota HTTPS autenticada.
 
-## 1. Abrir os segredos do repositório
+Siga o guia atualizado:
 
-1. Entre em `github.com/andrelbr22/invest`.
-2. Clique em **Settings**.
-3. No menu esquerdo, abra **Secrets and variables** e depois **Actions**.
-4. Clique em **New repository secret**.
+`ATIVAR_ENTREGA_SEGURA_BACKTESTS_V1120.md`
 
-## 2. Cadastrar a conexão do Neon
-
-Crie o segredo abaixo:
-
-- Nome: `DATABASE_ADMIN_URL`
-- Valor: a URL direta, sem `-pooler`, exibida pelo Neon. Ela deve começar com `postgresql://`; não use o endereço `https://` do painel.
-
-Opcionalmente, crie também `DATABASE_URL` usando a URL com `-pooler`. Nunca coloque essas URLs em arquivos publicados no GitHub.
-
-## 3. Fazer o primeiro lote manual
-
-1. Abra a guia **Actions** do repositório.
-2. Escolha **Backtests oficiais semanais**.
-3. Clique em **Run workflow**.
-4. Deixe **tickers** vazio para usar as 50 ações do filtro Padrão.
-5. Mantenha **200** combinações por ativo e confirme.
-
-Para um grupo extraordinário, informe até 100 tickers separados por vírgula. Somente pessoas com permissão de escrita no repositório conseguem disparar essa ação manual.
-
-## 4. Acompanhar
-
-O andamento aparece no GitHub Actions e também em **Administração → Backtests oficiais**. O agendamento ocorre aos sábados às 00h01 de Brasília; o GitHub pode iniciar alguns minutos depois em períodos de fila.
+O agendamento continua aos sábados às 00h01 de Brasília. O primeiro teste deve
+ser feito pelo site, com somente um ativo. Não execute o workflow manualmente na
+tela do GitHub, pois o pedido precisa ser registrado primeiro pela Oracle.

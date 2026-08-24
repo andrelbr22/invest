@@ -15,6 +15,28 @@ class GitHubActionsError(RuntimeError):
     """Erro seguro e apresentável ao acionar um workflow do GitHub."""
 
 
+def _github_headers(token: str) -> dict[str, str]:
+    return {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def _clean_token(token: str) -> str:
+    clean = str(token or "").strip()
+    if not clean:
+        raise GitHubActionsError("A integração com o GitHub ainda não foi configurada.")
+    return clean
+
+
+def _clean_repository(repository: str) -> str:
+    clean = str(repository or "").strip().strip("/")
+    if clean.count("/") != 1:
+        raise GitHubActionsError("O repositório configurado para os backtests é inválido.")
+    return clean
+
+
 def normalize_tickers(tickers: Iterable[str]) -> list[str]:
     clean: list[str] = []
     for ticker in tickers:
@@ -41,12 +63,8 @@ def dispatch_official_backtests(
 ) -> dict:
     """Solicita o lote oficial sem expor a credencial ao navegador."""
 
-    clean_token = str(token or "").strip()
-    if not clean_token:
-        raise GitHubActionsError("A integração com o GitHub ainda não foi configurada.")
-    clean_repository = str(repository or "").strip().strip("/")
-    if clean_repository.count("/") != 1:
-        raise GitHubActionsError("O repositório configurado para os backtests é inválido.")
+    clean_token = _clean_token(token)
+    clean_repository = _clean_repository(repository)
     clean_workflow = str(workflow or "").strip()
     clean_ref = str(ref or "").strip()
     if not clean_workflow or not clean_ref:
@@ -64,11 +82,7 @@ def dispatch_official_backtests(
     try:
         response = http.post(
             url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {clean_token}",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
+            headers=_github_headers(clean_token),
             json={
                 "ref": clean_ref,
                 "inputs": inputs,
@@ -94,6 +108,46 @@ def dispatch_official_backtests(
     }
 
 
+def cancel_workflow_run(
+    *,
+    token: str,
+    run_id: int,
+    repository: str = DEFAULT_REPOSITORY,
+    http=requests,
+) -> dict:
+    """Cancela uma execução específica sem revelar credenciais ou respostas internas."""
+
+    clean_token = _clean_token(token)
+    clean_repository = _clean_repository(repository)
+    try:
+        clean_run_id = int(run_id)
+    except (TypeError, ValueError) as exc:
+        raise GitHubActionsError("A execução do GitHub informada é inválida.") from exc
+    if clean_run_id <= 0:
+        raise GitHubActionsError("A execução do GitHub informada é inválida.")
+    url = f"https://api.github.com/repos/{clean_repository}/actions/runs/{clean_run_id}/cancel"
+    try:
+        response = http.post(
+            url,
+            headers=_github_headers(clean_token),
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise GitHubActionsError("O GitHub não respondeu ao pedido de cancelamento.") from exc
+    if response.status_code == 202:
+        return {"cancel_requested": True, "already_finished": False, "run_id": clean_run_id}
+    if response.status_code == 409:
+        return {"cancel_requested": False, "already_finished": True, "run_id": clean_run_id}
+    messages = {
+        401: "A credencial do GitHub é inválida ou expirou.",
+        403: "A credencial não possui permissão para cancelar o workflow.",
+        404: "A execução do GitHub não foi encontrada.",
+    }
+    raise GitHubActionsError(
+        messages.get(response.status_code, f"O GitHub recusou o cancelamento (HTTP {response.status_code}).")
+    )
+
+
 def list_workflow_runs(
     *,
     token: str,
@@ -105,12 +159,8 @@ def list_workflow_runs(
 ) -> list[dict]:
     """Consulta o andamento recente sem expor a credencial ao navegador."""
 
-    clean_token = str(token or "").strip()
-    if not clean_token:
-        raise GitHubActionsError("A integração com o GitHub ainda não foi configurada.")
-    clean_repository = str(repository or "").strip().strip("/")
-    if clean_repository.count("/") != 1:
-        raise GitHubActionsError("O repositório configurado para os backtests é inválido.")
+    clean_token = _clean_token(token)
+    clean_repository = _clean_repository(repository)
     clean_workflow = str(workflow or "").strip()
     if not clean_workflow:
         raise GitHubActionsError("O workflow do GitHub não foi configurado.")
@@ -118,11 +168,7 @@ def list_workflow_runs(
     try:
         response = http.get(
             url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {clean_token}",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
+            headers=_github_headers(clean_token),
             params={
                 "event": "workflow_dispatch",
                 "branch": str(branch or DEFAULT_REF).strip(),

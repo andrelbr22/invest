@@ -1,62 +1,36 @@
-# Formação do Investidor no Streamlit Community Cloud
+# Hospedagem atual na Oracle Cloud
 
-Esta variante executa a interface Streamlit e a API FastAPI no mesmo contêiner.
-O banco permanece fora do GitHub em um PostgreSQL gerenciado, permitindo que a
-instalação local e a publicação usem os mesmos dados.
+> O nome deste arquivo foi preservado apenas para não quebrar links de versões
+> antigas. As instruções de hospedagem externa anteriores estão desativadas.
 
-## Arquitetura
+## Endereço oficial
 
-- `app.py`: entrada compatível com o aplicativo Streamlit já publicado.
-- `streamlit_app.py`: inicialização da edição completa para nuvem.
-- `investment_engine/cloud_runtime.py`: migra o banco e inicia a API interna.
-- Neon PostgreSQL: armazenamento persistente compartilhado.
-- GitHub: apenas código; nenhum segredo, chave SSH ou arquivo de banco.
+O aplicativo é servido exclusivamente por:
 
-## Configuração do aplicativo
+`https://formacaodoinvestidor.com.br`
 
-No painel do Streamlit Community Cloud, selecione:
+O endereço `www` pode redirecionar para o mesmo aplicativo. O login Google usa
+exatamente esta URI autorizada:
 
-- Repository: o repositório criado para esta edição.
-- Branch: `main`.
-- Main file path: `app.py` para preservar o aplicativo existente. Em uma nova
-  publicação, `streamlit_app.py` também pode ser selecionado.
+`https://formacaodoinvestidor.com.br/oauth2callback`
 
-Para atualizar o repositório existente `andrelbr22/invest` depois de criar a
-branch de segurança `backup-versao-anterior`, extraia o pacote e execute no
-PowerShell, dentro da pasta extraída:
+## Arquitetura atual
 
-`powershell -ExecutionPolicy Bypass -File .\PUBLICAR_GITHUB.ps1`
+- máquina virtual Oracle Cloud;
+- Streamlit e API FastAPI no contêiner `app`;
+- PostgreSQL privado no contêiner `postgres`;
+- Caddy no contêiner `proxy`, com HTTPS automático;
+- GitHub como origem do código e executor isolado dos cálculos oficiais;
+- backups locais e cópia no Object Storage da Oracle.
 
-O assistente confere o backup e recusa arquivos de senhas ou chaves antes de
-enviar a edição para a branch `main`.
+O banco não é hospedado no GitHub e não possui porta pública. Os segredos reais
+ficam somente no servidor em `deployment/secrets/streamlit_secrets.toml`.
 
-Em **Settings > Secrets**, use como modelo `.streamlit/secrets.toml.example` e
-substitua todos os campos de exemplo. No painel **Connect** do Neon, copie sem
-publicar no GitHub:
+## Publicação
 
-- `DATABASE_URL`: conexão **Pooled connection**, cujo host contém `-pooler`.
-- `DATABASE_ADMIN_URL`: conexão direta, com **Pooled connection** desativada.
+Publique o pacote validado no GitHub com `PUBLICAR_GITHUB.ps1`. O temporizador
+do servidor consulta a branch `main`, instala a nova versão e reinicia os
+contêineres necessários.
 
-As duas conexões devem terminar com `sslmode=require`. A primeira atende o uso
-normal do aplicativo; a segunda é usada apenas para atualizar a estrutura do
-banco. Se `DATABASE_ADMIN_URL` não for definida, a aplicação continuará usando
-`DATABASE_URL` também nas atualizações, para manter compatibilidade.
-As URLs podem ser coladas exatamente como o Neon as fornece; o adaptador ajusta
-automaticamente o driver PostgreSQL usado pela aplicação.
-
-No Google Cloud Console, inclua a URI abaixo entre as URIs de redirecionamento
-autorizadas do cliente OAuth:
-
-`https://invest-klpbhuewpmzb7njdsmha4t.streamlit.app/oauth2callback`
-
-## Instalação local usando o mesmo banco
-
-Defina as mesmas `DATABASE_URL` e `DATABASE_ADMIN_URL` no `.env` local. Esse
-arquivo já está ignorado pelo Git e não deve ser publicado. Para desenvolvimento
-com dados isolados, use posteriormente uma branch separada do banco Neon.
-
-## Observações do plano gratuito
-
-O Streamlit Community Cloud pode suspender o aplicativo quando estiver ocioso,
-e o PostgreSQL gratuito também pode reduzir a zero sua capacidade quando não há
-consultas. A primeira abertura após um período ocioso pode levar alguns segundos.
+Não configure redirecionamento OAuth, DNS ou links para endereços de hospedagem
+anteriores. Os exemplos do projeto usam somente o domínio oficial acima.

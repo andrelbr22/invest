@@ -5,6 +5,7 @@ import requests
 
 from investment_engine.integrations.github_actions import (
     GitHubActionsError,
+    cancel_workflow_run,
     dispatch_official_backtests,
     normalize_tickers,
 )
@@ -70,8 +71,24 @@ def test_dispatch_handles_network_failure_without_leaking_token():
     assert "do-not-leak" not in str(error.value)
 
 
+def test_cancel_targets_only_the_selected_workflow_run():
+    http = Http(status_code=202)
+    result = cancel_workflow_run(token="secret-token", run_id=12345, http=http)
+    assert result == {"cancel_requested": True, "already_finished": False, "run_id": 12345}
+    url, request = http.calls[0]
+    assert url.endswith("/andrelbr22/invest/actions/runs/12345/cancel")
+    assert request["headers"]["Authorization"] == "Bearer secret-token"
+
+
+def test_cancel_reports_a_run_that_already_finished_without_leaking_token():
+    secret = "do-not-leak"
+    result = cancel_workflow_run(token=secret, run_id=12345, http=Http(status_code=409))
+    assert result["already_finished"] is True
+    assert secret not in str(result)
+
+
 def test_workflow_runs_batch_as_a_module():
     workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "backtests-semanais.yml"
     contents = workflow.read_text(encoding="utf-8")
-    assert contents.count("python -m scripts.run_weekly_backtests") == 3
+    assert contents.count("python -m scripts.run_weekly_backtests") == 2
     assert "python scripts/run_weekly_backtests.py" not in contents

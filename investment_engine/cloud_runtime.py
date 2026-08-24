@@ -1,4 +1,4 @@
-"""Runtime adapter for hosting the API inside Streamlit Community Cloud."""
+"""Runtime adapter for the embedded private API used by the self-hosted UI."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def _stop_stale_api(host: str, port: int) -> None:
 
 
 def _normalize_database_urls() -> None:
-    """Accept Neon connection strings exactly as copied from its dashboard."""
+    """Accept standard PostgreSQL URLs and select the psycopg driver."""
 
     for name in ("DATABASE_URL", "DATABASE_ADMIN_URL"):
         value = os.getenv(name, "").strip()
@@ -66,7 +66,7 @@ def _run_migrations() -> None:
     if not database_url:
         raise RuntimeError(
             "DATABASE_URL não configurada. Adicione a conexão PostgreSQL em "
-            "Settings > Secrets no Streamlit Community Cloud."
+            "deployment/secrets/streamlit_secrets.toml no servidor Oracle."
         )
 
     from alembic import command

@@ -28,13 +28,13 @@ powershell -ExecutionPolicy Bypass -File .\PUBLICAR_GITHUB.ps1
 
 Não digite somente `-ExecutionPolicy`; a linha precisa começar com `powershell`.
 
-## 4. Reiniciar o Streamlit
+## 4. Aguardar a Oracle
 
-Espere a atualização automática. Se necessário, abra **Manage app** no Streamlit Community Cloud e clique em **Reboot app**. A primeira inicialização executará a migração aditiva do Neon.
+Espere a atualização automática do servidor Oracle. O temporizador consulta o GitHub e reinicia o contêiner quando encontra uma versão nova. A primeira inicialização executará a migração aditiva do PostgreSQL.
 
 ## 5. Ativar a rotina semanal
 
-Siga `ATIVAR_BACKTESTS_SEMANAIS.md`. Essa etapa cadastra a conexão do Neon nos segredos do GitHub Actions e permite executar o primeiro catálogo oficial.
+Siga `ATIVAR_BACKTESTS_SEMANAIS.md`. O workflow usa banco temporário e devolve os resultados pela rota autenticada; nenhuma conexão do banco de produção é cadastrada no GitHub.
 
 ## 6. Conferir
 

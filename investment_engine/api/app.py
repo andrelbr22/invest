@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from datetime import datetime, timezone
+from secrets import compare_digest
 from time import monotonic
 from uuid import UUID
 from typing import Literal
@@ -26,6 +27,7 @@ from ..core.portfolio.service import build_portfolio_snapshot, classification_fo
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
 from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
 from ..core.backtesting.batch import BacktestBatchService, OFFICIAL_OWNER
+from ..integrations.backtest_delivery import CALLBACK_API_VERSION, delivery_checksum
 from ..core.backtesting.study import build_strategy_configuration_catalog, build_strategy_study
 from ..infrastructure.db.models import AssetORM
 from ..core.models.strategy import StockFilterSet, FiiFilterSet
@@ -38,8 +40,8 @@ from ..data.providers.news import MarketNewsService
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.11.1",
-    version="0.12.1",
+    title="Investment Engine V1.12.2",
+    version="0.13.2",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -57,7 +59,7 @@ async def security_headers(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    private_path = request.url.path.startswith(("/portfolios", "/backtests", "/access", "/insights"))
+    private_path = request.url.path.startswith(("/portfolios", "/backtests", "/access", "/insights", "/automation"))
     response.headers["Cache-Control"] = "no-store" if private_path else "no-cache"
     return response
 
@@ -118,6 +120,21 @@ def require_owner(
     if not policy.get("is_owner", False):
         raise HTTPException(403, "owner_access_required")
     return policy
+
+
+def require_backtest_callback(
+    authorization: str = Header(default=""),
+    callback_version: str = Header(default="", alias="X-Backtest-Callback-Version"),
+):
+    expected = str(settings.backtest_callback_token or "").strip()
+    if len(expected) < 32:
+        raise HTTPException(503, "backtest_callback_not_configured")
+    scheme, separator, supplied = str(authorization or "").partition(" ")
+    if separator != " " or scheme.lower() != "bearer" or not compare_digest(supplied.strip(), expected):
+        raise HTTPException(401, "invalid_backtest_callback_credential")
+    if callback_version != CALLBACK_API_VERSION:
+        raise HTTPException(400, "unsupported_backtest_callback_version")
+    return True
 
 
 def _num(value):
@@ -329,6 +346,27 @@ class BacktestBatchFailureRequest(BaseModel):
     details: dict = Field(default_factory=dict)
 
 
+class BacktestBatchCancellationRequest(BaseModel):
+    reason: str = Field(default="Cancelamento solicitado pelo administrador.", max_length=500)
+    details: dict = Field(default_factory=dict)
+
+
+class BacktestAutomationStartRequest(BaseModel):
+    source: Literal["manual", "scheduled"] = "manual"
+    job_id: UUID | None = None
+    tickers: list[str] = Field(default_factory=list, max_length=100)
+    max_combinations: int = Field(default=200, ge=1, le=200)
+
+
+class BacktestAutomationAssetRequest(BaseModel):
+    ticker: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$")
+    checksum: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    completed_runs: int = Field(ge=0, le=200)
+    failed_runs: int = Field(ge=0, le=200)
+    errors: list[dict] = Field(default_factory=list, max_length=200)
+    results: list[dict] = Field(default_factory=list, max_length=200)
+
+
 class NumericRangeRequest(BaseModel):
     min: float | None = None
     max: float | None = None
@@ -394,7 +432,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.12.1", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.13.2", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -1411,7 +1449,8 @@ def refresh_backtest_signals(
 def backtest_batch_jobs(
     limit: int = Query(default=20, ge=1, le=100), _access=Depends(require_owner), db: Session = Depends(get_db),
 ):
-    return [BacktestBatchService.job_dict(job) for job in BacktestBatchService(db).list_jobs(limit)]
+    service = BacktestBatchService(db)
+    return [service.job_dict(job) for job in service.list_jobs(limit)]
 
 
 @app.post("/backtests/batch/jobs")
@@ -1422,15 +1461,16 @@ def create_backtest_batch_job(
 ):
     try:
         service = BacktestBatchService(db)
-        job = service.create_job(
-            requested_by=access["email"], source="site", tickers=request.tickers,
+        job, dispatch_required = service.create_site_job(
+            requested_by=access["email"], tickers=request.tickers,
             max_combinations=request.max_combinations,
         )
         db.commit()
-        return service.job_dict(job)
+        return {**service.job_dict(job), "dispatch_required": dispatch_required}
     except ValueError as exc:
         db.rollback()
-        raise HTTPException(400, str(exc))
+        detail = str(exc)
+        raise HTTPException(409 if detail.startswith("batch_job_active:") else 400, detail)
 
 
 @app.patch("/backtests/batch/jobs/{job_id}/failed")
@@ -1438,6 +1478,174 @@ def fail_backtest_batch_job(
     job_id: UUID,
     request: BacktestBatchFailureRequest,
     _access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    service = BacktestBatchService(db)
+    job = service.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "backtest_batch_job_not_found")
+    service.mark_failed(job, code=request.code, message=request.message, details=request.details)
+    db.commit()
+    return service.job_dict(job)
+
+
+@app.patch("/backtests/batch/jobs/{job_id}/cancelled")
+def cancel_backtest_batch_job(
+    job_id: UUID,
+    request: BacktestBatchCancellationRequest,
+    access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    service = BacktestBatchService(db)
+    job = service.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "backtest_batch_job_not_found")
+    try:
+        service.mark_cancelled(
+            job,
+            requested_by=access["email"],
+            reason=request.reason,
+            details=request.details,
+        )
+        db.commit()
+        return service.job_dict(job)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+
+
+@app.post("/backtests/batch/jobs/{job_id}/retry")
+def retry_backtest_batch_job(
+    job_id: UUID,
+    access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    service = BacktestBatchService(db)
+    source_job = service.get_job(job_id)
+    if source_job is None:
+        raise HTTPException(404, "backtest_batch_job_not_found")
+    try:
+        job, dispatch_required = service.create_retry_job(
+            source_job,
+            requested_by=access["email"],
+        )
+        db.commit()
+        return {
+            **service.job_dict(job),
+            "dispatch_required": dispatch_required,
+            "retry_of": str(source_job.id),
+        }
+    except ValueError as exc:
+        db.rollback()
+        detail = str(exc)
+        raise HTTPException(409 if detail.startswith("batch_job_active:") else 400, detail)
+
+
+@app.post("/automation/backtests/jobs/start")
+def start_automated_backtest_job(
+    request: BacktestAutomationStartRequest,
+    _callback=Depends(require_backtest_callback),
+    db: Session = Depends(get_db),
+):
+    service = BacktestBatchService(db)
+    try:
+        if request.source == "manual":
+            if request.job_id is None:
+                raise ValueError("manual_batch_requires_job_id")
+            job = service.get_job(request.job_id)
+            if job is None:
+                raise HTTPException(404, "backtest_batch_job_not_found")
+            result = service.start_existing_job(job)
+        else:
+            if request.job_id is not None:
+                raise ValueError("scheduled_batch_cannot_receive_job_id")
+            job, _created = service.start_scheduled_job(
+                max_combinations=request.max_combinations,
+                tickers=request.tickers or None,
+            )
+            result = service.start_existing_job(job)
+        db.commit()
+        return result
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        detail = str(exc)
+        conflicts = {
+            "batch_job_failed", "batch_job_cancelled", "batch_job_already_completed",
+            "batch_job_already_running",
+        }
+        raise HTTPException(409 if detail.startswith("batch_job_active:") or detail in conflicts else 400, detail)
+
+
+@app.post("/automation/backtests/jobs/{job_id}/assets")
+def receive_automated_backtest_asset(
+    job_id: UUID,
+    request: BacktestAutomationAssetRequest,
+    _callback=Depends(require_backtest_callback),
+    db: Session = Depends(get_db),
+):
+    service = BacktestBatchService(db)
+    job = service.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "backtest_batch_job_not_found")
+    payload = request.model_dump(exclude={"checksum"})
+    if not compare_digest(delivery_checksum(payload), request.checksum):
+        raise HTTPException(422, "backtest_delivery_checksum_invalid")
+    try:
+        delivery, created = service.receive_asset_delivery(
+            job,
+            ticker=request.ticker,
+            checksum=request.checksum,
+            completed_runs=request.completed_runs,
+            failed_runs=request.failed_runs,
+            results=request.results,
+            errors=request.errors,
+        )
+        db.commit()
+        return {
+            "accepted": True,
+            "idempotent": not created,
+            "ticker": delivery.ticker,
+            "imported_runs": delivery.imported_runs,
+            "skipped_runs": delivery.skipped_runs,
+            "job": service.job_dict(job),
+        }
+    except ValueError as exc:
+        db.rollback()
+        detail = str(exc)
+        status = 409 if detail in {
+            "batch_job_failed", "batch_job_cancelled", "batch_job_already_completed",
+            "batch_delivery_checksum_conflict",
+        } else 400
+        raise HTTPException(status, detail)
+
+
+@app.post("/automation/backtests/jobs/{job_id}/complete")
+def complete_automated_backtest_job(
+    job_id: UUID,
+    _callback=Depends(require_backtest_callback),
+    db: Session = Depends(get_db),
+):
+    service = BacktestBatchService(db)
+    job = service.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "backtest_batch_job_not_found")
+    try:
+        service.finalize_job(job)
+        db.commit()
+        return service.job_dict(job)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+
+
+@app.post("/automation/backtests/jobs/{job_id}/failed")
+def fail_automated_backtest_job(
+    job_id: UUID,
+    request: BacktestBatchFailureRequest,
+    _callback=Depends(require_backtest_callback),
     db: Session = Depends(get_db),
 ):
     service = BacktestBatchService(db)

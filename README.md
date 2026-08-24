@@ -1,4 +1,35 @@
-# Formação do Investidor • Investment Engine V1.11.1
+# Formação do Investidor • Investment Engine V1.12.2
+
+## Novidades da V1.12.2
+
+- domínio canônico único: `https://formacaodoinvestidor.com.br`;
+- exemplos de login Google usam somente `/oauth2callback` no domínio oficial;
+- referências e instruções da hospedagem anterior foram substituídas pela arquitetura Oracle;
+- links institucionais deixaram de apontar para o subdomínio antigo `app`;
+- ambiente identificado como `oracle-production` no diagnóstico do motor;
+- publicação interrompe automaticamente se detectar uma cópia completa do projeto dentro da pasta `investment_engine`;
+- sem nova migração de banco.
+
+## Novidades da V1.12.1
+
+- o andamento dos lotes oficiais é atualizado automaticamente a cada 15 segundos enquanto a Administração estiver aberta;
+- o proprietário pode cancelar com confirmação um lote na fila ou em execução, interrompendo a execução correspondente no GitHub e bloqueando novas entregas para o pedido cancelado;
+- resultados que já chegaram antes do cancelamento são preservados;
+- pedidos com falhas, cancelados ou concluídos com falhas podem repetir somente os ativos que falharam ou permaneceram pendentes;
+- cada repetição recebe um novo identificador e não recalcula ativos que já terminaram corretamente;
+- os estados `Cancelado` e `Repetição de falhas` aparecem claramente no histórico administrativo.
+
+## Novidades da V1.12.0
+
+- o PostgreSQL da Oracle continua privado e não recebe conexões diretas do GitHub;
+- o GitHub Actions usa um PostgreSQL temporário e descartável apenas durante os cálculos;
+- resultados são enviados por uma rota HTTPS exclusiva, autenticada e limitada a 8 MB por ativo;
+- entregas repetidas são idempotentes e não duplicam backtests no catálogo;
+- somente um lote oficial pode ficar ativo por vez; cliques repetidos reaproveitam o mesmo pedido;
+- uma execução interrompida retoma somente os ativos ainda pendentes;
+- o painel administrativo mostra percentual, ativos processados, último ativo, resultados, falhas e diagnósticos;
+- execuções antigas concluídas no GitHub sem entregar dados à Oracle são identificadas como falha de entrega;
+- nova migração registra o recebimento por ativo para auditoria e controle de duplicidade.
 
 ## Novidades da V1.11.1
 
@@ -19,13 +50,12 @@
 - três notícias importantes por ação efetivamente mantida na carteira;
 - notícias sobre ações recomendadas, carteiras e preços-alvo de bancos brasileiros e mundiais;
 - duas novas permissões independentes, controladas exclusivamente pelo proprietário;
-- atualização automática do banco por migração Alembic, sem edição manual do Neon.
+- atualização automática do banco por migração Alembic, sem edição SQL manual.
 
-> Edição preparada para substituir o aplicativo atual no Streamlit Community
-> Cloud mantendo `app.py` como arquivo principal. Em uma nova publicação,
-> `streamlit_app.py` também pode ser usado. Consulte `DEPLOY_STREAMLIT_CLOUD.md`. O GitHub
-> contém somente código; o banco compartilhado deve permanecer em PostgreSQL
-> externo e as credenciais devem ser configuradas no painel Secrets.
+> Edição preparada para hospedagem própria na Oracle Cloud. `app.py` permanece
+> como entrada estável e `streamlit_app.py` inicializa a interface e a API
+> privada. Consulte `DEPLOY_STREAMLIT_CLOUD.md` — nome histórico preservado para
+> compatibilidade. O GitHub contém somente código; banco e credenciais ficam no servidor.
 
 Backend Python/FastAPI/PostgreSQL + Streamlit para triagem fundamentalista/técnica, valuation, carteira e backtests.
 
@@ -44,7 +74,7 @@ Backend Python/FastAPI/PostgreSQL + Streamlit para triagem fundamentalista/técn
 - andamento do GitHub e histórico interno aparecem juntos no painel administrativo;
 - falhas, cancelamentos e estouros de tempo deixam de permanecer silenciosamente como pedidos na fila;
 - workflow valida a conexão PostgreSQL antes de iniciar os backtests e exibe uma orientação segura se o Secret estiver incorreto;
-- o motor aceita a conexão direta ou pooled do Neon e ignora uma variável inválida quando a alternativa está correta;
+- o motor aceita URLs PostgreSQL padrão e ignora uma variável inválida quando a alternativa está correta;
 - não exige migração de banco.
 
 ## Novidades da V1.10.2
@@ -61,7 +91,7 @@ Backend Python/FastAPI/PostgreSQL + Streamlit para triagem fundamentalista/técn
 
 - correção da importação do pacote no workflow de backtests semanais;
 - seleção de até 100 ativos e acionamento do lote oficial diretamente na Administração do site;
-- credencial do GitHub mantida somente nos Secrets do Streamlit;
+- credencial do GitHub mantida somente nos Secrets privados do servidor Oracle;
 - mensagens claras para credencial ausente, expirada ou sem permissão;
 - não exige migração de banco.
 
@@ -155,7 +185,7 @@ A V1.6.0 prepara o beta privado do domínio Formação do Investidor: página in
 
 ## V1.6.1
 
-A V1.6.1 permite carregar e atualizar o catálogo de ações e FIIs pela própria tela do Mercado, identifica claramente um banco Neon vazio e melhora o cadastro da Carteira com classificação automática em português, preço com duas casas decimais e quantidade ajustável em passos de 100, 10 ou 1. Não exige migração adicional do banco. Consulte `V1_6_1.md`.
+A V1.6.1 permite carregar e atualizar o catálogo de ações e FIIs pela própria tela do Mercado, identifica claramente um banco vazio e melhora o cadastro da Carteira com classificação automática em português, preço com duas casas decimais e quantidade ajustável em passos de 100, 10 ou 1. Não exige migração adicional do banco. Consulte `V1_6_1.md`.
 
 ## V1.6.2
 
@@ -167,7 +197,7 @@ A V1.7.0 separa cada Carteira por conta Google, distingue novas compras de corre
 
 ## V1.7.1
 
-A V1.7.1 corrige os botões de quantidade para usar callbacks compatíveis com o estado de sessão do Streamlit Cloud. Os botões de compra, redução, aumento, zeragem e restauração do lote padrão deixam de alterar um campo depois de ele ter sido desenhado.
+A V1.7.1 corrige os botões de quantidade para usar callbacks compatíveis com o estado de sessão do Streamlit. Os botões de compra, redução, aumento, zeragem e restauração do lote padrão deixam de alterar um campo depois de ele ter sido desenhado.
 
 ## V1.7.2
 
@@ -183,7 +213,7 @@ A V1.7.4 torna o cadastro de compras compatível com a rota estável de posiçõ
 
 ## V1.7.5
 
-A V1.7.5 mantém o cálculo consolidado da compra dentro da própria página da Carteira. Isso evita falha de inicialização quando o Streamlit Cloud atualiza o arquivo da interface antes de atualizar módulos auxiliares em cache.
+A V1.7.5 mantém o cálculo consolidado da compra dentro da própria página da Carteira. Isso evita falha de inicialização quando o Streamlit atualiza o arquivo da interface antes de atualizar módulos auxiliares em cache.
 
 ## V1.8.0
 

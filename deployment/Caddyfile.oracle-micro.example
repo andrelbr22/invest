@@ -1,0 +1,29 @@
+{
+    email contato@formacaodoinvestidor.com.br
+}
+
+formacaodoinvestidor.com.br, www.formacaodoinvestidor.com.br {
+    encode zstd gzip
+
+    @backtest_callback path /automation/backtests/*
+    handle @backtest_callback {
+        request_body {
+            max_size 8MB
+        }
+        reverse_proxy app:8765 {
+            # O restante da API interna continua invisível; somente este caminho é roteado.
+            header_up Host api
+        }
+    }
+
+    handle {
+        reverse_proxy app:8501
+    }
+
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+}

@@ -1,4 +1,4 @@
-"""Compatibility entry point for the existing Streamlit Community Cloud app."""
+"""Stable entry point for the self-hosted Streamlit application."""
 
 from __future__ import annotations
 

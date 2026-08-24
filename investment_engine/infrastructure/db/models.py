@@ -298,7 +298,7 @@ class BacktestRunORM(Base):
     scope: Mapped[str] = mapped_column(String(24), nullable=False, default="personal")
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     market_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    engine_version: Mapped[str] = mapped_column(String(24), nullable=False, default="0.12.1")
+    engine_version: Mapped[str] = mapped_column(String(24), nullable=False, default="0.13.2")
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     strategy_name: Mapped[str] = mapped_column(String(160), nullable=False)
     requested_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -347,6 +347,27 @@ class BacktestBatchJobORM(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class BacktestBatchDeliveryORM(Base):
+    __tablename__ = "backtest_batch_deliveries"
+    __table_args__ = (
+        UniqueConstraint("batch_job_id", "ticker", name="uq_backtest_batch_delivery_asset"),
+        Index("ix_backtest_batch_deliveries_job_received", "batch_job_id", "received_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    batch_job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(
+        "backtest_batch_jobs.id", name="fk_backtest_batch_deliveries_job", ondelete="CASCADE"
+    ), nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="received")
+    completed_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    imported_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class BacktestTradeORM(Base):

@@ -36,4 +36,4 @@ Depois que o Streamlit concluir a atualização:
 4. Abra **Demais Ativos B3**. Se o catálogo estiver vazio, abra **Dados usados pelos filtros** e clique em **Carregar / atualizar dados de Demais Ativos B3**.
 5. Na conta proprietária, abra **Administração** para acessar o lote manual de backtests e as permissões.
 
-Esta versão não cria novas tabelas nem exige uma migração adicional do Neon.
+Esta versão não cria novas tabelas nem exige uma migração adicional do PostgreSQL.

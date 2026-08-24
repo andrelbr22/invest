@@ -40,7 +40,7 @@ powershell -ExecutionPolicy Bypass -File .\PUBLICAR_GITHUB.ps1 -ValidateOnly
 powershell -ExecutionPolicy Bypass -File .\PUBLICAR_GITHUB.ps1
 ```
 
-O Streamlit reiniciará a aplicação e aplicará a migração do Neon automaticamente. Nenhum comando SQL precisa ser executado.
+O servidor Oracle reiniciará a aplicação e aplicará a migração do PostgreSQL automaticamente. Nenhum comando SQL precisa ser executado.
 
 ## 7. Liberar as novas funções
 

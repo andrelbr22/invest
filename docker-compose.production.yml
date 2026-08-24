@@ -1,0 +1,104 @@
+name: formacao-do-investidor
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-investment}
+      POSTGRES_USER: ${POSTGRES_USER:-investment_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em .env.production}
+    volumes:
+      - investment_postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    command: ["/app/deployment/start-api.sh"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-investment_app}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-investment}
+      APP_ENVIRONMENT: production
+      API_DOCS_ENABLED: ${API_DOCS_ENABLED:-false}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-api,localhost,127.0.0.1}
+      DATA_STALE_HOURS_MARKET: ${DATA_STALE_HOURS_MARKET:-6}
+      DATA_STALE_HOURS_FUNDAMENTALS: ${DATA_STALE_HOURS_FUNDAMENTALS:-72}
+      GORDON_REQUIRED_RETURN_PCT: ${GORDON_REQUIRED_RETURN_PCT:-12.0}
+      GORDON_GROWTH_PCT: ${GORDON_GROWTH_PCT:-4.0}
+      VALUATION_MARGIN_OF_SAFETY_PCT: ${VALUATION_MARGIN_OF_SAFETY_PCT:-20.0}
+      BACKTEST_CALLBACK_TOKEN: ${BACKTEST_CALLBACK_TOKEN:?Defina BACKTEST_CALLBACK_TOKEN em .env.production}
+    expose:
+      - "8000"
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  web:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "streamlit", "run", "examples/streamlit_v15_integrated.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    environment:
+      INVESTMENT_API_URL: http://api:8000
+      SHOW_API_SELECTOR: "false"
+      APP_AUTH_REQUIRED: ${APP_AUTH_REQUIRED:-true}
+      APP_ALLOWED_EMAILS: ${APP_ALLOWED_EMAILS:?Defina APP_ALLOWED_EMAILS em .env.production}
+    volumes:
+      - ./deployment/secrets/streamlit_secrets.toml:/app/.streamlit/secrets.toml:ro
+    expose:
+      - "8501"
+    networks:
+      - backend
+      - frontend
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-formacaodoinvestidor.com.br}
+      ACME_EMAIL: ${ACME_EMAIL:-contato@formacaodoinvestidor.com.br}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deployment/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deployment/site:/srv:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  investment_postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  backend:
+    internal: true
+  frontend:

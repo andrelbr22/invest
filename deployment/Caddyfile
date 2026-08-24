@@ -1,0 +1,53 @@
+{
+    email {$ACME_EMAIL:contato@formacaodoinvestidor.com.br}
+}
+
+{$DOMAIN} {
+    @backtest_callback path /automation/backtests/*
+    handle @backtest_callback {
+        request_body {
+            max_size 8MB
+        }
+        reverse_proxy api:8000 {
+            header_up Host api
+        }
+    }
+    handle {
+        redir https://www.{$DOMAIN}{uri} permanent
+    }
+}
+
+www.{$DOMAIN} {
+    encode zstd gzip
+    root * /srv
+    file_server
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+}
+
+app.{$DOMAIN} {
+    encode zstd gzip
+    @backtest_callback path /automation/backtests/*
+    handle @backtest_callback {
+        request_body {
+            max_size 8MB
+        }
+        reverse_proxy api:8000 {
+            header_up Host api
+        }
+    }
+    handle {
+        reverse_proxy web:8501
+    }
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+}

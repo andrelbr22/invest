@@ -1,9 +1,0 @@
-[project]
-name = "investment-engine"
-version = "0.12.1"
-description = "Formação do Investidor V1.11.1 with inspectable backtest configurations and resilient market news."
-requires-python = ">=3.11"
-
-[tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["tests"]

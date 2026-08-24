@@ -40,4 +40,4 @@ powershell -ExecutionPolicy Bypass -File .\PUBLICAR_GITHUB.ps1 -ValidateOnly
 powershell -ExecutionPolicy Bypass -File .\PUBLICAR_GITHUB.ps1
 ```
 
-O Streamlit atualizará o aplicativo automaticamente. Não é necessário alterar o Neon.
+O servidor Oracle atualizará o aplicativo automaticamente. Não é necessário alterar o PostgreSQL.

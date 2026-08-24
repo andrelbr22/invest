@@ -17,7 +17,7 @@ powershell -ExecutionPolicy Bypass -File .\PUBLICAR_GITHUB.ps1 -ValidateOnly
 powershell -ExecutionPolicy Bypass -File .\PUBLICAR_GITHUB.ps1
 ```
 
-6. Aguarde o Streamlit Community Cloud reiniciar e confirme no menu lateral: `Motor online • versão 0.9.0`.
+6. Aguarde o servidor Oracle atualizar e confirme no menu lateral: `Motor online • versão 0.9.0`.
 
 ## Opção patch
 
@@ -29,4 +29,4 @@ Use somente se você ainda possui uma pasta limpa da V1.7.5:
 
 ## Banco de dados
 
-A V1.8.0 não exige migração. As URLs do Neon e as credenciais Google continuam somente nos Secrets do Streamlit Cloud e não devem ser colocadas nos ZIPs ou no GitHub.
+A V1.8.0 não exige migração. As URLs PostgreSQL e as credenciais Google continuam somente nos Secrets privados do servidor e não devem ser colocadas nos ZIPs ou no GitHub.

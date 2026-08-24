@@ -8,14 +8,13 @@ from pathlib import Path
 from uuid import UUID
 
 
-# Também permite executar este arquivo diretamente, fora do modo ``python -m``.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def normalize_database_url(value: str | None) -> str | None:
-    """Normaliza apenas URLs PostgreSQL e rejeita links do painel Neon."""
+    """Normalize the temporary PostgreSQL URL used only inside GitHub Actions."""
 
     clean = str(value or "").strip()
     if not clean:
@@ -23,9 +22,6 @@ def normalize_database_url(value: str | None) -> str | None:
     assignment = re.match(r"^(?:DATABASE_ADMIN_URL|DATABASE_URL)\s*=\s*(.+)$", clean, re.IGNORECASE)
     if assignment:
         clean = assignment.group(1).strip()
-    markdown = re.match(r"^\[(postgres(?:ql)?(?:\+psycopg)?://[^\]]+)\]\([^)]*\)$", clean)
-    if markdown:
-        clean = markdown.group(1).strip()
     clean = clean.strip().strip('"').strip("'").strip()
     if clean.startswith("postgresql+psycopg://"):
         return clean
@@ -38,36 +34,28 @@ def normalize_database_url(value: str | None) -> str | None:
 
 def resolve_database_url(environment: dict | None = None) -> str:
     values = environment if environment is not None else os.environ
-    configured = []
-    for name in ("DATABASE_ADMIN_URL", "DATABASE_URL"):
-        raw = values.get(name)
-        if str(raw or "").strip():
-            configured.append(name)
-        normalized = normalize_database_url(raw)
-        if normalized:
-            return normalized
-    if configured:
-        raise SystemExit(
-            "Conexão inválida no GitHub: DATABASE_ADMIN_URL/DATABASE_URL deve começar "
-            "com postgresql://. Não use o endereço https:// do painel Neon."
-        )
-    raise SystemExit("DATABASE_ADMIN_URL ou DATABASE_URL não foi configurada nos Secrets do GitHub.")
+    normalized = normalize_database_url(values.get("DATABASE_URL"))
+    if normalized:
+        return normalized
+    raise SystemExit("O PostgreSQL temporário do GitHub Actions não foi iniciado corretamente.")
+
+
+def _tickers(value: str) -> list[str]:
+    clean = []
+    for item in str(value or "").replace(";", ",").split(","):
+        ticker = item.strip().upper()
+        if ticker and ticker not in clean:
+            clean.append(ticker)
+    return clean[:100]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Atualiza o catálogo oficial de backtests.")
-    parser.add_argument("--tickers", default="", help="Até 100 tickers separados por vírgula; vazio usa o filtro Padrão.")
+    parser = argparse.ArgumentParser(description="Calcula no GitHub e entrega o catálogo oficial à Oracle.")
+    parser.add_argument("--tickers", default="", help="Até 100 tickers separados por vírgula.")
     parser.add_argument("--max-combinations", type=int, default=200)
     parser.add_argument("--source", choices=("scheduled", "manual"), default="manual")
     parser.add_argument("--job-id", default="", help="Pedido já registrado pelo painel administrativo.")
-    parser.add_argument("--validate-database-only", action="store_true")
     args = parser.parse_args()
-
-    database_url = resolve_database_url()
-    os.environ["DATABASE_ADMIN_URL"] = database_url
-    if args.validate_database_only:
-        print("Conexão PostgreSQL reconhecida. A senha e o endereço permaneceram ocultos.")
-        return
 
     from alembic import command
     from alembic.config import Config
@@ -75,29 +63,83 @@ def main():
 
     from investment_engine.core.backtesting.batch import BacktestBatchService
     from investment_engine.infrastructure.db.session import make_engine
+    from investment_engine.integrations.backtest_delivery import (
+        BacktestDeliveryClient,
+        BacktestDeliveryError,
+    )
 
-    config = Config("alembic.ini")
-    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
-    command.upgrade(config, "head")
+    database_url = resolve_database_url()
+    callback = BacktestDeliveryClient(
+        base_url=os.getenv("BACKTEST_CALLBACK_URL", ""),
+        token=os.getenv("BACKTEST_CALLBACK_TOKEN", ""),
+    )
+    requested_job_id = str(args.job_id or "").strip() or None
+    remote_job_id: str | None = None
+    try:
+        remote = callback.start_job(
+            source=args.source,
+            max_combinations=args.max_combinations,
+            job_id=requested_job_id,
+            tickers=_tickers(args.tickers),
+        )
+        remote_job_id = str(remote.get("id") or "").strip()
+        if not remote_job_id:
+            raise BacktestDeliveryError("A Oracle não informou o identificador do pedido.")
+        if remote.get("status") in {"completed", "completed_with_errors"}:
+            print(f"Pedido {remote_job_id[:8]} já estava concluído. Nenhum cálculo foi repetido.")
+            return
+        pending = list(remote.get("pending_tickers") or remote.get("tickers") or [])
+        if not pending:
+            callback.finish_job(remote_job_id)
+            print(f"Pedido {remote_job_id[:8]} concluído sem ativos pendentes.")
+            return
 
-    tickers = [item.strip().upper() for item in args.tickers.replace(";", ",").split(",") if item.strip()]
-    with Session(make_engine(database_url)) as session:
-        service = BacktestBatchService(session)
-        if args.job_id:
-            try:
-                job = service.get_job(UUID(args.job_id))
-            except ValueError as exc:
-                raise SystemExit("O identificador do pedido de backtests é inválido.") from exc
-            if job is None:
-                raise SystemExit("O pedido de backtests não foi encontrado no banco de dados.")
-        else:
-            job = service.create_job(
-                requested_by="github-actions@system.local", source=args.source,
-                tickers=tickers or None, max_combinations=args.max_combinations,
+        config = Config(str(PROJECT_ROOT / "alembic.ini"))
+        config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+        config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+        command.upgrade(config, "head")
+
+        with Session(make_engine(database_url)) as session:
+            service = BacktestBatchService(session)
+            local_job = service.create_job(
+                requested_by="github-actions@system.local",
+                source=args.source,
+                tickers=pending,
+                max_combinations=args.max_combinations,
+                job_id=UUID(remote_job_id),
             )
             session.commit()
-        result = service.run_job(job)
-        print(result)
+
+            def deliver(payload: dict):
+                result = callback.deliver_asset(remote_job_id, payload)
+                imported = result.get("imported_runs", 0)
+                skipped = result.get("skipped_runs", 0)
+                print(
+                    f"{payload['ticker']}: entregue com segurança "
+                    f"({imported} novo(s), {skipped} já existente(s))."
+                )
+
+            service.run_job(local_job, asset_callback=deliver)
+        final = callback.finish_job(remote_job_id)
+        print(
+            f"Pedido {remote_job_id[:8]} finalizado: "
+            f"{final.get('completed_runs', 0)} concluído(s), "
+            f"{final.get('failed_runs', 0)} falha(s)."
+        )
+    except Exception as exc:
+        if remote_job_id:
+            try:
+                callback.fail_job(
+                    remote_job_id,
+                    code="github_worker_failed",
+                    message="A execução no GitHub foi interrompida antes da conclusão.",
+                    details={"exception_type": type(exc).__name__},
+                )
+            except Exception:
+                pass
+        if isinstance(exc, (BacktestDeliveryError, SystemExit)):
+            raise
+        raise SystemExit(f"Falha segura no processamento: {type(exc).__name__}") from exc
 
 
 if __name__ == "__main__":

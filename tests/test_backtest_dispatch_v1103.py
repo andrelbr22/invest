@@ -50,7 +50,7 @@ def test_database_url_resolver_rejects_neon_console_and_uses_valid_fallback():
 
 
 def test_database_url_resolver_gives_safe_instruction_for_invalid_secret():
-    with pytest.raises(SystemExit, match="Não use o endereço https:// do painel Neon"):
+    with pytest.raises(SystemExit, match="PostgreSQL temporário do GitHub Actions"):
         resolve_database_url({"DATABASE_ADMIN_URL": "https://console.neon.tech"})
 
 
@@ -85,7 +85,10 @@ def test_v1103_registers_jobs_before_dispatch_and_has_failure_endpoint():
     assert '@app.post("/backtests/batch/jobs")' in api_source
     assert '@app.patch("/backtests/batch/jobs/{job_id}/failed")' in api_source
     assert ui_source.index('api_post("/backtests/batch/jobs"') < ui_source.index("dispatch_official_backtests(", ui_source.index("def _render_official_backtest_admin"))
-    assert "--validate-database-only" in workflow
+    assert "BACKTEST_CALLBACK_TOKEN" in workflow
+    assert "DATABASE_ADMIN_URL" not in workflow
+    assert "secrets.DATABASE_URL" not in workflow
+    assert "postgres:16-alpine" in workflow
     assert "MANUAL_JOB_ID" in workflow
 
 
