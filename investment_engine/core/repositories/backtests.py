@@ -67,7 +67,7 @@ class BacktestRepository:
         metrics: dict, equity_curve: list, trades: list, snapshot: dict | None = None,
         ranking_score: float | None = None, sample_status: str = "insufficient",
         current_signal: dict | None = None, data_source: str = "yahoo", status: str = "valid",
-        engine_version: str = "0.12.0", sector_label: str | None = None, batch_job_id=None,
+        engine_version: str = "0.12.1", sector_label: str | None = None, batch_job_id=None,
         compact_curve: bool = False,
     ) -> BacktestRunORM:
         signal = current_signal or {}
@@ -142,6 +142,24 @@ class BacktestRepository:
             select(BacktestRunORM, AssetORM)
             .join(AssetORM, AssetORM.id == BacktestRunORM.asset_id)
             .where(BacktestRunORM.scope == "official", BacktestRunORM.status == "valid")
+            .order_by(BacktestRunORM.created_at.desc(), BacktestRunORM.id.desc())
+            .limit(max(1, min(100000, int(limit))))
+        )
+        newest_by_configuration = {}
+        for run, asset in self.session.execute(stmt):
+            newest_by_configuration.setdefault((run.asset_id, run.config_hash), (run, asset))
+        return list(newest_by_configuration.values())
+
+    def strategy_configuration_runs(self, strategy_id: str, *, limit: int = 100000):
+        """Newest official result for each asset/configuration of one strategy."""
+        stmt = (
+            select(BacktestRunORM, AssetORM)
+            .join(AssetORM, AssetORM.id == BacktestRunORM.asset_id)
+            .where(
+                BacktestRunORM.scope == "official",
+                BacktestRunORM.status == "valid",
+                BacktestRunORM.strategy_id == str(strategy_id).strip(),
+            )
             .order_by(BacktestRunORM.created_at.desc(), BacktestRunORM.id.desc())
             .limit(max(1, min(100000, int(limit))))
         )

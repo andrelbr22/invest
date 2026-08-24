@@ -2095,6 +2095,137 @@ def render_backtests():
                     _render_backtest_result(detail)
 
 
+_BACKTEST_CONFIG_LABELS={
+    "fast_period":"Período da média rápida","slow_period":"Período da média lenta",
+    "fast_type":"Tipo da média rápida","slow_type":"Tipo da média lenta",
+    "mid_period":"Período da média intermediária","period":"Período",
+    "stddev":"Desvios da Bollinger","rsi_period":"Período do RSI",
+    "entry_rsi":"RSI máximo para entrada","exit_rsi":"RSI mínimo para saída",
+    "trend_period":"Período da SMA estrutural","trend_filter_mode":"Filtro estrutural",
+    "trend_slope_lookback":"Inclinação da SMA (pregões)","band_trigger":"Gatilho da banda",
+    "entry_period":"Período de entrada","exit_period":"Período de saída",
+    "lookback":"Período de observação","fast":"Período rápido","slow":"Período lento",
+    "signal":"Período do sinal","daily_trend":"Tendência diária",
+    "weekly_trend":"Tendência semanal","monthly_trend":"Tendência mensal",
+    "enabled":"Ativo","direction":"Direção","mode":"Modo","slope_lookback":"Inclinação (períodos)",
+    "trend_combination":"Combinação dos timeframes","adx_min":"ADX mínimo",
+    "volume_ratio_min":"Volume / média 20 mínimo","rsi_min":"RSI mínimo","rsi_max":"RSI máximo",
+    "atr_pct_min":"ATR mínimo (% do preço)","atr_pct_max":"ATR máximo (% do preço)",
+    "exit_on_filter_failure":"Sair quando filtro falhar","fundamental_entry":"Fundamentos na entrada",
+    "fundamental_exit":"Fundamentos na saída","fundamental_exit_logic":"Lógica da saída fundamental",
+    "fundamental_min_coverage_pct":"Cobertura fundamental mínima (%)",
+    "fundamental_max_age_days":"Idade máxima do fundamento (dias)",
+    "apply_cash_yield":"Remunerar caixa livre","cash_yield_rate_pct":"Taxa do caixa (%)",
+    "initial_capital":"Capital inicial","fee_pct":"Taxa operacional (%)",
+    "slippage_pct":"Slippage (%)","risk_free_rate_pct":"Taxa livre de risco (%)",
+}
+_BACKTEST_CONFIG_VALUES={
+    "ema":"EMA (exponencial)","sma":"SMA (simples)","price_above":"Preço acima da SMA",
+    "sma_rising":"SMA ascendente","price_above_or_sma_rising":"Preço acima OU SMA ascendente",
+    "price_above_and_sma_rising":"Preço acima E SMA ascendente","none":"Nenhum",
+    "close":"Fechamento ≤ banda","low_touch":"Mínima toca a banda",
+    "close_reentry":"Reentrada após fechar abaixo da banda","all":"TODOS (AND)",
+    "any":"QUALQUER (OR)","majority":"MAIORIA","up":"Alta","down":"Baixa",
+}
+
+
+def _backtest_config_value(value):
+    if isinstance(value,bool):return "Sim" if value else "Não"
+    if value is None:return "Não aplicado"
+    if isinstance(value,float):return br_num(value,2)
+    return _BACKTEST_CONFIG_VALUES.get(str(value),value)
+
+
+def _flatten_backtest_config(mapping,prefix=""):
+    rows=[]
+    for key,value in (mapping or {}).items():
+        label=_BACKTEST_CONFIG_LABELS.get(key,str(key).replace("_"," ").capitalize())
+        full_label=f"{prefix} • {label}" if prefix else label
+        if isinstance(value,dict):
+            if value:rows.extend(_flatten_backtest_config(value,full_label))
+        else:rows.append({"Configuração":full_label,"Valor":_backtest_config_value(value)})
+    return rows
+
+
+def _backtest_parameter_summary(parameters):
+    values=parameters or {}
+    if {"fast_period","slow_period"}.issubset(values):
+        fast=str(values.get("fast_type") or "").upper() or "Média"
+        slow=str(values.get("slow_type") or "").upper() or "Média"
+        return f"{fast} {values['fast_period']} × {slow} {values['slow_period']}"
+    parts=[]
+    for key,value in list(values.items())[:4]:
+        parts.append(f"{_BACKTEST_CONFIG_LABELS.get(key,key)}: {_backtest_config_value(value)}")
+    return " • ".join(parts) or "Parâmetros padrão"
+
+
+def _render_study_configuration_details(strategy):
+    strategy_id=strategy.get("strategy_id")
+    details,error=api_get(f"/backtests/study/{strategy_id}/configurations")
+    if error:
+        st.error(f"Não foi possível abrir as configurações: {error}"); return
+    details=details or {}; configurations=details.get("items") or []
+    st.markdown(f"### Configurações usadas — {details.get('strategy_name') or strategy.get('strategy_name')}")
+    st.caption(details.get("strategy_rules") or "Cada linha abaixo representa uma combinação efetivamente executada no catálogo oficial.")
+    c1,c2,c3=st.columns(3)
+    c1.metric("Combinações diferentes",details.get("configuration_count",0))
+    c2.metric("Resultados consolidados",details.get("run_count",0))
+    c3.metric("Melhor nota média",br_num((configurations[0].get("mean_ranking_score") if configurations else None),2))
+    if not configurations:
+        st.info("Ainda não existem configurações oficiais salvas para esta estratégia."); return
+    summary_rows=[]
+    for item in configurations:
+        metrics=item.get("mean_metrics") or {}
+        summary_rows.append({
+            "#":item.get("configuration_number"),"Parâmetros":_backtest_parameter_summary(item.get("strategy_parameters")),
+            "Ativos":item.get("assets_tested"),"Nota média":item.get("mean_ranking_score"),
+            "CAGR médio %":metrics.get("mean_cagr_pct"),"Sharpe médio":metrics.get("mean_sharpe_ratio"),
+            "Drawdown médio %":metrics.get("mean_max_drawdown_pct"),"PF médio":metrics.get("mean_profit_factor"),
+            "Acerto médio %":metrics.get("mean_win_rate_pct"),"Última análise":br_datetime(item.get("latest_analysis_at")),
+        })
+    st.dataframe(pd.DataFrame(summary_rows),hide_index=True,use_container_width=True,height=min(430,80+35*len(summary_rows)))
+    configuration_ids=[item.get("configuration_id") for item in configurations]
+    by_id={item.get("configuration_id"):item for item in configurations}
+    selected_id=st.selectbox(
+        "Abrir uma combinação",configuration_ids,
+        format_func=lambda value: (
+            f"#{by_id[value].get('configuration_number')} • "
+            f"{_backtest_parameter_summary(by_id[value].get('strategy_parameters'))} • "
+            f"{by_id[value].get('assets_tested')} ativo(s)"
+        ),key=f"study_configuration_{strategy_id}",
+    )
+    selected=by_id[selected_id]; metrics=selected.get("mean_metrics") or {}
+    st.markdown(f"#### Combinação #{selected.get('configuration_number')} — detalhes completos")
+    left,right=st.columns(2)
+    with left:
+        st.markdown("**Parâmetros da estratégia**")
+        parameter_rows=_flatten_backtest_config(selected.get("strategy_parameters"))
+        st.dataframe(pd.DataFrame(parameter_rows),hide_index=True,use_container_width=True)
+    with right:
+        st.markdown("**Custos e premissas financeiras**")
+        financial={**(selected.get("financial") or {}),**(selected.get("assumptions") or {})}
+        st.dataframe(pd.DataFrame(_flatten_backtest_config(financial)),hide_index=True,use_container_width=True)
+    st.markdown("**Filtros adicionais aplicados**")
+    filter_rows=_flatten_backtest_config(selected.get("filters"))
+    if filter_rows:st.dataframe(pd.DataFrame(filter_rows),hide_index=True,use_container_width=True)
+    else:st.info("Nenhum filtro adicional foi aplicado nesta combinação.")
+    r1,r2,r3,r4=st.columns(4)
+    r1.metric("Retorno médio",br_num(metrics.get("mean_total_return_pct"),2,"%"))
+    r2.metric("CAGR médio",br_num(metrics.get("mean_cagr_pct"),2,"%"))
+    r3.metric("Sharpe médio",br_num(metrics.get("mean_sharpe_ratio"),2))
+    r4.metric("Trades médios",br_num(metrics.get("mean_closed_trades"),1))
+    st.caption(
+        f"Ativos consolidados ({selected.get('assets_tested',0)}): "+", ".join(selected.get("tickers") or [])
+    )
+    with st.expander("Ver estrutura técnica completa desta combinação",expanded=False):
+        st.json({
+            "parametros_da_estrategia":selected.get("strategy_parameters") or {},
+            "filtros":selected.get("filters") or {},"financeiro":selected.get("financial") or {},
+            "premissas":selected.get("assumptions") or {},"status_das_amostras":selected.get("sample_status_counts") or {},
+            "sinais_atuais":selected.get("signal_counts") or {},
+        })
+
+
 def _render_backtest_study():
     st.subheader("🏆 Estratégias mais consistentes do catálogo oficial")
     st.caption("O estudo compara a melhor configuração de cada estratégia em cada ativo e premia principalmente a recorrência entre os três primeiros.")
@@ -2120,12 +2251,22 @@ def _render_backtest_study():
                 "Ativos testados":item.get("assets_tested"),"Cobertura %":item.get("coverage_pct"),
                 "Qualidade robusta média":item.get("mean_robust_score"),"Acerto médio %":item.get("mean_win_rate_pct"),
             })
-        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True,height=280)
+        st.caption("Clique em uma estratégia da tabela para abrir todas as combinações e variáveis usadas.")
+        ranking_event=st.dataframe(
+            pd.DataFrame(rows),hide_index=True,use_container_width=True,height=280,
+            key="backtest_study_ranking",on_select="rerun",selection_mode="single-row",
+        )
         leader=ranking[0]
         st.success(
             f"Líder atual: **{leader.get('strategy_name')}** — apareceu {leader.get('top3_count')} vez(es) "
             f"entre os três primeiros, em {leader.get('assets_tested')} ativo(s) testado(s)."
         )
+        selected_rows=[]
+        try:selected_rows=list(ranking_event.selection.rows or [])
+        except (AttributeError,TypeError):
+            if isinstance(ranking_event,dict):selected_rows=list((ranking_event.get("selection") or {}).get("rows") or [])
+        if selected_rows and 0<=selected_rows[0]<len(ranking):
+            _render_study_configuration_details(ranking[selected_rows[0]])
     methodology=result.get("methodology") or {}
     with st.expander("Como a pontuação foi calculada",expanded=False):
         weights=methodology.get("weights_pct") or {}
@@ -2192,10 +2333,13 @@ def _render_market_news():
             current_ticker=asset_news.get("ticker") or "Ativo"
             title=f"{current_ticker} — {asset_news.get('company_name') or 'Nome não disponível'}"
             with st.expander(title,expanded=False):
-                if asset_news.get("warning"):st.warning("A fonte externa não respondeu para este ativo. Tente novamente mais tarde.")
+                if asset_news.get("fallback_used") and asset_news.get("items"):
+                    st.info("Uma busca alternativa foi usada para completar as notícias deste ativo.")
+                if asset_news.get("warning") and not asset_news.get("items"):
+                    st.warning("As duas fontes externas não responderam para este ativo. Tente novamente mais tarde.")
                 _render_news_items(
                     asset_news.get("items") or [],
-                    f"Nenhuma notícia recente e suficientemente relacionada a {current_ticker} foi localizada.",
+                    f"Nenhuma notícia recente diretamente relacionada a {current_ticker} foi localizada nas fontes consultadas.",
                     current_ticker,
                 )
 
@@ -2214,9 +2358,12 @@ def _render_market_news():
     stored_recommendations=st.session_state.get("recommendation_news_result") or {}
     if stored_recommendations.get("category")==category:
         recommendations=stored_recommendations.get("data") or {}
-        if recommendations.get("warnings"):st.warning("Parte das fontes externas não respondeu; os resultados disponíveis foram mantidos.")
+        if recommendations.get("fallback_used") and recommendations.get("items"):
+            st.info("A busca alternativa foi ativada para complementar as publicações encontradas.")
+        if recommendations.get("warnings") and not recommendations.get("items"):
+            st.warning("As fontes externas estão temporariamente indisponíveis. Tente novamente mais tarde.")
         _render_news_items(recommendations.get("items") or [],"Nenhuma publicação recente foi encontrada para este grupo de instituições.",f"bank_news_{category}")
-    st.caption("Fonte de descoberta: GDELT DOC 2.0. Títulos, datas e links pertencem às publicações indicadas. Sempre leia a matéria completa e verifique a data antes de tomar qualquer decisão.")
+    st.caption("Fontes de descoberta: GDELT DOC 2.0 e Google News RSS. Títulos, datas e links pertencem às publicações indicadas. Sempre leia a matéria completa e verifique a data antes de tomar qualquer decisão.")
 
 
 def render_research():
@@ -2519,4 +2666,4 @@ elif module=="backtests":render_backtests()
 elif module=="research":render_research()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.11.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.11.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

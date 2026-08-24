@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections import defaultdict
 from typing import Iterable
@@ -20,6 +22,129 @@ def _number(value, default: float = 0.0) -> float:
 def _metrics(record: dict) -> dict:
     value = record.get("metrics")
     return value if isinstance(value, dict) else {}
+
+
+def _mapping(value) -> dict:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _mean(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), 2) if values else None
+
+
+def _configuration_payload(record: dict) -> dict:
+    stored = _mapping(record.get("parameters"))
+    if any(key in stored for key in ("strategy", "filters", "financial")):
+        strategy = _mapping(stored.get("strategy"))
+        filters = _mapping(stored.get("filters"))
+        financial = _mapping(stored.get("financial"))
+    else:
+        # Backtests created before the structured parameter map stored only the
+        # strategy parameters. Keeping this fallback makes their details useful.
+        strategy, filters, financial = stored, {}, {}
+    assumptions = _mapping(record.get("assumptions"))
+    return {
+        "strategy": strategy,
+        "filters": filters,
+        "financial": financial,
+        "assumptions": assumptions,
+    }
+
+
+def build_strategy_configuration_catalog(
+    records: Iterable[dict], *, strategy_id: str | None = None,
+) -> dict:
+    """Group effective backtest configurations without repeating them per asset.
+
+    Dates, tickers and results are intentionally excluded from the identity. Two
+    runs therefore belong to the same configuration when their strategy
+    parameters, entry filters and financial assumptions are equal.
+    """
+
+    groups: dict[str, dict] = {}
+    received_runs = 0
+    selected_strategy_name = None
+    for raw in records:
+        record = dict(raw or {})
+        current_strategy_id = str(record.get("strategy_id") or "").strip()
+        if strategy_id and current_strategy_id != strategy_id:
+            continue
+        if not current_strategy_id:
+            continue
+        received_runs += 1
+        selected_strategy_name = selected_strategy_name or record.get("strategy_name") or current_strategy_id
+        payload = _configuration_payload(record)
+        identity = {"strategy_id": current_strategy_id, **payload}
+        encoded = json.dumps(identity, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        current = groups.setdefault(digest, {
+            "configuration_id": digest[:12],
+            "strategy_id": current_strategy_id,
+            "strategy_name": record.get("strategy_name") or current_strategy_id,
+            "strategy_parameters": payload["strategy"],
+            "filters": payload["filters"],
+            "financial": payload["financial"],
+            "assumptions": payload["assumptions"],
+            "tickers": set(),
+            "run_count": 0,
+            "ranking_scores": [],
+            "metric_values": defaultdict(list),
+            "sample_status_counts": defaultdict(int),
+            "signal_counts": defaultdict(int),
+            "latest_analysis_at": None,
+            "requested_start": None,
+            "requested_end": None,
+        })
+        ticker = str(record.get("ticker") or "").strip().upper()
+        if ticker:
+            current["tickers"].add(ticker)
+        current["run_count"] += 1
+        if record.get("ranking_score") is not None:
+            current["ranking_scores"].append(_number(record.get("ranking_score")))
+        metrics = _metrics(record)
+        for key in (
+            "total_return_pct", "cagr_pct", "sharpe_ratio", "max_drawdown_pct",
+            "profit_factor", "win_rate_pct", "closed_trades",
+        ):
+            if metrics.get(key) is not None:
+                current["metric_values"][key].append(_number(metrics.get(key)))
+        current["sample_status_counts"][str(record.get("sample_status") or "unknown")] += 1
+        current["signal_counts"][str(record.get("current_signal") or "neutral")] += 1
+        created_at = record.get("created_at")
+        if created_at is not None and (
+            current["latest_analysis_at"] is None or str(created_at) > str(current["latest_analysis_at"])
+        ):
+            current["latest_analysis_at"] = created_at
+            current["requested_start"] = record.get("requested_start")
+            current["requested_end"] = record.get("requested_end")
+
+    items = []
+    for current in groups.values():
+        metrics = {
+            f"mean_{key}": _mean(values)
+            for key, values in current.pop("metric_values").items()
+        }
+        current["tickers"] = sorted(current["tickers"])
+        current["assets_tested"] = len(current["tickers"])
+        current["mean_ranking_score"] = _mean(current.pop("ranking_scores"))
+        current["mean_metrics"] = metrics
+        current["sample_status_counts"] = dict(sorted(current["sample_status_counts"].items()))
+        current["signal_counts"] = dict(sorted(current["signal_counts"].items()))
+        items.append(current)
+    items.sort(key=lambda item: (
+        -(item.get("mean_ranking_score") or 0.0),
+        -item.get("assets_tested", 0),
+        item["configuration_id"],
+    ))
+    for position, item in enumerate(items, start=1):
+        item["configuration_number"] = position
+    return {
+        "strategy_id": strategy_id or (items[0]["strategy_id"] if items else None),
+        "strategy_name": selected_strategy_name,
+        "configuration_count": len(items),
+        "run_count": received_runs,
+        "items": items,
+    }
 
 
 def build_strategy_study(records: Iterable[dict], *, top_limit: int = 5) -> dict:

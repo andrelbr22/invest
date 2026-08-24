@@ -5,14 +5,24 @@ import re
 import threading
 import time
 import unicodedata
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 
 import requests
 
 
 GDELT_DOC_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc"
+GOOGLE_NEWS_RSS_ENDPOINT = "https://news.google.com/rss/search"
+TICKER_ALIASES = {
+    "BBAS3": ("Banco do Brasil",),
+    "PETR3": ("Petrobras",), "PETR4": ("Petrobras",),
+    "VALE3": ("Vale",), "ITUB3": ("Itaú Unibanco",), "ITUB4": ("Itaú Unibanco",),
+    "BBDC3": ("Bradesco",), "BBDC4": ("Bradesco",), "ABEV3": ("Ambev",),
+    "WEGE3": ("WEG",), "BBSE3": ("BB Seguridade",), "VIVT3": ("Telefônica Brasil", "Vivo"),
+}
 IMPORTANT_TERMS = (
     "resultado", "lucro", "prejuízo", "prejuizo", "dividendo", "jcp", "guidance",
     "aquisição", "aquisicao", "fusão", "fusao", "venda de ativos", "investimento",
@@ -77,11 +87,12 @@ def _seen_at(value: str | None) -> datetime | None:
 
 
 class MarketNewsService:
-    """Small, keyless news adapter backed by GDELT DOC 2.0.
+    """Keyless, fault-tolerant news discovery adapter.
 
     Only metadata and links are displayed. Article text remains with the original
-    publisher. Responses are cached to protect the upstream service and keep the
-    Streamlit page responsive.
+    publisher. GDELT is complemented by Google News RSS when it is unavailable or
+    does not return enough related coverage. Responses are cached to protect both
+    sources and keep the Streamlit page responsive.
     """
 
     def __init__(self, *, http_get=None, cache_ttl_seconds: int = 30 * 60):
@@ -91,7 +102,7 @@ class MarketNewsService:
         self._lock = threading.RLock()
 
     def _query(self, query: str, *, max_records: int = 50, timespan: str = "3months") -> list[dict]:
-        key = (query, max_records, timespan)
+        key = ("gdelt", query, max_records, timespan)
         now = time.monotonic()
         with self._lock:
             cached = self._cache.get(key)
@@ -107,8 +118,8 @@ class MarketNewsService:
                 "sort": "datedesc",
                 "timespan": timespan,
             },
-            headers={"User-Agent": "FormacaoDoInvestidor/1.11 (+market-news-links)"},
-            timeout=20,
+            headers={"User-Agent": "FormacaoDoInvestidor/1.11.1 (+market-news-links)"},
+            timeout=15,
         )
         response.raise_for_status()
         payload = response.json()
@@ -126,10 +137,70 @@ class MarketNewsService:
                 "language": article.get("language"),
                 "source_country": article.get("sourcecountry"),
                 "image_url": _safe_url(article.get("socialimage")),
+                "discovery_provider": "GDELT DOC 2.0",
             })
         with self._lock:
             self._cache[key] = (now, normalized)
         return [dict(item) for item in normalized]
+
+    def _query_google_news(self, query: str, *, max_records: int = 50) -> list[dict]:
+        key = ("google_news_rss", query, max_records)
+        now = time.monotonic()
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached and now - cached[0] < self.cache_ttl_seconds:
+                return [dict(item) for item in cached[1]]
+        response = self.http_get(
+            GOOGLE_NEWS_RSS_ENDPOINT,
+            params={"q": query, "hl": "pt-BR", "gl": "BR", "ceid": "BR:pt-419"},
+            headers={"User-Agent": "Mozilla/5.0 FormacaoDoInvestidor/1.11.1"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        raw = getattr(response, "content", None)
+        if raw is None:
+            raw = str(getattr(response, "text", "")).encode("utf-8")
+        root = ET.fromstring(raw)
+        normalized = []
+        for item in root.findall(".//item")[: max(1, min(100, int(max_records)))]:
+            title = str(item.findtext("title") or "").strip()
+            url = _safe_url(item.findtext("link"))
+            if not title or not url:
+                continue
+            source_node = item.find("source")
+            source = str(source_node.text or "").strip() if source_node is not None else ""
+            published_at = None
+            try:
+                published_at = parsedate_to_datetime(str(item.findtext("pubDate") or "")).astimezone(timezone.utc)
+            except (TypeError, ValueError, OverflowError):
+                pass
+            if source and title.endswith(f" - {source}"):
+                title = title[: -(len(source) + 3)].strip()
+            normalized.append({
+                "title": title, "url": url,
+                "source": source or "Google News",
+                "published_at": published_at,
+                "language": "Portuguese", "source_country": "Brazil",
+                "image_url": None, "discovery_provider": "Google News RSS",
+            })
+        with self._lock:
+            self._cache[key] = (now, normalized)
+        return [dict(item) for item in normalized]
+
+    @staticmethod
+    def _asset_aliases(ticker: str, company_name: str | None) -> list[str]:
+        aliases = [str(ticker or "").strip().upper()]
+        clean_name = " ".join(str(company_name or "").replace('"', "").split())
+        if len(clean_name) >= 4:
+            aliases.append(clean_name)
+        aliases.extend(TICKER_ALIASES.get(aliases[0], ()))
+        result = []
+        seen = set()
+        for alias in aliases:
+            normalized = _plain(alias)
+            if normalized and normalized not in seen:
+                seen.add(normalized); result.append(alias)
+        return result
 
     @staticmethod
     def _importance(article: dict, *, ticker: str, company_name: str | None) -> float:
@@ -164,17 +235,29 @@ class MarketNewsService:
 
     def asset_news(self, ticker: str, company_name: str | None = None, *, limit: int = 3) -> dict:
         clean_ticker = str(ticker or "").strip().upper()
-        phrases = [f'"{clean_ticker}"']
-        clean_name = " ".join(str(company_name or "").replace('"', "").split())
-        if len(clean_name) >= 4:
-            phrases.append(f'"{clean_name}"')
+        aliases = self._asset_aliases(clean_ticker, company_name)
+        clean_name = aliases[1] if len(aliases) > 1 else ""
+        phrases = [f'"{alias}"' for alias in aliases]
         query = "(" + " OR ".join(phrases) + ")"
+        articles = []
+        warnings = []
+        providers = []
         try:
             articles = self._query(query, max_records=75, timespan="3months")
-            warning = None
+            if articles:
+                providers.append("GDELT DOC 2.0")
         except Exception as exc:
-            articles = []
-            warning = f"news_provider_unavailable: {type(exc).__name__}"
+            warnings.append(f"GDELT: {type(exc).__name__}")
+        requested_limit = max(1, min(10, int(limit)))
+        if len(articles) < requested_limit:
+            rss_query = query + ' (ações OR empresa OR resultados OR dividendos OR investimento) when:90d'
+            try:
+                rss_rows = self._query_google_news(rss_query, max_records=50)
+                if rss_rows:
+                    providers.append("Google News RSS")
+                    articles.extend(rss_rows)
+            except Exception as exc:
+                warnings.append(f"Google News RSS: {type(exc).__name__}")
         for article in articles:
             article["importance_score"] = self._importance(
                 article, ticker=clean_ticker, company_name=clean_name,
@@ -188,9 +271,12 @@ class MarketNewsService:
         return {
             "ticker": clean_ticker,
             "company_name": company_name,
-            "items": articles[: max(1, min(10, int(limit)))],
-            "warning": warning,
-            "provider": "GDELT DOC 2.0",
+            "items": articles[:requested_limit],
+            "warning": "; ".join(warnings) if warnings and not articles else None,
+            "warnings": warnings,
+            "fallback_used": "Google News RSS" in providers,
+            "providers": providers,
+            "provider": " + ".join(providers) or "Nenhuma fonte disponível",
             "generated_at": datetime.now(timezone.utc),
         }
 
@@ -204,9 +290,10 @@ class MarketNewsService:
             seen.add(ticker)
             clean_assets.append({"ticker": ticker, "name": item.get("name")})
         if not clean_assets:
-            return {"assets": [], "generated_at": datetime.now(timezone.utc), "provider": "GDELT DOC 2.0"}
+            return {"assets": [], "generated_at": datetime.now(timezone.utc), "providers": []}
 
-        with ThreadPoolExecutor(max_workers=min(6, len(clean_assets))) as executor:
+        # A concorrência moderada reduz bloqueios temporários das fontes públicas.
+        with ThreadPoolExecutor(max_workers=min(3, len(clean_assets))) as executor:
             futures = [
                 executor.submit(self.asset_news, item["ticker"], item.get("name"), limit=limit_per_asset)
                 for item in clean_assets
@@ -216,7 +303,7 @@ class MarketNewsService:
             "assets": results,
             "asset_count": len(results),
             "generated_at": datetime.now(timezone.utc),
-            "provider": "GDELT DOC 2.0",
+            "providers": sorted({provider for result in results for provider in result.get("providers") or []}),
         }
 
     @staticmethod
@@ -241,16 +328,27 @@ class MarketNewsService:
         categories = [category] if category in BANK_GROUPS else list(BANK_GROUPS)
         collected = []
         warnings = []
+        providers = []
         for group_key in categories:
             group = BANK_GROUPS[group_key]
             institutions = [f'"{name}"' for name in group["institutions"]]
             terms = [f'"{term}"' for term in group["terms"]]
             query = f"({' OR '.join(institutions)}) ({' OR '.join(terms)})"
+            rows = []
             try:
                 rows = self._query(query, max_records=80, timespan="3months")
+                if rows:
+                    providers.append("GDELT DOC 2.0")
             except Exception as exc:
-                warnings.append(f"{group_key}: {type(exc).__name__}")
-                continue
+                warnings.append(f"{group_key}/GDELT: {type(exc).__name__}")
+            if len(rows) < 5:
+                try:
+                    rss_rows = self._query_google_news(query + " when:90d", max_records=80)
+                    if rss_rows:
+                        providers.append("Google News RSS")
+                        rows.extend(rss_rows)
+                except Exception as exc:
+                    warnings.append(f"{group_key}/Google News RSS: {type(exc).__name__}")
             for article in rows:
                 article["bank_group"] = group_key
                 article["bank_group_label"] = group["label"]
@@ -266,6 +364,8 @@ class MarketNewsService:
             "category": category,
             "items": collected[: max(1, min(50, int(limit)))],
             "warnings": warnings,
-            "provider": "GDELT DOC 2.0",
+            "fallback_used": "Google News RSS" in providers,
+            "providers": sorted(set(providers)),
+            "provider": " + ".join(sorted(set(providers))) or "Nenhuma fonte disponível",
             "generated_at": datetime.now(timezone.utc),
         }

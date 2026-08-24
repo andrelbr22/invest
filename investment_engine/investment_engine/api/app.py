@@ -26,7 +26,7 @@ from ..core.portfolio.service import build_portfolio_snapshot, classification_fo
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
 from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
 from ..core.backtesting.batch import BacktestBatchService, OFFICIAL_OWNER
-from ..core.backtesting.study import build_strategy_study
+from ..core.backtesting.study import build_strategy_configuration_catalog, build_strategy_study
 from ..infrastructure.db.models import AssetORM
 from ..core.models.strategy import StockFilterSet, FiiFilterSet
 from ..infrastructure.db.session import get_session_factory
@@ -38,8 +38,8 @@ from ..data.providers.news import MarketNewsService
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.11.0",
-    version="0.12.0",
+    title="Investment Engine V1.11.1",
+    version="0.12.1",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -394,7 +394,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.12.0", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.12.1", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -1325,6 +1325,42 @@ def backtest_strategy_study(
             "metrics": run.metrics_json or {},
         })
     result = build_strategy_study(records, top_limit=limit)
+    result["generated_at"] = datetime.now(timezone.utc)
+    return result
+
+
+@app.get("/backtests/study/{strategy_id}/configurations")
+def backtest_strategy_configurations(
+    strategy_id: str,
+    _access=Depends(require_permission("can_view_backtest_studies")),
+    db: Session = Depends(get_db),
+):
+    if strategy_id not in STRATEGIES:
+        raise HTTPException(404, "strategy_not_found")
+    records = []
+    for run, asset in BacktestRepository(db).strategy_configuration_runs(strategy_id):
+        records.append({
+            "ticker": asset.ticker,
+            "strategy_id": run.strategy_id,
+            "strategy_name": run.strategy_name,
+            "ranking_score": _num(run.ranking_score),
+            "sample_status": run.sample_status,
+            "current_signal": run.current_signal,
+            "metrics": run.metrics_json or {},
+            "parameters": run.parameters_json or {},
+            "assumptions": {
+                "initial_capital": _num(run.initial_capital),
+                "fee_pct": _num(run.fee_pct),
+                "slippage_pct": _num(run.slippage_pct),
+                "risk_free_rate_pct": _num(run.risk_free_rate_pct),
+            },
+            "requested_start": run.requested_start,
+            "requested_end": run.requested_end,
+            "created_at": run.created_at,
+        })
+    result = build_strategy_configuration_catalog(records, strategy_id=strategy_id)
+    result["strategy_name"] = STRATEGIES[strategy_id].name
+    result["strategy_rules"] = STRATEGIES[strategy_id].rules
     result["generated_at"] = datetime.now(timezone.utc)
     return result
 

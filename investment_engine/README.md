@@ -1,4 +1,14 @@
-# Formação do Investidor • Investment Engine V1.11.0
+# Formação do Investidor • Investment Engine V1.11.1
+
+## Novidades da V1.11.1
+
+- o ranking do estudo dos backtests agora é clicável;
+- cada estratégia abre todas as configurações efetivamente executadas, sem repetir a mesma combinação para cada ativo;
+- parâmetros, filtros, custos, premissas, ativos avaliados e métricas médias ficam disponíveis para auditoria;
+- a busca de notícias passa a combinar GDELT DOC 2.0 e Google News RSS, com alternativa automática quando uma fonte falha;
+- consultas de ativos reconhecem códigos e nomes corporativos, incluindo BBAS3/Banco do Brasil;
+- mensagens distinguem ausência real de notícias de indisponibilidade temporária das fontes;
+- não exige nova migração de banco.
 
 ## Novidades da V1.11.0
 
