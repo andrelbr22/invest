@@ -45,8 +45,8 @@ from ..data.providers.market_dashboard import MarketDashboardService
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.13.0",
-    version="0.14.0",
+    title="Investment Engine V1.13.1",
+    version="0.14.1",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -59,6 +59,7 @@ _MARKET_NEWS = MarketNewsService()
 _NEWS_QUEUE_LOCK = threading.Lock()
 _MARKET_DASHBOARD = MarketDashboardService()
 _MARKET_DASHBOARD_OWNER = "market-dashboard@system.local"
+_MARKET_DASHBOARD_CACHE_KEY = "main-v2"
 _MARKET_DASHBOARD_LOCK = threading.Lock()
 
 
@@ -534,7 +535,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.14.0", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.14.1", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -1253,11 +1254,11 @@ def _market_dashboard_payload(db: Session) -> dict:
     repo = NewsCacheRepository(db)
     current = repo.get(
         owner_email=_MARKET_DASHBOARD_OWNER,
-        cache_kind="market_dashboard", cache_key="main",
+        cache_kind="market_dashboard", cache_key=_MARKET_DASHBOARD_CACHE_KEY,
     )
     displayed = current if current is not None and current.result_json else repo.latest_completed(
         owner_email=_MARKET_DASHBOARD_OWNER,
-        cache_kind="market_dashboard", cache_key="main",
+        cache_kind="market_dashboard", cache_key=_MARKET_DASHBOARD_CACHE_KEY,
     )
     payload = news_cache_dict(displayed)
     payload.update({
@@ -1286,7 +1287,7 @@ def ensure_market_dashboard(
     with _MARKET_DASHBOARD_LOCK:
         row, should_run = NewsCacheRepository(db).request_refresh(
             owner_email=_MARKET_DASHBOARD_OWNER,
-            cache_kind="market_dashboard", cache_key="main",
+            cache_kind="market_dashboard", cache_key=_MARKET_DASHBOARD_CACHE_KEY,
             trigger="automatic", force=False,
         )
         db.commit()
@@ -1306,7 +1307,7 @@ def refresh_market_dashboard(
     with _MARKET_DASHBOARD_LOCK:
         row, should_run = NewsCacheRepository(db).request_refresh(
             owner_email=_MARKET_DASHBOARD_OWNER,
-            cache_kind="market_dashboard", cache_key="main",
+            cache_kind="market_dashboard", cache_key=_MARKET_DASHBOARD_CACHE_KEY,
             trigger="manual", force=True,
         )
         db.commit()

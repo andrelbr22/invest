@@ -20,7 +20,7 @@ def test_admin_automatically_receives_latest_market_signature():
     assert 'st.session_state[selection_key]=market_tickers' in SOURCE
     assert "Usar os {len(market_tickers)} da tela Mercado e análise" in SOURCE
     assert 'key=selection_key' in SOURCE
-    assert 'disabled=not bool(github_token) or not bool(selected)' in SOURCE
+    assert 'disabled=not bool(github_token) or not callback_ready or not bool(selected)' in SOURCE
 
 
 def test_advanced_screener_can_handoff_results_and_limit_is_kept():

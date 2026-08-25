@@ -14,6 +14,7 @@ import re
 import unicodedata
 
 import pandas as pd
+from bs4 import BeautifulSoup
 
 from ...infrastructure.http import HttpClient
 from .prices import YahooPriceProvider
@@ -28,6 +29,8 @@ ANBIMA_CURVE_URL = "https://www.anbima.com.br/informacoes/est-termo/CZ.asp"
 ANBIMA_IMA_URL = "https://www.anbima.com.br/informacoes/ima/ima.asp"
 BLS_API_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/CUUR0000SA0"
 BLS_ICS_URL = "https://www.bls.gov/schedule/news_release/bls.ics"
+BLS_CPI_SCHEDULE_URL = "https://www.bls.gov/schedule/news_release/cpi.htm"
+BLS_PAYROLL_SCHEDULE_URL = "https://www.bls.gov/schedule/news_release/empsit.htm"
 FRED_RATES_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS2,DGS10"
 
 
@@ -212,11 +215,15 @@ class MarketDashboardService:
             errors.append(f"Selic atual: {type(exc).__name__}")
         current = current_rows[-1][1] if current_rows else None
         year = self.now.year
+        # DataReferencia is not consistently exposed as text by every OData
+        # gateway.  Filtering the years as quoted strings made valid Focus
+        # rows disappear.  Fetch the Selic series and select the two years in
+        # Python, accepting both numeric and textual representations.
         params = {
             "$format": "json",
-            "$filter": f"Indicador eq 'Selic' and (DataReferencia eq '{year}' or DataReferencia eq '{year + 1}')",
+            "$filter": "Indicador eq 'Selic'",
             "$orderby": "Data desc",
-            "$top": 80,
+            "$top": 600,
         }
         try:
             values = self.http.get(BCB_FOCUS_URL, params=params).json().get("value") or []
@@ -224,13 +231,26 @@ class MarketDashboardService:
             values = []
             errors.append(f"Focus: {type(exc).__name__}")
         projections = {}
-        for row in values:
-            reference = str(row.get("DataReferencia") or "")[:4]
-            if reference in {str(year), str(year + 1)} and reference not in projections:
+        candidates = sorted(
+            (row for row in values if isinstance(row, dict)),
+            key=lambda row: (
+                str(row.get("Data") or ""),
+                1 if parse_number(row.get("baseCalculo")) == 0 else 0,
+            ),
+            reverse=True,
+        )
+        for row in candidates:
+            reference_match = re.search(r"20\d{2}", str(row.get("DataReferencia") or ""))
+            reference = reference_match.group(0) if reference_match else ""
+            value = parse_number(row.get("Mediana"))
+            if reference in {str(year), str(year + 1)} and reference not in projections and value is not None:
                 projections[reference] = {
-                    "value": parse_number(row.get("Mediana")),
+                    "value": value,
                     "survey_date": row.get("Data"),
+                    "reference_year": int(reference),
                 }
+        if not projections:
+            errors.append("Focus: projeções anuais da Selic não foram localizadas")
         return {
             "current": current,
             "current_as_of": current_rows[-1][0].isoformat() if current_rows else None,
@@ -238,6 +258,10 @@ class MarketDashboardService:
             "next_year": projections.get(str(year + 1), {}),
             "source": "Banco Central do Brasil • Selic/Focus",
             "url": "https://www.bcb.gov.br/publicacoes/focus",
+            "projection_note": (
+                "O Focus pesquisa a Selic, não o CDI separadamente. "
+                "A mediana da Selic é exibida como referência transparente para o CDI projetado."
+            ),
             "errors": errors,
         }
 
@@ -473,8 +497,85 @@ class MarketDashboardService:
             "url": ANBIMA_CURVE_URL,
         }
 
+    @staticmethod
+    def _bls_release_date(value: object) -> date | None:
+        clean = re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip()
+        clean = clean.replace("Sept.", "Sep.")
+        for pattern in ("%b. %d, %Y", "%b %d, %Y", "%B %d, %Y"):
+            try:
+                return datetime.strptime(clean, pattern).date()
+            except ValueError:
+                continue
+        return None
+
+    def _bls_schedule_html(self, url: str, category: str) -> list[dict]:
+        response = self.http.get(url)
+        soup = BeautifulSoup(response.text, "html.parser")
+        events = []
+        for row in soup.find_all("tr"):
+            cells = [re.sub(r"\s+", " ", cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])]
+            if len(cells) < 2:
+                continue
+            release_date = self._bls_release_date(cells[1])
+            if release_date is None or release_date < self.now.date():
+                continue
+            release_time = cells[2] if len(cells) > 2 else "08:30 AM"
+            events.append({
+                "category": category,
+                "event": "Divulgação do CPI dos EUA" if category == "CPI dos EUA" else "Divulgação do Payroll dos EUA",
+                "date": release_date.isoformat(), "time": f"{release_time} ET",
+                "region": "Estados Unidos", "source": "U.S. Bureau of Labor Statistics",
+                "url": url,
+            })
+        return events
+
+    def _known_bls_2026_calendar(self) -> list[dict]:
+        """Official 2026 dates used only if both live BLS formats are unavailable."""
+        schedules = {
+            "CPI dos EUA": (
+                BLS_CPI_SCHEDULE_URL,
+                [(9, 11), (10, 14), (11, 10), (12, 10)],
+            ),
+            "Payroll dos EUA": (
+                BLS_PAYROLL_SCHEDULE_URL,
+                [(9, 4), (10, 2), (11, 6), (12, 4)],
+            ),
+        }
+        events = []
+        for category, (url, values) in schedules.items():
+            for month, day in values:
+                release_date = date(2026, month, day)
+                if release_date >= self.now.date():
+                    events.append({
+                        "category": category,
+                        "event": "Divulgação do CPI dos EUA" if category == "CPI dos EUA" else "Divulgação do Payroll dos EUA",
+                        "date": release_date.isoformat(), "time": "08:30 AM ET",
+                        "region": "Estados Unidos", "source": "U.S. Bureau of Labor Statistics",
+                        "url": url, "fallback": True,
+                    })
+        return events
+
+    @staticmethod
+    def _annotate_super_wednesday(events: list[dict]) -> list[dict]:
+        """Keep Copom and Fed rows separate and highlight coincident decisions."""
+        by_date: dict[str, set[str]] = {}
+        for event in events:
+            by_date.setdefault(str(event.get("date") or ""), set()).add(str(event.get("category") or ""))
+        for event in events:
+            categories = by_date.get(str(event.get("date") or ""), set())
+            if {"Decisão do Copom", "Decisão do Fed"}.issubset(categories) and event.get("category") in {
+                "Decisão do Copom", "Decisão do Fed",
+            }:
+                event["observation"] = "SUPER QUARTA • Copom e Fed decidem juros no mesmo dia"
+                event["highlight"] = "super_wednesday"
+        return events
+
     def _bls_calendar(self) -> list[dict]:
-        text = self.http.get(BLS_ICS_URL).text.replace("\r\n ", "").replace("\n ", "")
+        events = []
+        try:
+            text = self.http.get(BLS_ICS_URL).text.replace("\r\n ", "").replace("\n ", "")
+        except Exception:
+            text = ""
         events = []
         for block in text.split("BEGIN:VEVENT")[1:]:
             summary_match = re.search(r"^SUMMARY(?:;[^:]*)?:(.+)$", block, flags=re.MULTILINE | re.IGNORECASE)
@@ -506,9 +607,28 @@ class MarketDashboardService:
                 "time": time_label, "region": "Estados Unidos", "source": "U.S. Bureau of Labor Statistics",
                 "url": "https://www.bls.gov/schedule/",
             })
+        # The ICS feed is occasionally blocked by hosting providers. Complete
+        # each missing category from the official HTML schedules instead.
+        present = {item["category"] for item in events}
+        for category, url in (("CPI dos EUA", BLS_CPI_SCHEDULE_URL), ("Payroll dos EUA", BLS_PAYROLL_SCHEDULE_URL)):
+            if category in present:
+                continue
+            try:
+                events.extend(self._bls_schedule_html(url, category))
+            except Exception:
+                pass
+        present = {item["category"] for item in events}
+        if not {"CPI dos EUA", "Payroll dos EUA"}.issubset(present):
+            for item in self._known_bls_2026_calendar():
+                if item["category"] not in present:
+                    events.append(item)
+
+        unique = {}
+        for item in events:
+            unique[(item["category"], item["date"])] = item
         selected = []
         for category in ("CPI dos EUA", "Payroll dos EUA"):
-            selected.extend(sorted((item for item in events if item["category"] == category), key=lambda item: item["date"])[:3])
+            selected.extend(sorted((item for item in unique.values() if item["category"] == category), key=lambda item: item["date"])[:3])
         return selected
 
     def calendar(self) -> list[dict]:
@@ -529,9 +649,25 @@ class MarketDashboardService:
         }
         for meeting in sorted(upcoming_copom)[:3]:
             events.append({
-                "category": "Copom", "event": "Decisão da reunião do Copom",
+                "category": "Decisão do Copom", "event": "Divulgação da taxa Selic pelo Copom",
                 "date": meeting.isoformat(), "time": None, "region": "Brasil",
                 "source": "Banco Central do Brasil", "url": source_by_year.get(meeting.year, "https://www.bcb.gov.br/controleinflacao/copom"),
+            })
+        fomc_dates = {
+            2026: [(1, 28), (3, 18), (4, 29), (6, 17), (7, 29), (9, 16), (10, 28), (12, 9)],
+            2027: [(1, 27), (3, 17), (4, 28), (6, 9), (7, 28), (9, 15), (10, 27), (12, 8)],
+        }
+        upcoming_fomc = []
+        for year, values in fomc_dates.items():
+            for month, day in values:
+                decision = date(year, month, day)
+                if decision >= today:
+                    upcoming_fomc.append(decision)
+        for decision in sorted(upcoming_fomc)[:3]:
+            events.append({
+                "category": "Decisão do Fed", "event": "Divulgação da taxa de juros pelo FOMC",
+                "date": decision.isoformat(), "time": "14:00 ET", "region": "Estados Unidos",
+                "source": "Federal Reserve", "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
             })
         try:
             events.extend(self._bls_calendar())
@@ -553,7 +689,7 @@ class MarketDashboardService:
                 "category": "Feriado EUA", "event": name, "date": day.isoformat(), "time": None,
                 "region": "Estados Unidos", "source": "NYSE", "url": "https://www.nyse.com/trade/hours-calendars",
             })
-        return sorted(events, key=lambda item: (item["date"], item["category"]))
+        return sorted(self._annotate_super_wednesday(events), key=lambda item: (item["date"], item["category"]))
 
     def build(self) -> dict:
         tasks = {

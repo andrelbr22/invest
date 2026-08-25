@@ -808,8 +808,9 @@ def _render_market_dashboard_data(payload):
     usdbrl=next((item for item in fx if item.get("label")=="Dólar / Real"),{})
     c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("Selic atual",_panel_number(selic.get("current"),"%"))
-    c2.metric(f"Selic • fim de {date.today().year}",_panel_number((selic.get("current_year") or {}).get("value"),"%"))
-    c3.metric(f"Selic • fim de {date.today().year+1}",_panel_number((selic.get("next_year") or {}).get("value"),"%"))
+    projection_help=selic.get("projection_note") or "Mediana da Selic no Relatório Focus, usada como referência para o CDI projetado."
+    c2.metric(f"CDI projetado • fim de {date.today().year}",_panel_number((selic.get("current_year") or {}).get("value"),"%"),help=projection_help)
+    c3.metric(f"CDI projetado • fim de {date.today().year+1}",_panel_number((selic.get("next_year") or {}).get("value"),"%"),help=projection_help)
     c4.metric("IBOV",_panel_number(ibov.get("current")),_panel_delta((ibov.get("variations") or {}).get("1d")))
     c5.metric("Dólar / Real",_panel_number(usdbrl.get("current"),"R$","BRL"),_panel_delta((usdbrl.get("variations") or {}).get("1d")))
 
@@ -880,9 +881,14 @@ def _render_market_dashboard_data(payload):
     st.subheader("🗓️ Próximas datas importantes")
     calendar=data.get("calendar") or []
     if calendar:
-        calendar_frame=pd.DataFrame(calendar).rename(columns={"category":"Categoria","event":"Evento","date":"Data","time":"Horário de Brasília","region":"Região","source":"Fonte"})
+        calendar_frame=pd.DataFrame(calendar).rename(columns={"category":"Categoria","event":"Evento","date":"Data","time":"Horário","region":"Região","source":"Fonte","observation":"Observações"})
         calendar_frame["Data"]=pd.to_datetime(calendar_frame["Data"],errors="coerce").dt.strftime("%d/%m/%Y")
-        st.dataframe(calendar_frame[[column for column in ("Data","Categoria","Evento","Horário de Brasília","Região","Fonte") if column in calendar_frame]],use_container_width=True,hide_index=True)
+        columns=[column for column in ("Data","Categoria","Evento","Horário","Região","Observações","Fonte") if column in calendar_frame]
+        display=calendar_frame[columns]
+        def _highlight_super_wednesday(row):
+            special="SUPER QUARTA" in str(row.get("Observações") or "")
+            return ["background-color: #fff1b8; color: #6b3f00; font-weight: 700" if special else "" for _ in row]
+        st.dataframe(display.style.apply(_highlight_super_wednesday,axis=1),use_container_width=True,hide_index=True)
     else:st.info("Os calendários oficiais não responderam nesta atualização.")
 
     warnings=data.get("warnings") or []
@@ -2940,11 +2946,19 @@ def _render_official_backtest_admin():
         st.caption("O GitHub faz apenas os cálculos. Os resultados retornam em pacotes autenticados para a Oracle; o PostgreSQL permanece privado e não é exposto à internet.")
         st.info("Execução automática: todos os sábados, às 00h01 de Brasília, usando as 50 ações do filtro Padrão.")
         github_token=_private_setting("GITHUB_ACTIONS_TOKEN")
+        callback_token=_private_setting("BACKTEST_CALLBACK_TOKEN")
+        callback_ready=len(str(callback_token or "").strip())>=32
         github_repository=_private_setting("GITHUB_ACTIONS_REPOSITORY","andrelbr22/invest")
         github_workflow=_private_setting("GITHUB_BACKTEST_WORKFLOW","backtests-semanais.yml")
         github_ref=_private_setting("GITHUB_ACTIONS_REF","main")
         if not github_token:
             st.warning("A conexão segura com o GitHub ainda não foi configurada. Adicione GITHUB_ACTIONS_TOKEN aos Secrets do aplicativo.")
+        if not callback_ready:
+            st.error(
+                "A credencial que traz os resultados de volta ao site ainda não está configurada. "
+                "Adicione BACKTEST_CALLBACK_TOKEN aos Secrets do servidor e, com o mesmo valor, "
+                "aos Repository secrets do GitHub. Novos lotes ficarão bloqueados até isso ser concluído."
+            )
         default_rows,default_error=api_get("/screen/db/stocks/default",{"limit":50,"offset":0})
         stock_rows,stock_error=api_get("/assets",{"asset_type":"stock","limit":1200,"offset":0})
         if default_error or stock_error:
@@ -3002,7 +3016,7 @@ def _render_official_backtest_admin():
                 )
                 submitted=st.form_submit_button(
                     "▶ Gerar backtests dos ativos selecionados",
-                    type="primary",use_container_width=True,disabled=not bool(github_token) or not bool(selected),
+                    type="primary",use_container_width=True,disabled=not bool(github_token) or not callback_ready or not bool(selected),
                 )
             if submitted:
                 job,job_error=api_post("/backtests/batch/jobs",{
@@ -3178,4 +3192,4 @@ elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.13.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.13.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

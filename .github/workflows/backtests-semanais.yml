@@ -56,6 +56,13 @@ jobs:
           cache: pip
       - name: Instalar dependências
         run: python -m pip install -r requirements.txt
+      - name: Validar entrega segura dos resultados
+        shell: bash
+        run: |
+          if [ "${#BACKTEST_CALLBACK_TOKEN}" -lt 32 ]; then
+            echo "::error title=Credencial de retorno ausente::Crie o Repository secret BACKTEST_CALLBACK_TOKEN em Settings > Secrets and variables > Actions e use exatamente o mesmo valor no servidor Oracle."
+            exit 1
+          fi
       - name: Calcular e entregar os resultados à Oracle
         env:
           MANUAL_TICKERS: ${{ inputs.tickers }}

@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
-version = "0.14.0"
-description = "Formação do Investidor V1.13.0 with a resilient background market dashboard."
+version = "0.14.1"
+description = "Formação do Investidor V1.13.1 with Focus projections, economic calendars and safe backtest delivery preflight."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

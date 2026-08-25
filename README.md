@@ -1,4 +1,14 @@
-# Formação do Investidor • Investment Engine V1.13.0
+# Formação do Investidor • Investment Engine V1.13.1
+
+## Novidades da V1.13.1
+
+- projeções anuais do Relatório Focus aceitam o ano numérico devolvido pelo Banco Central;
+- o painel identifica claramente que o Focus pesquisa Selic e usa essa mediana como referência transparente para o CDI projetado;
+- CPI e Payroll usam agenda oficial do BLS com redundância entre calendário ICS, páginas oficiais e contingência verificada de 2026;
+- decisões do Fed foram acrescentadas à agenda;
+- Copom e Fed permanecem em linhas separadas e recebem destaque `SUPER QUARTA` quando decidem juros no mesmo dia;
+- pedidos de backtests oficiais ficam bloqueados quando a credencial segura de retorno não estiver configurada;
+- o workflow valida a credencial antes de iniciar cálculos longos e explica exatamente como corrigir a configuração.
 
 ## Novidades da V1.13.0
 

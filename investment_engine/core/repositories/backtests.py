@@ -79,7 +79,7 @@ class BacktestRepository:
         metrics: dict, equity_curve: list, trades: list, snapshot: dict | None = None,
         ranking_score: float | None = None, sample_status: str = "insufficient",
         current_signal: dict | None = None, data_source: str = "yahoo", status: str = "valid",
-        engine_version: str = "0.14.0", sector_label: str | None = None, batch_job_id=None,
+        engine_version: str = "0.14.1", sector_label: str | None = None, batch_job_id=None,
         compact_curve: bool = False, market_date: date | None = None,
         created_at: datetime | None = None,
     ) -> BacktestRunORM:
@@ -248,7 +248,7 @@ class BacktestRepository:
             current_signal=current_signal,
             data_source=str(run_data.get("data_source") or "yahoo"),
             status=str(run_data.get("status") or "valid"),
-            engine_version=str(run_data.get("engine_version") or "0.14.0"),
+            engine_version=str(run_data.get("engine_version") or "0.14.1"),
             sector_label=run_data.get("sector_label"),
             batch_job_id=batch_job_id,
             compact_curve=False,

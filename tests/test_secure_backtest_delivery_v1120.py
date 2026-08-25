@@ -223,6 +223,15 @@ def test_public_api_exposes_only_authenticated_delivery_routes_in_caddy():
     assert "reverse_proxy app:8765" in caddy
 
 
+def test_workflow_stops_before_calculation_when_callback_secret_is_missing():
+    workflow = (ROOT / ".github" / "workflows" / "backtests-semanais.yml").read_text(encoding="utf-8")
+    ui = (ROOT / "examples" / "streamlit_v15_integrated.py").read_text(encoding="utf-8")
+    assert "Validar entrega segura dos resultados" in workflow
+    assert '${#BACKTEST_CALLBACK_TOKEN}' in workflow
+    assert "callback_ready" in ui
+    assert "disabled=not bool(github_token) or not callback_ready" in ui
+
+
 def test_owner_api_and_admin_ui_expose_safe_cancel_retry_and_live_refresh():
     api_source = (ROOT / "investment_engine" / "api" / "app.py").read_text(encoding="utf-8")
     ui_source = (ROOT / "examples" / "streamlit_v15_integrated.py").read_text(encoding="utf-8")

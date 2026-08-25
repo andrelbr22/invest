@@ -59,6 +59,54 @@ def test_calculated_exchange_holidays_include_requested_markets():
     assert nyse[date(2026, 11, 26)] == "Thanksgiving"
 
 
+def test_focus_accepts_numeric_years_and_exposes_cdi_reference_note():
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class Http:
+        def get(self, url, params=None):
+            if "bcdata.sgs.432" in url:
+                return Response([{"data": "24/08/2026", "valor": "12,50"}])
+            return Response({"value": [
+                {"Indicador": "Selic", "DataReferencia": 2026, "Mediana": 12.25, "Data": "2026-08-21", "baseCalculo": 0},
+                {"Indicador": "Selic", "DataReferencia": "2027", "Mediana": 10.50, "Data": "2026-08-21", "baseCalculo": 0},
+            ]})
+
+    result = MarketDashboardService(http=Http(), now=datetime(2026, 8, 24, tzinfo=timezone.utc)).selic()
+
+    assert result["current_year"]["value"] == pytest.approx(12.25)
+    assert result["next_year"]["value"] == pytest.approx(10.50)
+    assert "Focus pesquisa a Selic" in result["projection_note"]
+
+
+def test_bls_calendar_has_official_fallback_for_cpi_and_payroll():
+    class OfflineHttp:
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError("fonte temporariamente indisponível")
+
+    service = MarketDashboardService(http=OfflineHttp(), now=datetime(2026, 8, 25, tzinfo=timezone.utc))
+    events = service._bls_calendar()
+
+    assert next(item for item in events if item["category"] == "Payroll dos EUA")["date"] == "2026-09-04"
+    assert next(item for item in events if item["category"] == "CPI dos EUA")["date"] == "2026-09-11"
+
+
+def test_super_wednesday_keeps_copom_and_fed_separate_and_highlighted():
+    service = MarketDashboardService(now=datetime(2026, 8, 25, tzinfo=timezone.utc))
+    service._bls_calendar = lambda: []
+
+    events = service.calendar()
+    same_day = [item for item in events if item["date"] == "2026-09-16"]
+
+    assert {item["category"] for item in same_day} == {"Decisão do Copom", "Decisão do Fed"}
+    assert all("SUPER QUARTA" in item["observation"] for item in same_day)
+    assert all(item["highlight"] == "super_wednesday" for item in same_day)
+
+
 def test_dashboard_build_is_resilient_when_one_source_fails():
     service = MarketDashboardService(now=datetime(2026, 8, 24, tzinfo=timezone.utc))
     service.selic = lambda: {"current": 10.0}
@@ -86,6 +134,8 @@ def test_market_dashboard_is_a_first_class_compact_module():
     assert '"dashboard":"🌐 Painel de Mercado"' in ui
     assert "Curva de juros brasileira" in ui
     assert "Ouro, prata e petróleo" in ui
+    assert "CDI projetado" in ui
+    assert "SUPER QUARTA" in ui
     assert '@app.post("/market-dashboard/ensure")' in api
     assert "MarketDashboardService" in provider
 
