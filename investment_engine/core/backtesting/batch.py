@@ -16,6 +16,7 @@ from ..repositories.backtests import BacktestRepository
 from ..repositories.assets import AssetRepository
 from ..strategies.presets import STOCK_STRATEGIES
 from ...infrastructure.db.models import BacktestBatchDeliveryORM, BacktestBatchJobORM
+from ...core.instruments import is_supported_ticker
 
 
 OFFICIAL_OWNER = "official-catalog@system.local"
@@ -42,7 +43,7 @@ class BacktestBatchService:
         clean = []
         for ticker in tickers or self.default_tickers():
             value = str(ticker).strip().upper()
-            if value and value not in clean:
+            if value and is_supported_ticker(value, "stock") and value not in clean:
                 clean.append(value)
         if not clean:
             raise ValueError("batch_requires_tickers")

@@ -118,7 +118,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Publica Investment Engine V1.12.4 com cabeçalhos responsivos"
+    & $gitPath commit -m "Publica Investment Engine V1.13.0 com Painel de Mercado em segundo plano"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }

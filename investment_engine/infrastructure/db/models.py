@@ -283,6 +283,32 @@ class PortfolioPositionORM(Base):
     asset: Mapped[AssetORM] = relationship()
 
 
+class UserNewsCacheORM(Base):
+    """Daily, per-user cache for portfolio and bank recommendation news."""
+    __tablename__ = "user_news_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_email", "cache_kind", "cache_key", "market_date",
+            name="uq_user_news_cache_daily",
+        ),
+        Index("ix_user_news_cache_owner_date", "owner_email", "market_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    cache_kind: Mapped[str] = mapped_column(String(24), nullable=False)  # portfolio | recommendations | market_dashboard
+    cache_key: Mapped[str] = mapped_column(String(64), nullable=False)  # portfolio UUID | all/brazil/global
+    market_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
+    trigger: Mapped[str] = mapped_column(String(24), nullable=False, default="automatic")
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class BacktestRunORM(Base):
     __tablename__ = "backtest_runs"
     __table_args__ = (
@@ -298,7 +324,7 @@ class BacktestRunORM(Base):
     scope: Mapped[str] = mapped_column(String(24), nullable=False, default="personal")
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     market_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    engine_version: Mapped[str] = mapped_column(String(24), nullable=False, default="0.13.4")
+    engine_version: Mapped[str] = mapped_column(String(24), nullable=False, default="0.14.0")
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     strategy_name: Mapped[str] = mapped_column(String(160), nullable=False)
     requested_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from ..instruments import is_supported_ticker
 
 from ...infrastructure.db.models import (
     AssetORM,
@@ -70,7 +71,11 @@ class PortfolioRepository:
             .where(PortfolioPositionORM.portfolio_id == portfolio_id)
             .order_by(AssetORM.asset_type, AssetORM.ticker)
         )
-        return list(self.session.execute(stmt).all())
+        return [
+            (position, asset)
+            for position, asset in self.session.execute(stmt).all()
+            if is_supported_ticker(asset.ticker, asset.asset_type)
+        ]
 
     def get_position(self, portfolio_id, asset_id) -> PortfolioPositionORM | None:
         return self.session.scalar(

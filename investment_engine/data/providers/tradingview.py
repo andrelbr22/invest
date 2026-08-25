@@ -1,6 +1,7 @@
 from __future__ import annotations
 from ...infrastructure.http import HttpClient
 from ...core.valuation.technical import tradingview_signal
+from ...core.instruments import is_supported_ticker, provider_catalog_type
 
 # Keep fields named and map by key instead of positional indexes. This makes
 # the adapter much less fragile when new descriptive fields are added.
@@ -30,6 +31,7 @@ class TradingViewScannerProvider:
         }
         data = self.http.post(self.URL, json=payload).json()
         result = []
+        catalog_type = provider_catalog_type(asset_type, type_specs)
         for item in data.get("data", []):
             values = item.get("d")
             if not isinstance(values, list) or len(values) < len(TV_COLUMNS):
@@ -39,6 +41,8 @@ class TradingViewScannerProvider:
             if not raw_name:
                 continue
             ticker = str(raw_name).split(":")[-1]
+            if catalog_type is not None and not is_supported_ticker(ticker, catalog_type):
+                continue
             score = row.get("Recommend.All")
             result.append({
                 "ticker": ticker,

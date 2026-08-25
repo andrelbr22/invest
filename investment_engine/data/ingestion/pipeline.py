@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from ...core.repositories.assets import AssetRepository
 from ...core.screening.universe import company_size_from_market_cap
+from ...core.instruments import is_supported_ticker, ticker_exclusion_reason
 from ...infrastructure.db.models import IngestionRunORM
 from ..providers.fundamentus import FundamentusStockProvider, FundamentusFiiProvider
 from ..providers.tradingview import TradingViewScannerProvider
@@ -60,7 +61,11 @@ class MarketIngestionPipeline:
         ref = reference_date or now
         summary = PipelineSummary("fundamentus_stocks", rows_received=len(rows))
         rejected: list[dict] = []
+        filtered: list[dict] = []
         for raw in rows:
+            if not is_supported_ticker(raw.get("ticker"), "stock"):
+                filtered.append({"ticker": raw.get("ticker"), "reason": ticker_exclusion_reason(raw.get("ticker"), "stock")})
+                continue
             result = validate_stock(raw)
             summary.warnings += len(result.warnings)
             if not result.valid:
@@ -79,7 +84,7 @@ class MarketIngestionPipeline:
                 raw_payload=raw,
             )
             summary.rows_valid += 1
-        self._finish_run(run, summary, {"rejected": rejected[:100]})
+        self._finish_run(run, summary, {"rejected": rejected[:100], "filtered_out": filtered[:100], "filtered_count": len(filtered)})
         return summary
 
     def ingest_fiis(self, *, reference_date: datetime | None = None) -> PipelineSummary:
@@ -89,7 +94,11 @@ class MarketIngestionPipeline:
         ref = reference_date or now
         summary = PipelineSummary("fundamentus_fiis", rows_received=len(rows))
         rejected: list[dict] = []
+        filtered: list[dict] = []
         for raw in rows:
+            if not is_supported_ticker(raw.get("ticker"), "fii"):
+                filtered.append({"ticker": raw.get("ticker"), "reason": ticker_exclusion_reason(raw.get("ticker"), "fii")})
+                continue
             result = validate_fii(raw)
             summary.warnings += len(result.warnings)
             if not result.valid:
@@ -112,7 +121,7 @@ class MarketIngestionPipeline:
                 raw_payload=raw,
             )
             summary.rows_valid += 1
-        self._finish_run(run, summary, {"rejected": rejected[:100]})
+        self._finish_run(run, summary, {"rejected": rejected[:100], "filtered_out": filtered[:100], "filtered_count": len(filtered)})
         return summary
 
     def ingest_technicals(self, asset_type: str) -> PipelineSummary:
@@ -122,12 +131,17 @@ class MarketIngestionPipeline:
         now = self._now()
         summary = PipelineSummary(f"tradingview_{asset_type}", rows_received=len(rows))
         rejected: list[dict] = []
+        filtered: list[dict] = []
         for raw in rows:
+            if not is_supported_ticker(raw.get("ticker"), asset_type):
+                filtered.append({"ticker": raw.get("ticker"), "reason": ticker_exclusion_reason(raw.get("ticker"), asset_type)})
+                continue
             existing = self.repo.get_by_ticker(str(raw.get("ticker") or "").upper())
-            # TradingView classifies FIIs and ETFs broadly as funds.  The
-            # Fundamentus FII catalog is the authority here, so the technical
-            # import must never turn every fund into an FII.
-            if asset_type == "fii" and (existing is None or existing.asset_type != "fii"):
+            # Fundamentus is the authority for the stock and FII catalogs.
+            # TradingView supplies technicals only for those existing assets;
+            # this prevents broad provider scans from filling the database with
+            # operational variants or unrelated instruments.
+            if asset_type in {"stock", "fii"} and (existing is None or existing.asset_type != asset_type):
                 continue
             result = validate_technical(raw)
             summary.warnings += len(result.warnings)
@@ -158,7 +172,7 @@ class MarketIngestionPipeline:
                 raw_payload=raw,
             )
             summary.rows_valid += 1
-        self._finish_run(run, summary, {"rejected": rejected[:100]})
+        self._finish_run(run, summary, {"rejected": rejected[:100], "filtered_out": filtered[:100], "filtered_count": len(filtered)})
         return summary
 
     def ingest_other_b3(self) -> PipelineSummary:
@@ -167,6 +181,7 @@ class MarketIngestionPipeline:
         now = self._now()
         summary = PipelineSummary("tradingview_other_b3")
         rejected: list[dict] = []
+        filtered: list[dict] = []
         source_errors: list[dict] = []
         groups = (
             ("etf", "fund", ["etf"], "ETF"),
@@ -182,6 +197,9 @@ class MarketIngestionPipeline:
                 continue
             summary.rows_received += len(rows)
             for raw in rows:
+                if not is_supported_ticker(raw.get("ticker"), saved_type):
+                    filtered.append({"ticker": raw.get("ticker"), "asset_type": saved_type, "reason": ticker_exclusion_reason(raw.get("ticker"), saved_type)})
+                    continue
                 result = validate_technical(raw)
                 summary.warnings += len(result.warnings)
                 if not result.valid:
@@ -214,10 +232,14 @@ class MarketIngestionPipeline:
                     status="valid", quality_score=result.quality_score, data=raw, raw_payload=raw,
                 )
                 summary.rows_valid += 1
-        self._finish_run(run, summary, {"rejected": rejected[:100], "source_errors": source_errors})
+        self._finish_run(run, summary, {
+            "rejected": rejected[:100], "source_errors": source_errors,
+            "filtered_out": filtered[:100], "filtered_count": len(filtered),
+        })
         return summary
 
     def run_full(self) -> dict[str, PipelineSummary]:
+        self.repo.deactivate_unsupported_assets()
         return {
             "stocks": self.ingest_stocks(),
             "stock_technicals": self.ingest_technicals("stock"),

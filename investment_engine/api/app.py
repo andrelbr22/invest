@@ -3,10 +3,12 @@ from __future__ import annotations
 from decimal import Decimal
 from datetime import datetime, timezone
 from secrets import compare_digest
+import threading
 from time import monotonic
 from uuid import UUID
 from typing import Literal
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -23,13 +25,15 @@ from ..core.repositories.portfolio import PortfolioRepository
 from ..core.repositories.screening_filters import SavedScreeningFilterRepository
 from ..core.repositories.backtests import BacktestRepository, backtest_market_date, run_summary
 from ..core.repositories.access import AccessPolicyRepository, PERMISSION_FIELDS, full_owner_policy, policy_dict
+from ..core.repositories.news_cache import NewsCacheRepository, news_cache_dict, news_market_date
 from ..core.portfolio.service import build_portfolio_snapshot, classification_for, localize_classification
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
 from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
 from ..core.backtesting.batch import BacktestBatchService, OFFICIAL_OWNER
 from ..integrations.backtest_delivery import CALLBACK_API_VERSION, delivery_checksum
 from ..core.backtesting.study import build_strategy_configuration_catalog, build_strategy_study
-from ..infrastructure.db.models import AssetORM
+from ..infrastructure.db.models import AssetORM, UserNewsCacheORM
+from ..core.instruments import is_supported_ticker
 from ..core.models.strategy import StockFilterSet, FiiFilterSet
 from ..infrastructure.db.session import get_session_factory
 from ..core.services_v14 import calculate_asset_intelligence
@@ -37,11 +41,12 @@ from ..data.ingestion.prices import PriceIngestionService
 from ..data.ingestion.pipeline import MarketIngestionPipeline
 from ..data.providers.b3_indices import B3IndexProvider
 from ..data.providers.news import MarketNewsService
+from ..data.providers.market_dashboard import MarketDashboardService
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.12.4",
-    version="0.13.4",
+    title="Investment Engine V1.13.0",
+    version="0.14.0",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -51,6 +56,103 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts_l
 _INDEX_PORTFOLIO_CACHE: dict[str, tuple[float, dict]] = {}
 _INDEX_PORTFOLIO_TTL_SECONDS = 6 * 60 * 60
 _MARKET_NEWS = MarketNewsService()
+_NEWS_QUEUE_LOCK = threading.Lock()
+_MARKET_DASHBOARD = MarketDashboardService()
+_MARKET_DASHBOARD_OWNER = "market-dashboard@system.local"
+_MARKET_DASHBOARD_LOCK = threading.Lock()
+
+
+def _portfolio_news_assets(db: Session, portfolio_id) -> list[dict]:
+    assets = []
+    for position, asset in PortfolioRepository(db).positions(portfolio_id):
+        if (
+            asset.asset_type == "stock"
+            and is_supported_ticker(asset.ticker, asset.asset_type)
+            and float(position.quantity or 0) > 0
+        ):
+            assets.append({"ticker": asset.ticker, "name": asset.name})
+    assets.sort(key=lambda item: item["ticker"])
+    return assets
+
+
+def _run_daily_news_refresh(cache_id: str) -> None:
+    """Execute a queued refresh after the HTTP response has been returned."""
+    db = get_session_factory()()
+    try:
+        row = db.get(UserNewsCacheORM, UUID(cache_id))
+        if row is None:
+            return
+        cache_repo = NewsCacheRepository(db)
+        cache_repo.mark_running(row)
+        db.commit()
+
+        if row.cache_kind == "portfolio":
+            portfolio = PortfolioRepository(db).get_portfolio(UUID(row.cache_key), row.owner_email)
+            if portfolio is None:
+                raise ValueError("portfolio_not_found")
+            assets = _portfolio_news_assets(db, portfolio.id)
+            result = _MARKET_NEWS.portfolio_news(assets[:50], limit_per_asset=3)
+            result.update({
+                "portfolio_id": str(portfolio.id),
+                "portfolio_name": portfolio.name,
+                "total_stocks": len(assets),
+                "truncated": len(assets) > 50,
+            })
+        elif row.cache_kind == "recommendations":
+            category = row.cache_key if row.cache_key in {"all", "brazil", "global"} else "all"
+            assets = AssetRepository(db).list_assets("stock", limit=1200)
+            asset_names = {asset.ticker: asset.name or "" for asset in assets}
+            result = _MARKET_NEWS.recommendations(
+                category=category, limit=50, asset_names=asset_names,
+            )
+        else:
+            raise ValueError("unsupported_news_cache_kind")
+
+        row = db.get(UserNewsCacheORM, UUID(cache_id))
+        cache_repo.mark_completed(row, jsonable_encoder(result))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        try:
+            row = db.get(UserNewsCacheORM, UUID(cache_id))
+            if row is not None:
+                NewsCacheRepository(db).mark_failed(
+                    row, f"{type(exc).__name__}: {str(exc)[:500]}",
+                )
+                db.commit()
+        except Exception:
+            db.rollback()
+    finally:
+        db.close()
+
+
+def _run_market_dashboard_refresh(cache_id: str) -> None:
+    """Build the shared market snapshot without blocking a Streamlit session."""
+    db = get_session_factory()()
+    try:
+        row = db.get(UserNewsCacheORM, UUID(cache_id))
+        if row is None:
+            return
+        repo = NewsCacheRepository(db)
+        repo.mark_running(row)
+        db.commit()
+        result = _MARKET_DASHBOARD.build()
+        row = db.get(UserNewsCacheORM, UUID(cache_id))
+        repo.mark_completed(row, jsonable_encoder(result))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        try:
+            row = db.get(UserNewsCacheORM, UUID(cache_id))
+            if row is not None:
+                NewsCacheRepository(db).mark_failed(
+                    row, f"{type(exc).__name__}: {str(exc)[:500]}",
+                )
+                db.commit()
+        except Exception:
+            db.rollback()
+    finally:
+        db.close()
 
 
 @app.middleware("http")
@@ -59,7 +161,7 @@ async def security_headers(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    private_path = request.url.path.startswith(("/portfolios", "/backtests", "/access", "/insights", "/automation"))
+    private_path = request.url.path.startswith(("/portfolios", "/backtests", "/access", "/insights", "/automation", "/market-dashboard"))
     response.headers["Cache-Control"] = "no-store" if private_path else "no-cache"
     return response
 
@@ -432,7 +534,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.13.4", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.14.0", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -648,6 +750,10 @@ def sync_market(req: MarketSyncRequest, _access=Depends(require_permission("can_
     """Populate a new cloud database without requiring shell access."""
     pipeline = MarketIngestionPipeline(db)
     steps: dict[str, dict] = {}
+    deactivated = pipeline.repo.deactivate_unsupported_assets()
+    if deactivated:
+        db.commit()
+    steps["catalog_cleanup"] = {"status": "ok", "deactivated": len(deactivated)}
 
     def run_step(name, operation):
         try:
@@ -658,6 +764,7 @@ def sync_market(req: MarketSyncRequest, _access=Depends(require_permission("can_
                 "received": result.rows_received,
                 "saved": result.rows_valid,
                 "rejected": result.rows_rejected,
+                "filtered": max(0, result.rows_received - result.rows_valid - result.rows_rejected),
                 "warnings": result.warnings,
             }
         except Exception as exc:
@@ -1139,8 +1246,213 @@ def refresh_portfolio_prices(portfolio_id: UUID, access=Depends(require_permissi
 
 
 # -----------------------------
+# V1.13 Shared market dashboard
+# -----------------------------
+
+def _market_dashboard_payload(db: Session) -> dict:
+    repo = NewsCacheRepository(db)
+    current = repo.get(
+        owner_email=_MARKET_DASHBOARD_OWNER,
+        cache_kind="market_dashboard", cache_key="main",
+    )
+    displayed = current if current is not None and current.result_json else repo.latest_completed(
+        owner_email=_MARKET_DASHBOARD_OWNER,
+        cache_kind="market_dashboard", cache_key="main",
+    )
+    payload = news_cache_dict(displayed)
+    payload.update({
+        "refresh_status": current.status if current is not None else "not_requested",
+        "refresh_error": current.error_message if current is not None else None,
+        "refresh_market_date": current.market_date if current is not None else news_market_date(),
+        "automatic_once_per_day": True,
+    })
+    return payload
+
+
+@app.get("/market-dashboard")
+def market_dashboard(
+    _access=Depends(require_permission("can_view_market")),
+    db: Session = Depends(get_db),
+):
+    return _market_dashboard_payload(db)
+
+
+@app.post("/market-dashboard/ensure")
+def ensure_market_dashboard(
+    background_tasks: BackgroundTasks,
+    _access=Depends(require_permission("can_view_market")),
+    db: Session = Depends(get_db),
+):
+    with _MARKET_DASHBOARD_LOCK:
+        row, should_run = NewsCacheRepository(db).request_refresh(
+            owner_email=_MARKET_DASHBOARD_OWNER,
+            cache_kind="market_dashboard", cache_key="main",
+            trigger="automatic", force=False,
+        )
+        db.commit()
+    if should_run:
+        background_tasks.add_task(_run_market_dashboard_refresh, str(row.id))
+    payload = _market_dashboard_payload(db)
+    payload["scheduled"] = should_run
+    return payload
+
+
+@app.post("/market-dashboard/refresh")
+def refresh_market_dashboard(
+    background_tasks: BackgroundTasks,
+    _access=Depends(require_permission("can_view_market")),
+    db: Session = Depends(get_db),
+):
+    with _MARKET_DASHBOARD_LOCK:
+        row, should_run = NewsCacheRepository(db).request_refresh(
+            owner_email=_MARKET_DASHBOARD_OWNER,
+            cache_kind="market_dashboard", cache_key="main",
+            trigger="manual", force=True,
+        )
+        db.commit()
+    if should_run:
+        background_tasks.add_task(_run_market_dashboard_refresh, str(row.id))
+    payload = _market_dashboard_payload(db)
+    payload["scheduled"] = should_run
+    return payload
+
+
+# -----------------------------
 # V1.11 Restricted research/news
 # -----------------------------
+
+@app.post("/insights/news/refresh-daily")
+def refresh_daily_user_news(
+    background_tasks: BackgroundTasks,
+    access=Depends(require_permission("can_view_news_insights")),
+    db: Session = Depends(get_db),
+):
+    """Queue each user's news once on their first access of the B3 day."""
+    scheduled: list[tuple[str, str]] = []
+    existing: list[dict] = []
+    with _NEWS_QUEUE_LOCK:
+        cache_repo = NewsCacheRepository(db)
+        portfolio_repo = PortfolioRepository(db)
+        for portfolio in portfolio_repo.list_portfolios(access["email"]):
+            if not _portfolio_news_assets(db, portfolio.id):
+                continue
+            row, should_run = cache_repo.request_refresh(
+                owner_email=access["email"], cache_kind="portfolio",
+                cache_key=str(portfolio.id), trigger="automatic", force=False,
+            )
+            existing.append(news_cache_dict(row))
+            if should_run:
+                scheduled.append((str(row.id), f"portfolio:{portfolio.id}"))
+
+        recommendation_row, should_run = cache_repo.request_refresh(
+            owner_email=access["email"], cache_kind="recommendations",
+            cache_key="all", trigger="automatic", force=False,
+        )
+        existing.append(news_cache_dict(recommendation_row))
+        if should_run:
+            scheduled.append((str(recommendation_row.id), "recommendations:all"))
+        db.commit()
+
+    for cache_id, _label in scheduled:
+        background_tasks.add_task(_run_daily_news_refresh, cache_id)
+    return {
+        "market_date": news_market_date(),
+        "scheduled": [label for _cache_id, label in scheduled],
+        "scheduled_count": len(scheduled),
+        "automatic_once_per_day": True,
+        "entries": existing,
+    }
+
+
+@app.get("/insights/news/cache/portfolios/{portfolio_id}")
+def cached_portfolio_news(
+    portfolio_id: UUID,
+    access=Depends(require_permission("can_view_news_insights")),
+    db: Session = Depends(get_db),
+):
+    portfolio = PortfolioRepository(db).get_portfolio(portfolio_id, access["email"])
+    if portfolio is None:
+        raise HTTPException(404, "portfolio_not_found")
+    row = NewsCacheRepository(db).get(
+        owner_email=access["email"], cache_kind="portfolio", cache_key=str(portfolio_id),
+    )
+    result = news_cache_dict(row)
+    result.update({"portfolio_id": str(portfolio.id), "portfolio_name": portfolio.name})
+    return result
+
+
+@app.post("/insights/news/cache/portfolios/{portfolio_id}/refresh")
+def refresh_cached_portfolio_news(
+    portfolio_id: UUID,
+    background_tasks: BackgroundTasks,
+    access=Depends(require_permission("can_view_news_insights")),
+    db: Session = Depends(get_db),
+):
+    portfolio = PortfolioRepository(db).get_portfolio(portfolio_id, access["email"])
+    if portfolio is None:
+        raise HTTPException(404, "portfolio_not_found")
+    if not _portfolio_news_assets(db, portfolio.id):
+        raise HTTPException(400, "portfolio_has_no_supported_stocks")
+    with _NEWS_QUEUE_LOCK:
+        row, should_run = NewsCacheRepository(db).request_refresh(
+            owner_email=access["email"], cache_kind="portfolio",
+            cache_key=str(portfolio.id), trigger="manual", force=True,
+        )
+        db.commit()
+    if should_run:
+        background_tasks.add_task(_run_daily_news_refresh, str(row.id))
+    result = news_cache_dict(row)
+    result["scheduled"] = should_run
+    return result
+
+
+@app.get("/insights/news/cache/recommendations")
+def cached_bank_recommendation_news(
+    category: str = Query(default="all", pattern="^(all|brazil|global)$"),
+    access=Depends(require_permission("can_view_news_insights")),
+    db: Session = Depends(get_db),
+):
+    cache_repo = NewsCacheRepository(db)
+    row = cache_repo.get(
+        owner_email=access["email"], cache_kind="recommendations", cache_key=category,
+    )
+    derived_from = None
+    if row is None and category != "all":
+        row = cache_repo.get(
+            owner_email=access["email"], cache_kind="recommendations", cache_key="all",
+        )
+        derived_from = "all" if row is not None else None
+    result = news_cache_dict(row)
+    if row is not None and category != "all" and row.cache_key == "all" and row.result_json:
+        data = dict(row.result_json)
+        data["category"] = category
+        data["items"] = [
+            item for item in (row.result_json.get("items") or [])
+            if item.get("bank_group") == category
+        ]
+        result["data"] = data
+    result.update({"category": category, "derived_from": derived_from})
+    return result
+
+
+@app.post("/insights/news/cache/recommendations/refresh")
+def refresh_cached_bank_recommendation_news(
+    background_tasks: BackgroundTasks,
+    category: str = Query(default="all", pattern="^(all|brazil|global)$"),
+    access=Depends(require_permission("can_view_news_insights")),
+    db: Session = Depends(get_db),
+):
+    with _NEWS_QUEUE_LOCK:
+        row, should_run = NewsCacheRepository(db).request_refresh(
+            owner_email=access["email"], cache_kind="recommendations",
+            cache_key=category, trigger="manual", force=True,
+        )
+        db.commit()
+    if should_run:
+        background_tasks.add_task(_run_daily_news_refresh, str(row.id))
+    result = news_cache_dict(row)
+    result["scheduled"] = should_run
+    return result
 
 @app.get("/insights/news/assets/{ticker}")
 def portfolio_asset_news(
@@ -1174,11 +1486,7 @@ def portfolio_all_asset_news(
     portfolio = portfolio_repo.get_portfolio(portfolio_id, access["email"])
     if portfolio is None:
         raise HTTPException(404, "portfolio_not_found")
-    assets = []
-    for position, asset in portfolio_repo.positions(portfolio.id):
-        if asset.asset_type == "stock" and float(position.quantity or 0) > 0:
-            assets.append({"ticker": asset.ticker, "name": asset.name})
-    assets.sort(key=lambda item: item["ticker"])
+    assets = _portfolio_news_assets(db, portfolio.id)
     result = _MARKET_NEWS.portfolio_news(assets[:limit_assets], limit_per_asset=3)
     result.update({
         "portfolio_id": str(portfolio.id),

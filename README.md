@@ -1,4 +1,33 @@
-# Formação do Investidor • Investment Engine V1.12.4
+# Formação do Investidor • Investment Engine V1.13.0
+
+## Novidades da V1.13.0
+
+- novo **Painel de Mercado** em um menu próprio, compacto e responsivo;
+- notícias das ações e recomendações de bancos organizadas na aba **Notícias** da carteira;
+- estudo de consistência das estratégias movido para a aba **Estudo dos Backtests**, sem um menu separado;
+- Selic atual e projeções Focus para o fim do ano corrente e do ano seguinte;
+- curva brasileira de juros ANBIMA com gráfico, intervalo de vencimentos, pesquisa por anos/dias úteis e tabela;
+- CDI, IMA-B, IRF-M, IBOV, IFIX e principais bolsas mundiais com variações de 1 dia, 1 semana, 1 mês e 1 ano;
+- VIX, DXY, juros americanos de 2 e 10 anos e spread 10a-2a;
+- Bitcoin e Ethereum em dólar e real, além de USD/BRL e EUR/USD;
+- IPCA, INPC, IGP-M e CPI americano acumulados em 12 meses;
+- ouro, prata, petróleo Brent e petróleo WTI;
+- próximas reuniões do Copom, divulgações de CPI e Payroll e feriados da B3/NYSE;
+- atualização diária em segundo plano, com último retrato preservado e atualização manual sem travar a navegação;
+- cada dado identifica sua fonte; proxies de IMA-B, IRF-M ou MSCI Europe nunca são apresentados como o índice oficial;
+- falhas isoladas de fontes externas não derrubam o restante do painel;
+- a implementação reaproveita o cache existente e não exige nova migração de banco.
+
+## Novidades da V1.12.5
+
+- ações, FIIs, ETFs e BDRs fracionários, identificados pelo sufixo `F`, deixam de ser gravados e exibidos;
+- livros especiais de grandes lotes, variantes de balcão, direitos/recibos de subscrição e vencimentos duplicados de futuros também ficam fora do catálogo do usuário;
+- ações, units, FIIs, ETFs e BDRs regulares permanecem disponíveis; futuros usam uma série contínua por ativo-base;
+- registros antigos incompatíveis são desativados sem apagar histórico ou posições de carteira;
+- notícias de todas as carteiras e recomendações de bancos são carregadas em segundo plano no primeiro acesso do usuário a cada dia;
+- o conteúdo diário fica salvo por usuário e abre sem aguardar as fontes externas;
+- um botão permite solicitar manualmente nova atualização no mesmo dia;
+- a migração do cache de notícias é aplicada automaticamente durante a inicialização.
 
 ## Novidades da V1.12.4
 

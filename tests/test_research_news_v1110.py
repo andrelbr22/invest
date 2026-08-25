@@ -99,9 +99,15 @@ def test_research_features_are_owner_permissions_and_ui_is_wired():
     assert policy["can_view_news_insights"] is True
     root = Path(__file__).resolve().parents[1]
     source = (root / "examples" / "streamlit_v15_integrated.py").read_text(encoding="utf-8")
-    assert '"research":"📚 Estudos e notícias"' in source
+    assert '"research":' not in source
+    assert 'portfolio_tab_labels.append("📰 Notícias")' in source
+    assert '_render_market_news(selected_portfolio_id=pid,selected_portfolio_detail=snap)' in source
+    assert 'backtest_tab_labels.append("🏆 Estudo dos Backtests")' in source
+    assert "with study_tab:" in source
     assert 'runs=sorted(runs,key=lambda item:_datetime_sort_value(item.get("created_at")),reverse=True)' in source
     assert 'sort_values("_analysis_order",ascending=False' in source
     assert "Ver estudo e ranking dos backtests" in source
     assert "Ver notícias da carteira e recomendações de bancos" in source
-    assert 'api_get(f"/insights/news/portfolios/{portfolio_id}"' in source
+    assert 'api_get(f"/insights/news/cache/portfolios/{portfolio_id}"' in source
+    assert 'api_post("/insights/news/refresh-daily"' in source
+    assert '@st.fragment(run_every="10s")' in source

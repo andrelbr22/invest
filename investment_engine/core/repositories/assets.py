@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import select, and_, func, desc
+from sqlalchemy import select, and_, or_, func, desc
 from sqlalchemy.orm import Session, aliased
 from ...infrastructure.db.models import AssetORM, FundamentalSnapshotORM, TechnicalSnapshotORM, PriceBarORM, ValuationSnapshotORM, ScoreSnapshotORM
+from ...core.instruments import B3_CATALOG_TYPES, is_supported_ticker, require_supported_ticker, ticker_exclusion_reason
 
 
 def _decimal_or_none(value):
@@ -18,16 +19,19 @@ class AssetRepository:
         self.session = session
 
     def get_by_ticker(self, ticker: str) -> AssetORM | None:
-        return self.session.scalar(select(AssetORM).where(AssetORM.ticker == ticker.upper()))
+        asset = self.session.scalar(select(AssetORM).where(AssetORM.ticker == ticker.upper()))
+        if asset is not None and not is_supported_ticker(asset.ticker, asset.asset_type):
+            return None
+        return asset
 
     def list_assets(self, asset_type: str | None = None, limit: int = 100, offset: int = 0) -> list[AssetORM]:
-        stmt = select(AssetORM).order_by(AssetORM.ticker).limit(limit).offset(offset)
+        stmt = select(AssetORM).where(AssetORM.is_active.is_(True), self._supported_catalog_clause()).order_by(AssetORM.ticker).limit(limit).offset(offset)
         if asset_type:
             stmt = stmt.where(AssetORM.asset_type == asset_type)
         return list(self.session.scalars(stmt))
 
     def upsert_asset(self, *, ticker: str, asset_type: str, **fields) -> AssetORM:
-        ticker = ticker.upper().strip()
+        ticker = require_supported_ticker(ticker, asset_type)
         asset = self.get_by_ticker(ticker)
         if asset is None:
             asset = AssetORM(ticker=ticker, asset_type=asset_type)
@@ -40,6 +44,38 @@ class AssetRepository:
         asset.updated_at = datetime.now(timezone.utc)
         self.session.flush()
         return asset
+
+    @staticmethod
+    def _ticker_patterns(root_lengths: tuple[int, ...], suffixes: tuple[str, ...]):
+        return [AssetORM.ticker.like(("_" * root_length) + suffix) for root_length in root_lengths for suffix in suffixes]
+
+    @classmethod
+    def _supported_catalog_clause(cls):
+        roots = (3, 4, 5)
+        stock = and_(AssetORM.asset_type == "stock", or_(*cls._ticker_patterns(roots, ("3", "4", "5", "6", "7", "8", "11"))))
+        fii = and_(AssetORM.asset_type == "fii", or_(*cls._ticker_patterns(roots, ("11",))))
+        etf = and_(AssetORM.asset_type == "etf", or_(*cls._ticker_patterns(roots, ("11",))))
+        bdr = and_(AssetORM.asset_type == "bdr", or_(*cls._ticker_patterns(roots, tuple(f"3{i}" for i in range(1, 10)))))
+        future = and_(AssetORM.asset_type == "future", AssetORM.ticker.like("%1!"))
+        other = AssetORM.asset_type.notin_(B3_CATALOG_TYPES)
+        return or_(stock, fii, etf, bdr, future, other)
+
+    def deactivate_unsupported_assets(self) -> list[dict]:
+        """Stop legacy noise from receiving snapshots without deleting history."""
+        rows = list(self.session.scalars(select(AssetORM).where(
+            AssetORM.asset_type.in_(B3_CATALOG_TYPES), AssetORM.is_active.is_(True),
+        )))
+        deactivated = []
+        for asset in rows:
+            reason = ticker_exclusion_reason(asset.ticker, asset.asset_type)
+            if reason is None:
+                continue
+            asset.is_active = False
+            asset.metadata_json = {**(asset.metadata_json or {}), "catalog_exclusion_reason": reason}
+            deactivated.append({"ticker": asset.ticker, "asset_type": asset.asset_type, "reason": reason})
+        if deactivated:
+            self.session.flush()
+        return deactivated
 
     def upsert_fundamentals(
         self,
@@ -287,7 +323,7 @@ class AssetRepository:
             .join(f, and_(f.asset_id == AssetORM.id, fq.c.rn == 1))
             .outerjoin(t, and_(t.asset_id == AssetORM.id, tq.c.rn == 1))
             .outerjoin(sc, and_(sc.asset_id == AssetORM.id, sq.c.rn == 1))
-            .where(AssetORM.asset_type == "stock", AssetORM.is_active.is_(True))
+            .where(AssetORM.asset_type == "stock", AssetORM.is_active.is_(True), self._supported_catalog_clause())
         )
 
         stmt = self._apply_min(stmt, f.roe_pct, filters.roe_min)
@@ -327,7 +363,7 @@ class AssetRepository:
             select(AssetORM, f, sc)
             .join(f, and_(f.asset_id == AssetORM.id, fq.c.rn == 1))
             .outerjoin(sc, and_(sc.asset_id == AssetORM.id, sq.c.rn == 1))
-            .where(AssetORM.asset_type == "fii", AssetORM.is_active.is_(True))
+            .where(AssetORM.asset_type == "fii", AssetORM.is_active.is_(True), self._supported_catalog_clause())
         )
         stmt = self._apply_max(stmt, f.pbv, filters.pbv_max)
         stmt = self._apply_min(stmt, f.dividend_yield_pct, filters.dividend_yield_min)
@@ -355,7 +391,7 @@ class AssetRepository:
             .outerjoin(f, and_(f.asset_id == AssetORM.id, fq.c.rn == 1))
             .outerjoin(t, and_(t.asset_id == AssetORM.id, tq.c.rn == 1))
             .outerjoin(sc, and_(sc.asset_id == AssetORM.id, sq.c.rn == 1))
-            .where(AssetORM.asset_type.in_(accepted_types), AssetORM.is_active.is_(True))
+            .where(AssetORM.asset_type.in_(accepted_types), AssetORM.is_active.is_(True), self._supported_catalog_clause())
             .order_by(AssetORM.ticker)
             .limit(limit)
         )

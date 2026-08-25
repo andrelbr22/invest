@@ -734,6 +734,181 @@ def render_custom_filter_manager(asset_type,payload):
                     else:st.success("Filtro excluído."); st.rerun()
 
 
+def _panel_number(value,unit=None,currency=None):
+    if value is None:return "N/D"
+    try:value=float(value)
+    except (TypeError,ValueError):return "N/D"
+    if currency=="BRL" or unit=="R$":return f"R$ {value:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+    if currency=="USD" or unit=="USD":return f"US$ {value:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+    if unit=="%":return f"{value:.2f}%".replace(".",",")
+    return f"{value:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+
+
+def _panel_delta(value):
+    if value is None:return None
+    try:return f"{float(value):+.2f}%".replace(".",",")
+    except (TypeError,ValueError):return None
+
+
+def _variation_frame(items,include_current=True):
+    rows=[]
+    for item in items or []:
+        variations=item.get("variations") or {}
+        row={"Indicador":item.get("label") or item.get("ticker") or "Indicador"}
+        if include_current:
+            row["Atual"]=_panel_number(item.get("current"),item.get("unit"),item.get("currency"))
+        row.update({"1 dia":variations.get("1d"),"1 semana":variations.get("1w"),"1 mês":variations.get("1m"),"1 ano":variations.get("1y")})
+        if item.get("proxy"):
+            row["Observação"]=f"Proxy: {item.get('proxy_label') or item.get('ticker')}"
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _show_variation_table(items,include_current=True,key=None):
+    frame=_variation_frame(items,include_current=include_current)
+    if frame.empty:
+        st.info("Dados temporariamente indisponíveis para este grupo.")
+        return
+    configs={column:st.column_config.NumberColumn(column,format="%.2f%%") for column in ("1 dia","1 semana","1 mês","1 ano")}
+    st.dataframe(frame,use_container_width=True,hide_index=True,column_config=configs,key=key)
+
+
+def _render_market_dashboard_data(payload):
+    data=(payload or {}).get("data") or {}
+    status=(payload or {}).get("refresh_status") or (payload or {}).get("status")
+    has_data=bool(data)
+    top_left,top_right=st.columns([4,1])
+    with top_left:
+        generated=data.get("generated_at")
+        if generated:
+            try:
+                stamp=pd.to_datetime(generated,utc=True).tz_convert("America/Sao_Paulo").strftime("%d/%m/%Y %H:%M")
+            except Exception:stamp=str(generated)
+            st.caption(f"Última consolidação: {stamp}. Os horários e fechamentos podem variar conforme cada mercado.")
+        elif status in {"queued","running"}:
+            st.info("O primeiro retrato do dia está sendo preparado em segundo plano. Esta página se atualizará automaticamente.")
+        else:
+            st.info("O retrato de mercado ainda não foi gerado hoje.")
+    with top_right:
+        if st.button("🔄 Atualizar agora",use_container_width=True,key="refresh_market_dashboard"):
+            result,error=api_post("/market-dashboard/refresh",timeout=15)
+            if error:st.error(f"Não foi possível iniciar a atualização: {error}")
+            else:
+                st.toast("Atualização iniciada em segundo plano.")
+                st.rerun(scope="fragment")
+    if status in {"queued","running"} and has_data:
+        st.info("Atualização em andamento. Enquanto isso, o último retrato válido continua disponível.")
+    if not has_data:return
+
+    selic=data.get("selic") or {}
+    quoted=data.get("quoted") or {}
+    brazil=quoted.get("brazil") or []
+    ibov=next((item for item in brazil if item.get("label")=="IBOV"),{})
+    fx=data.get("fx") or []
+    usdbrl=next((item for item in fx if item.get("label")=="Dólar / Real"),{})
+    c1,c2,c3,c4,c5=st.columns(5)
+    c1.metric("Selic atual",_panel_number(selic.get("current"),"%"))
+    c2.metric(f"Selic • fim de {date.today().year}",_panel_number((selic.get("current_year") or {}).get("value"),"%"))
+    c3.metric(f"Selic • fim de {date.today().year+1}",_panel_number((selic.get("next_year") or {}).get("value"),"%"))
+    c4.metric("IBOV",_panel_number(ibov.get("current")),_panel_delta((ibov.get("variations") or {}).get("1d")))
+    c5.metric("Dólar / Real",_panel_number(usdbrl.get("current"),"R$","BRL"),_panel_delta((usdbrl.get("variations") or {}).get("1d")))
+
+    st.subheader("🇧🇷 Brasil")
+    fixed_income=data.get("fixed_income") or []
+    left,right=st.columns([1.05,1.45])
+    with left:
+        st.markdown("**Juros e renda fixa**")
+        _show_variation_table(fixed_income,key="market_dashboard_fixed_income")
+        st.caption("IMA-B e IRF-M usam proxies negociados somente quando o histórico público do índice não permite calcular todas as janelas. O proxy é sempre identificado.")
+    with right:
+        st.markdown("**Bolsa brasileira**")
+        _show_variation_table(brazil,key="market_dashboard_brazil")
+
+    curve=data.get("curve") or {}
+    points=curve.get("points") or []
+    with st.expander("📈 Curva de juros brasileira — gráfico, intervalo e tabela",expanded=True):
+        if not points:
+            st.info("A curva oficial da ANBIMA não respondeu nesta atualização.")
+        else:
+            years=[float(point.get("years") or 0) for point in points]
+            minimum,maximum=min(years),max(years)
+            selected=st.slider("Intervalo de vencimentos (anos)",min_value=float(minimum),max_value=float(maximum),value=(float(minimum),float(maximum)),step=0.25,key="market_curve_year_range") if maximum>minimum else (minimum,maximum)
+            filtered=[point for point in points if selected[0]<=float(point.get("years") or 0)<=selected[1]]
+            chart=pd.DataFrame(filtered).rename(columns={"years":"Anos","nominal_rate":"Prefixada","real_rate":"Juro real (IPCA)","implied_inflation":"Inflação implícita"})
+            available=[column for column in ("Prefixada","Juro real (IPCA)","Inflação implícita") if column in chart and chart[column].notna().any()]
+            if available:st.line_chart(chart.set_index("Anos")[available],use_container_width=True)
+            search=st.text_input("Localizar prazo",placeholder="Ex.: 2 anos ou 504 dias úteis",key="market_curve_search")
+            table=chart.rename(columns={"business_days":"Dias úteis"})
+            if search:
+                digits=re.findall(r"\d+(?:[.,]\d+)?",search)
+                if digits:
+                    number=float(digits[0].replace(",","."))
+                    target="Dias úteis" if "dia" in search.lower() else "Anos"
+                    table=table.iloc[(table[target]-number).abs().argsort()[:8]]
+            columns=[column for column in ("Dias úteis","Anos","Prefixada","Juro real (IPCA)","Inflação implícita") if column in table]
+            st.dataframe(table[columns],use_container_width=True,hide_index=True,column_config={column:st.column_config.NumberColumn(column,format="%.2f%%") for column in columns if column not in {"Dias úteis","Anos"}})
+            st.caption(f"Fonte: {curve.get('source','ANBIMA')} • referência: {curve.get('as_of') or 'data mais recente disponível'}")
+
+    st.subheader("🌍 Mercados internacionais")
+    global_tab,risk_tab,commodities_tab=st.tabs(["🌐 Bolsas","Volatilidade, dólar e juros","Ouro, prata e petróleo"])
+    with global_tab:_show_variation_table(quoted.get("global") or [],key="market_dashboard_global")
+    with risk_tab:
+        _show_variation_table(quoted.get("risk") or [],key="market_dashboard_risk")
+        rates=data.get("us_rates") or {}
+        a,b,c=st.columns(3)
+        a.metric("Treasury EUA • 2 anos",_panel_number(rates.get("two_year"),"%"))
+        b.metric("Treasury EUA • 10 anos",_panel_number(rates.get("ten_year"),"%"))
+        c.metric("Spread 10a - 2a",_panel_number(rates.get("spread_10y_2y"),"%"))
+    with commodities_tab:_show_variation_table(quoted.get("commodities") or [],key="market_dashboard_commodities")
+
+    st.subheader("₿ Criptoativos, câmbio e inflação")
+    crypto_tab,fx_tab,inflation_tab=st.tabs(["Criptoativos","Câmbio","Inflação em 12 meses"])
+    with crypto_tab:
+        crypto=data.get("crypto") or []
+        columns=st.columns(max(1,len(crypto)))
+        for column,item in zip(columns,crypto):
+            variations=item.get("variations") or {}
+            column.metric(f"{item.get('label')} • USD",_panel_number(item.get("value_usd"),"USD","USD"),_panel_delta(variations.get("1d")))
+            column.metric(f"{item.get('label')} • BRL",_panel_number(item.get("value_brl"),"R$","BRL"))
+        _show_variation_table([{"label":item.get("label"),"current":item.get("value_usd"),"unit":"USD","currency":"USD","variations":item.get("variations") or {}} for item in crypto],key="market_dashboard_crypto")
+    with fx_tab:_show_variation_table(fx,key="market_dashboard_fx")
+    with inflation_tab:
+        inflation=data.get("inflation") or []
+        columns=st.columns(max(1,len(inflation)))
+        for column,item in zip(columns,inflation):column.metric(item.get("label"),_panel_number(item.get("value_12m"),"%"),help=f"Fonte: {item.get('source','N/D')} • referência: {item.get('as_of') or 'N/D'}")
+
+    st.subheader("🗓️ Próximas datas importantes")
+    calendar=data.get("calendar") or []
+    if calendar:
+        calendar_frame=pd.DataFrame(calendar).rename(columns={"category":"Categoria","event":"Evento","date":"Data","time":"Horário de Brasília","region":"Região","source":"Fonte"})
+        calendar_frame["Data"]=pd.to_datetime(calendar_frame["Data"],errors="coerce").dt.strftime("%d/%m/%Y")
+        st.dataframe(calendar_frame[[column for column in ("Data","Categoria","Evento","Horário de Brasília","Região","Fonte") if column in calendar_frame]],use_container_width=True,hide_index=True)
+    else:st.info("Os calendários oficiais não responderam nesta atualização.")
+
+    warnings=data.get("warnings") or []
+    with st.expander("ℹ️ Metodologia, fontes e indisponibilidades",expanded=False):
+        st.write("As variações de mercado usam fechamentos de aproximadamente 1, 5, 21 e 252 pregões. CDI é acumulado por capitalização das taxas diárias. Inflação brasileira é acumulada em 12 divulgações mensais; o CPI compara o índice com o mesmo mês do ano anterior.")
+        st.write("Fontes principais: Banco Central do Brasil, ANBIMA, IBGE/FGV via SGS, BLS, FRED, B3, NYSE e cotações Yahoo Finance.")
+        if warnings:
+            st.warning("Algumas fontes não responderam. Os demais dados foram preservados.")
+            for warning in warnings:st.caption(f"• {warning}")
+
+
+@st.fragment(run_every=20)
+def _market_dashboard_fragment():
+    payload,error=api_get("/market-dashboard")
+    if error:
+        st.error(f"Não foi possível consultar o retrato de mercado: {error}")
+        return
+    _render_market_dashboard_data(payload or {})
+
+
+def render_market_dashboard():
+    st.title("🌐 Painel de Mercado")
+    st.caption("Brasil e exterior em um único retrato: juros, bolsas, moedas, inflação, criptoativos, commodities e agenda econômica.")
+    _market_dashboard_fragment()
+
+
 def render_market():
     st.title("📊 Mercado e Análise Individual")
     st.caption("Escolha primeiro onde procurar e depois aplique a análise. Assim, cada filtro trabalha somente com os ativos do universo selecionado.")
@@ -1498,7 +1673,9 @@ def render_portfolio():
                 st.success(f"Cotações atualizadas: {ok} ativo(s).")
                 st.rerun()
 
-    tabs=st.tabs(["Posição atual","Alvos","Em análise","Composição geral","Setores / segmentos","Rebalanceamento"])
+    portfolio_tab_labels=["Posição atual","Alvos","Em análise","Composição geral","Setores / segmentos","Rebalanceamento"]
+    if can("can_view_news_insights"):portfolio_tab_labels.append("📰 Notícias")
+    tabs=st.tabs(portfolio_tab_labels)
     pdf=pd.DataFrame(positions)
     display_cols={
         "ticker":"Ticker","name":"Nome","asset_class_label":"Classe","classification":"Setor/segmento","quantity":"Quantidade",
@@ -1551,6 +1728,9 @@ def render_portfolio():
             rb=rb[cols].rename(columns={"ticker":"Ticker","asset_class_label":"Classe","stage_label":"Situação","current_price":"Preço atual","market_value":"Valor atual","current_weight_pct":"% atual","effective_target_weight_pct":"% alvo efetivo","target_value":"Valor alvo","rebalance_value":"Comprar (+) / reduzir (-) R$","rebalance_quantity":"Qtd. estimada"})
             st.dataframe(rb,hide_index=True,use_container_width=True)
             st.caption("A quantidade de rebalanceamento é uma estimativa baseada no preço atual e não considera lote padrão, impostos ou custos de execução.")
+    if can("can_view_news_insights"):
+        with tabs[6]:
+            _render_market_news(selected_portfolio_id=pid,selected_portfolio_detail=snap)
 
 
 def _backtest_configuration_rows(result):
@@ -2010,7 +2190,11 @@ def render_backtests():
             })
         st.dataframe(pd.DataFrame(top_table),hide_index=True,use_container_width=True)
 
-    run_tab,basket_tab,compare_tab,history_tab=st.tabs(["Executar estratégia","Testar cesta","Comparar estratégias","Histórico salvo"])
+    backtest_tab_labels=["Executar estratégia","Testar cesta","Comparar estratégias","Histórico salvo"]
+    if can("can_view_backtest_studies"):backtest_tab_labels.append("🏆 Estudo dos Backtests")
+    backtest_tabs=st.tabs(backtest_tab_labels)
+    run_tab,basket_tab,compare_tab,history_tab=backtest_tabs[:4]
+    study_tab=backtest_tabs[4] if can("can_view_backtest_studies") else None
     with run_tab:
         sid=st.selectbox("Estratégia",list(by_id),format_func=lambda x:by_id[x]["name"],key="bt_strategy")
         definition=by_id[sid]
@@ -2196,6 +2380,10 @@ def render_backtests():
                         detail["strategy"]={"name":detail.get("strategy_name"),"rules":"Execução histórica salva; consulte os parâmetros abaixo."}
                     detail.setdefault("assumptions",{"fee_pct":detail.get("fee_pct"),"slippage_pct":detail.get("slippage_pct"),"risk_free_rate_pct":detail.get("risk_free_rate_pct")})
                     _render_backtest_result(detail)
+
+    if study_tab is not None:
+        with study_tab:
+            _render_backtest_study()
 
 
 _BACKTEST_CONFIG_LABELS={
@@ -2399,87 +2587,109 @@ def _render_news_items(items,empty_message,key_prefix):
                 st.link_button(f"Abrir na fonte · {context}",item["url"])
 
 
-def _render_market_news():
-    st.subheader("📰 Notícias da carteira")
-    st.caption("Consulte, de uma só vez, três notícias recentes para cada ação da carteira, priorizadas por relevância, impacto e atualidade.")
-    portfolios,error=api_get("/portfolios")
+def _news_cache_feedback(cache,subject):
+    status=(cache or {}).get("status")
+    if status in {"queued","running"}:
+        st.info(f"Atualizando {subject} em segundo plano. Você pode continuar usando todas as outras funções.")
+    elif status=="failed":
+        st.warning(f"A atualização de {subject} não foi concluída. O conteúdo anterior foi mantido; use o botão abaixo para tentar novamente.")
+    elif status=="not_requested":
+        st.info(f"A primeira atualização de {subject} será preparada automaticamente hoje.")
+    finished=(cache or {}).get("finished_at")
+    if finished:st.caption(f"Última atualização concluída: {br_datetime(finished)}")
+
+
+@st.fragment(run_every="10s")
+def _render_cached_portfolio_news(portfolio_id):
+    cache,error=api_get(f"/insights/news/cache/portfolios/{portfolio_id}")
     if error:
-        st.error(f"Não foi possível consultar sua carteira: {error}"); return
-    portfolios=portfolios or []
-    if not portfolios:
-        st.info("Cadastre uma carteira e ao menos uma ação para habilitar esta consulta."); return
-    portfolio_by_id={item["id"]:item for item in portfolios}
-    portfolio_id=st.selectbox(
-        "Carteira",list(portfolio_by_id),
-        format_func=lambda value:portfolio_by_id[value].get("name") or value,
-        key="news_portfolio_id",
+        st.error(f"Não foi possível consultar as notícias salvas: {error}"); return
+    _news_cache_feedback(cache,"as notícias da carteira")
+    if st.button("Atualizar novamente hoje",use_container_width=True,key=f"refresh_portfolio_news_{portfolio_id}"):
+        queued,queue_error=api_post(f"/insights/news/cache/portfolios/{portfolio_id}/refresh",timeout=15)
+        if queue_error:st.error(f"A atualização não pôde ser iniciada: {queue_error}")
+        elif queued.get("scheduled"):st.success("Atualização iniciada em segundo plano.")
+        else:st.info("Já existe uma atualização em andamento.")
+        st.rerun(scope="fragment")
+    news=(cache or {}).get("data") or {}
+    if news.get("truncated"):st.warning("A carteira possui mais de 50 ações; foram consideradas as 50 primeiras em ordem alfabética.")
+    for asset_news in news.get("assets") or []:
+        current_ticker=asset_news.get("ticker") or "Ativo"
+        title=f"{current_ticker} — {asset_news.get('company_name') or 'Nome não disponível'}"
+        with st.expander(title,expanded=False):
+            if asset_news.get("fallback_used") and asset_news.get("items"):
+                st.info("Uma busca alternativa foi usada para completar as notícias deste ativo.")
+            if asset_news.get("warning") and not asset_news.get("items"):
+                st.warning("As fontes externas não responderam para este ativo na última tentativa.")
+            _render_news_items(
+                asset_news.get("items") or [],
+                f"Nenhuma notícia recente diretamente relacionada a {current_ticker} foi localizada nas fontes consultadas.",
+                current_ticker,
+            )
+
+
+@st.fragment(run_every="10s")
+def _render_cached_recommendation_news():
+    category_labels={"all":"Bancos brasileiros e mundiais","brazil":"Somente bancos brasileiros","global":"Somente bancos mundiais"}
+    category=st.selectbox("Instituições",list(category_labels),format_func=lambda value:category_labels[value],key="recommendation_news_category")
+    cache,error=api_get("/insights/news/cache/recommendations",{"category":category})
+    if error:
+        st.error(f"Não foi possível consultar as recomendações salvas: {error}"); return
+    _news_cache_feedback(cache,"as recomendações dos bancos")
+    if st.button("Atualizar recomendações novamente hoje",use_container_width=True,key=f"refresh_recommendations_{category}"):
+        queued,queue_error=api_post(f"/insights/news/cache/recommendations/refresh?category={category}",timeout=15)
+        if queue_error:st.error(f"A atualização não pôde ser iniciada: {queue_error}")
+        elif queued.get("scheduled"):st.success("Atualização iniciada em segundo plano.")
+        else:st.info("Já existe uma atualização em andamento.")
+        st.rerun(scope="fragment")
+    recommendations=(cache or {}).get("data") or {}
+    if recommendations.get("fallback_used") and recommendations.get("items"):
+        st.info("A busca alternativa foi ativada para complementar as publicações encontradas.")
+    if recommendations.get("warnings") and not recommendations.get("items"):
+        st.warning("As fontes externas estavam indisponíveis na última tentativa.")
+    _render_news_items(
+        recommendations.get("items") or [],
+        "Nenhuma publicação recente foi encontrada para este grupo de instituições.",
+        f"bank_news_{category}",
     )
-    detail,detail_error=api_get(f"/portfolios/{portfolio_id}")
-    if detail_error:
-        st.error(f"Não foi possível abrir a carteira: {detail_error}"); return
-    positions=[item for item in (detail or {}).get("positions") or [] if item.get("asset_type")=="stock" and float(item.get("quantity") or 0)>0]
-    if not positions:
-        st.info("Esta carteira ainda não possui ações com quantidade maior que zero."); return
-    st.metric("Ações na carteira",len(positions))
-    if st.button("Buscar 3 notícias para cada ação",type="primary",use_container_width=True,key="load_portfolio_news"):
-        with st.spinner(f"Consultando notícias de {len(positions)} ação(ões)..."):
-            news,news_error=api_get(f"/insights/news/portfolios/{portfolio_id}",{"limit_assets":50})
-        if news_error:
-            st.session_state.pop("portfolio_news_result",None)
-            st.error(f"Consulta não concluída: {news_error}")
-        else:st.session_state["portfolio_news_result"]={"portfolio_id":portfolio_id,"data":news}
-    stored=st.session_state.get("portfolio_news_result") or {}
-    if stored.get("portfolio_id")==portfolio_id:
-        news=stored.get("data") or {}
-        if news.get("truncated"):st.warning("A carteira possui mais de 50 ações; esta consulta mostrou as 50 primeiras em ordem alfabética.")
-        for asset_news in news.get("assets") or []:
-            current_ticker=asset_news.get("ticker") or "Ativo"
-            title=f"{current_ticker} — {asset_news.get('company_name') or 'Nome não disponível'}"
-            with st.expander(title,expanded=False):
-                if asset_news.get("fallback_used") and asset_news.get("items"):
-                    st.info("Uma busca alternativa foi usada para completar as notícias deste ativo.")
-                if asset_news.get("warning") and not asset_news.get("items"):
-                    st.warning("As duas fontes externas não responderam para este ativo. Tente novamente mais tarde.")
-                _render_news_items(
-                    asset_news.get("items") or [],
-                    f"Nenhuma notícia recente diretamente relacionada a {current_ticker} foi localizada nas fontes consultadas.",
-                    current_ticker,
-                )
+
+
+def _render_market_news(selected_portfolio_id=None,selected_portfolio_detail=None):
+    st.subheader("📰 Notícias da carteira")
+    st.caption("As notícias são atualizadas automaticamente no primeiro acesso do dia e permanecem salvas para uma navegação imediata.")
+    portfolio_id=selected_portfolio_id
+    detail=selected_portfolio_detail
+    if portfolio_id is None:
+        portfolios,error=api_get("/portfolios")
+        if error:
+            st.error(f"Não foi possível consultar sua carteira: {error}"); return
+        portfolios=portfolios or []
+        if portfolios:
+            portfolio_by_id={item["id"]:item for item in portfolios}
+            portfolio_id=st.selectbox(
+                "Carteira",list(portfolio_by_id),
+                format_func=lambda value:portfolio_by_id[value].get("name") or value,
+                key="news_portfolio_id",
+            )
+    if portfolio_id is None:
+        st.info("Cadastre uma carteira e ao menos uma ação para habilitar as notícias dos seus ativos.")
+    else:
+        detail_error=None
+        if detail is None:detail,detail_error=api_get(f"/portfolios/{portfolio_id}")
+        if detail_error:
+            st.error(f"Não foi possível abrir a carteira: {detail_error}")
+        else:
+            positions=[item for item in (detail or {}).get("positions") or [] if item.get("asset_type")=="stock" and float(item.get("quantity") or 0)>0]
+            if not positions:st.info("Esta carteira ainda não possui ações com quantidade maior que zero.")
+            else:
+                st.metric("Ações na carteira",len(positions))
+                _render_cached_portfolio_news(portfolio_id)
 
     st.markdown("---")
     st.subheader("🏦 Recomendações publicadas por grandes bancos")
-    st.caption("Esta lista reúne notícias que citam recomendações, carteiras, mudanças de avaliação ou preços-alvo. Ela reproduz links jornalísticos e não é uma recomendação do aplicativo.")
-    category_labels={"all":"Bancos brasileiros e mundiais","brazil":"Somente bancos brasileiros","global":"Somente bancos mundiais"}
-    category=st.selectbox("Instituições",list(category_labels),format_func=lambda value:category_labels[value],key="recommendation_news_category")
-    if st.button("Buscar notícias de recomendações",use_container_width=True,key="load_recommendation_news"):
-        with st.spinner("Consultando as publicações mais recentes..."):
-            recommendations,recommendation_error=api_get("/insights/news/recommendations",{"category":category,"limit":20})
-        if recommendation_error:
-            st.session_state.pop("recommendation_news_result",None)
-            st.error(f"Consulta não concluída: {recommendation_error}")
-        else:st.session_state["recommendation_news_result"]={"category":category,"data":recommendations}
-    stored_recommendations=st.session_state.get("recommendation_news_result") or {}
-    if stored_recommendations.get("category")==category:
-        recommendations=stored_recommendations.get("data") or {}
-        if recommendations.get("fallback_used") and recommendations.get("items"):
-            st.info("A busca alternativa foi ativada para complementar as publicações encontradas.")
-        if recommendations.get("warnings") and not recommendations.get("items"):
-            st.warning("As fontes externas estão temporariamente indisponíveis. Tente novamente mais tarde.")
-        _render_news_items(recommendations.get("items") or [],"Nenhuma publicação recente foi encontrada para este grupo de instituições.",f"bank_news_{category}")
+    st.caption("Também atualizadas em segundo plano uma vez ao dia. Os links jornalísticos não representam recomendação do aplicativo.")
+    _render_cached_recommendation_news()
     st.caption("Fontes de descoberta: GDELT DOC 2.0 e Google News RSS. Títulos, datas e links pertencem às publicações indicadas. Sempre leia a matéria completa e verifique a data antes de tomar qualquer decisão.")
-
-
-def render_research():
-    st.title("📚 Estudos e notícias")
-    st.caption("Área restrita liberada individualmente pelo proprietário.")
-    tabs=[]
-    if can("can_view_backtest_studies"):tabs.append(("🏆 Estudo dos backtests",_render_backtest_study))
-    if can("can_view_news_insights"):tabs.append(("📰 Notícias e bancos",_render_market_news))
-    if not tabs:
-        st.info("Nenhuma função desta área foi liberada para esta conta."); return
-    containers=st.tabs([label for label,_renderer in tabs])
-    for container,(_label,renderer) in zip(containers,tabs):
-        with container:renderer()
 
 
 @st.fragment(run_every="15s")
@@ -2853,7 +3063,7 @@ def _render_users_admin():
             "Ver backtests":user.get("can_view_backtests"),"Executar backtests":user.get("can_run_backtests"),
             "Atualizar sinais":user.get("can_refresh_backtest_signals"),
             "Estudo dos backtests":user.get("can_view_backtest_studies"),
-            "Notícias e bancos":user.get("can_view_news_insights"),
+            "Notícias na carteira":user.get("can_view_news_insights"),
             "Atualizar banco":user.get("can_sync_market"),"Último acesso":user.get("last_seen_at"),
         })
     st.dataframe(pd.DataFrame(table),hide_index=True,use_container_width=True)
@@ -2927,18 +3137,32 @@ if registration_err or access_err:
     st.error(f"Não foi possível validar as permissões desta conta: {registration_err or access_err}")
     st.stop()
 PERMISSIONS=access or registered or {}
+if can("can_view_market"):
+    daily_market_key=f"daily_market_dashboard_requested_{date.today().isoformat()}"
+    if not st.session_state.get(daily_market_key):
+        _market_result,_market_error=api_post("/market-dashboard/ensure",timeout=15)
+        st.session_state[daily_market_key]=True
+        if _market_error:st.session_state["daily_market_dashboard_error"]=_market_error
+if can("can_view_news_insights"):
+    daily_news_key=f"daily_news_refresh_requested_{date.today().isoformat()}"
+    if not st.session_state.get(daily_news_key):
+        # This request only places work in the API background queue. It does not
+        # wait for external news sources and therefore cannot freeze the page.
+        _daily_news,_daily_news_error=api_post("/insights/news/refresh-daily",timeout=15)
+        st.session_state[daily_news_key]=True
+        if _daily_news_error:
+            st.session_state["daily_news_refresh_error"]=_daily_news_error
 module_labels={
+    "dashboard":"🌐 Painel de Mercado",
     "market":"📊 Mercado e análise",
     "portfolio":"💼 Minha carteira",
     "backtests":"🧪 Backtests",
-    "research":"📚 Estudos e notícias",
     "access":"⚙️ Administração",
 }
 modules=[]
-if can("can_view_market"):modules.append("market")
+if can("can_view_market"):modules.extend(["dashboard","market"])
 if can("can_view_portfolio"):modules.append("portfolio")
 if can("can_view_backtests"):modules.append("backtests")
-if can("can_view_backtest_studies") or can("can_view_news_insights"):modules.append("research")
 if PERMISSIONS.get("is_owner"):modules.append("access")
 if not modules:
     st.title("Acesso aguardando autorização")
@@ -2948,10 +3172,10 @@ _render_sidebar_identity(health)
 if st.session_state.get("main_navigation") not in modules:st.session_state["main_navigation"]=modules[0]
 module=st.sidebar.radio("Escolha uma área",modules,index=0,format_func=lambda value:module_labels[value],label_visibility="collapsed",key="main_navigation")
 st.sidebar.markdown('<div class="ie-sidebar-footer">Ambiente privado e protegido</div>',unsafe_allow_html=True)
-if module=="market":render_market()
+if module=="dashboard":render_market_dashboard()
+elif module=="market":render_market()
 elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
-elif module=="research":render_research()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.12.4. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.13.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

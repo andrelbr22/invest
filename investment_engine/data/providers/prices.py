@@ -18,7 +18,11 @@ class YahooPriceProvider:
     @staticmethod
     def symbol(ticker: str) -> str:
         t = ticker.upper().strip()
-        if "." in t or t.startswith("^") or "=" in t:
+        if (
+            "." in t or t.startswith("^") or "=" in t
+            or t.endswith(("-USD", "-BRL", "-EUR", "-GBP", "-JPY"))
+            or t.isalpha()
+        ):
             return t
         return f"{t}.SA"
 
