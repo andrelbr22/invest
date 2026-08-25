@@ -26,12 +26,16 @@ from ..core.repositories.screening_filters import SavedScreeningFilterRepository
 from ..core.repositories.backtests import BacktestRepository, backtest_market_date, run_summary
 from ..core.repositories.access import AccessPolicyRepository, PERMISSION_FIELDS, full_owner_policy, policy_dict
 from ..core.repositories.news_cache import NewsCacheRepository, news_cache_dict, news_market_date
+from ..core.repositories.alerts import AlertRepository, alert_dict, event_dict
 from ..core.portfolio.service import build_portfolio_snapshot, classification_for, localize_classification
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
 from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
 from ..core.backtesting.batch import BacktestBatchService, OFFICIAL_OWNER
 from ..integrations.backtest_delivery import CALLBACK_API_VERSION, delivery_checksum
 from ..core.backtesting.study import build_strategy_configuration_catalog, build_strategy_study
+from ..core.alerts.catalog import market_alert_catalog, market_alert_item
+from ..core.alerts.service import AlertMonitor, AlertService, valid_email
+from ..integrations.email_delivery import AlertEmailSender
 from ..infrastructure.db.models import AssetORM, UserNewsCacheORM
 from ..core.instruments import is_supported_ticker
 from ..core.models.strategy import StockFilterSet, FiiFilterSet
@@ -45,8 +49,8 @@ from ..data.providers.market_dashboard import MarketDashboardService
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.13.1",
-    version="0.14.1",
+    title="Investment Engine V1.14.0",
+    version="0.15.0",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -61,6 +65,18 @@ _MARKET_DASHBOARD = MarketDashboardService()
 _MARKET_DASHBOARD_OWNER = "market-dashboard@system.local"
 _MARKET_DASHBOARD_CACHE_KEY = "main-v2"
 _MARKET_DASHBOARD_LOCK = threading.Lock()
+_ALERT_MONITOR = AlertMonitor()
+
+
+@app.on_event("startup")
+def _start_alert_monitor():
+    if settings.alert_monitor_enabled:
+        _ALERT_MONITOR.start()
+
+
+@app.on_event("shutdown")
+def _stop_alert_monitor():
+    _ALERT_MONITOR.stop()
 
 
 def _portfolio_news_assets(db: Session, portfolio_id) -> list[dict]:
@@ -518,8 +534,31 @@ class AccessPolicyUpdateRequest(BaseModel):
     can_refresh_backtest_signals: bool | None = None
     can_view_backtest_studies: bool | None = None
     can_view_news_insights: bool | None = None
+    can_use_price_alerts: bool | None = None
+    can_alert_price_above: bool | None = None
+    can_alert_price_below: bool | None = None
+    can_alert_change_positive: bool | None = None
+    can_alert_change_negative: bool | None = None
     can_sync_market: bool | None = None
     custom_filter_limit: int | None = Field(default=None, ge=0, le=3)
+    alert_asset_limit: int | None = Field(default=None)
+
+
+class AlertPreferenceRequest(BaseModel):
+    secondary_email: str | None = Field(default=None, max_length=320)
+
+
+class PriceAlertCreateRequest(BaseModel):
+    market_scope: Literal["b3", "market"]
+    symbol: str = Field(min_length=1, max_length=32)
+    price_above: float | None = Field(default=None, gt=0)
+    price_below: float | None = Field(default=None, gt=0)
+    change_positive_pct: float | None = Field(default=None, gt=0, le=1000)
+    change_negative_pct: float | None = Field(default=None, gt=0, le=1000)
+
+
+class PriceAlertStatusRequest(BaseModel):
+    status: Literal["active", "disabled"]
 
 
 class SavedScreeningFilterCreateRequest(BaseModel):
@@ -535,7 +574,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.14.1", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.15.0", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -595,7 +634,7 @@ def update_access_user(
     changes = req.model_dump(exclude_none=True)
     if changes.get("can_use_advanced_filters") or changes.get("can_sync_market") or int(changes.get("custom_filter_limit") or 0)>0:
         changes["can_view_market"] = True
-    if changes.get("can_write_portfolio") or changes.get("can_view_news_insights"):
+    if changes.get("can_write_portfolio") or changes.get("can_view_news_insights") or changes.get("can_use_price_alerts"):
         changes["can_view_portfolio"] = True
     if changes.get("can_run_backtests") or changes.get("can_refresh_backtest_signals") or changes.get("can_view_backtest_studies"):
         changes["can_view_backtests"] = True
@@ -606,6 +645,20 @@ def update_access_user(
     if changes.get("can_view_portfolio") is False:
         changes["can_write_portfolio"] = False
         changes["can_view_news_insights"] = False
+        changes["can_use_price_alerts"] = False
+        changes["alert_asset_limit"] = 0
+    if (
+        changes.get("can_use_price_alerts") is False
+        or ("alert_asset_limit" in changes and int(changes.get("alert_asset_limit") or 0) == 0)
+    ):
+        changes["can_use_price_alerts"] = False
+        changes["alert_asset_limit"] = 0
+        changes["can_alert_price_above"] = False
+        changes["can_alert_price_below"] = False
+        changes["can_alert_change_positive"] = False
+        changes["can_alert_change_negative"] = False
+    if changes.get("alert_asset_limit") is not None and int(changes["alert_asset_limit"]) not in {0, 1, 3, 5, 10}:
+        raise HTTPException(422, "invalid_alert_asset_limit")
     if changes.get("can_view_backtests") is False:
         changes["can_run_backtests"] = False
         changes["can_refresh_backtest_signals"] = False
@@ -613,8 +666,14 @@ def update_access_user(
     row = AccessPolicyRepository(db).update(clean, **changes)
     if row is None:
         raise HTTPException(404, "user_not_found")
+    updated_policy = policy_dict(row)
+    AlertRepository(db).enforce_policy(
+        clean,
+        limit=int(updated_policy.get("alert_asset_limit") or 0) if updated_policy.get("can_use_price_alerts") else 0,
+        permissions=_alert_rule_permissions(updated_policy),
+    )
     db.commit()
-    return policy_dict(row)
+    return updated_policy
 
 
 def _saved_filter_dict(row):
@@ -1187,6 +1246,196 @@ def portfolio_detail(portfolio_id: UUID, access=Depends(require_permission("can_
     p = PortfolioRepository(db).get_portfolio(portfolio_id, access["email"])
     if p is None: raise HTTPException(404, "portfolio_not_found")
     return _portfolio_snapshot(db, p)
+
+
+# -----------------------------
+# V1.14 Multi-user price alerts
+# -----------------------------
+
+def _alert_rule_permissions(access: dict) -> dict:
+    return {
+        "price_above": bool(access.get("can_alert_price_above")),
+        "price_below": bool(access.get("can_alert_price_below")),
+        "change_positive_pct": bool(access.get("can_alert_change_positive")),
+        "change_negative_pct": bool(access.get("can_alert_change_negative")),
+    }
+
+
+@app.get("/alerts/catalog")
+def alert_catalog(
+    access=Depends(require_permission("can_use_price_alerts")),
+    db: Session = Depends(get_db),
+):
+    b3 = []
+    for asset in AssetRepository(db).list_assets(limit=1500):
+        if str(asset.exchange or "B3").upper() != "B3":
+            continue
+        if asset.asset_type not in {"stock", "fii", "etf", "bdr"}:
+            continue
+        if not is_supported_ticker(asset.ticker, asset.asset_type):
+            continue
+        b3.append({
+            "key": asset.ticker, "label": asset.name or asset.ticker,
+            "asset_type": asset.asset_type, "market_scope": "b3",
+            "interval_minutes": 5,
+        })
+    return {
+        "b3": b3,
+        "market": market_alert_catalog(),
+        "unsupported": [
+            "Selic", "CDI", "IMA-B", "IRF-M", "IPCA", "INPC", "IGP-M", "CPI",
+        ],
+        "b3_schedule": "Dias úteis, das 10h às 18h (horário de Brasília), a cada 5 minutos.",
+        "market_schedule": "A cada 30 minutos, continuamente; novas cotações dependem do mercado de origem.",
+        "quote_notice": "Cotações indicativas do Yahoo Finance podem apresentar atraso. Confirme o preço na corretora.",
+        "permissions": _alert_rule_permissions(access),
+    }
+
+
+@app.get("/alerts")
+def list_price_alerts(
+    access=Depends(require_permission("can_use_price_alerts")),
+    db: Session = Depends(get_db),
+):
+    return AlertService(db).dashboard(
+        access["email"], limit=int(access.get("alert_asset_limit") or 0),
+        permissions=_alert_rule_permissions(access), smtp_configured=settings.smtp_configured,
+    )
+
+
+@app.put("/alerts/preferences")
+def update_alert_preferences(
+    request: AlertPreferenceRequest,
+    access=Depends(require_permission("can_use_price_alerts")),
+    db: Session = Depends(get_db),
+):
+    if not valid_email(request.secondary_email):
+        raise HTTPException(422, "invalid_secondary_email")
+    row = AlertRepository(db).update_preference(access["email"], request.secondary_email)
+    db.commit()
+    return {"primary_email": access["email"], "secondary_email": row.secondary_email}
+
+
+@app.post("/alerts")
+def create_price_alert(
+    request: PriceAlertCreateRequest,
+    access=Depends(require_permission("can_use_price_alerts")),
+    db: Session = Depends(get_db),
+):
+    if not settings.smtp_configured:
+        raise HTTPException(503, "alert_email_delivery_not_configured")
+    limit = int(access.get("alert_asset_limit") or 0)
+    if limit not in {1, 3, 5, 10}:
+        raise HTTPException(403, "price_alert_limit_not_granted")
+    permissions = _alert_rule_permissions(access)
+    rules = {
+        "price_above": request.price_above,
+        "price_below": request.price_below,
+        "change_positive_pct": request.change_positive_pct,
+        "change_negative_pct": request.change_negative_pct,
+    }
+    configured = {key: value for key, value in rules.items() if value is not None}
+    if not configured:
+        raise HTTPException(422, "price_alert_requires_condition")
+    denied = [key for key in configured if not permissions.get(key)]
+    if denied:
+        raise HTTPException(403, detail={"alert_conditions_not_granted": denied})
+
+    symbol = request.symbol.strip().upper()
+    if request.market_scope == "market":
+        catalog_item = market_alert_item(symbol)
+        if catalog_item is None:
+            raise HTTPException(422, "unsupported_market_alert_symbol")
+        display_name = catalog_item["label"]
+        provider_symbol = "|".join(catalog_item["symbols"])
+    else:
+        asset = AssetRepository(db).get_by_ticker(symbol)
+        if asset is None or asset.asset_type not in {"stock", "fii", "etf", "bdr"}:
+            raise HTTPException(422, "b3_alert_asset_not_found")
+        if not is_supported_ticker(asset.ticker, asset.asset_type):
+            raise HTTPException(422, "unsupported_b3_alert_symbol")
+        display_name = asset.name or asset.ticker
+        provider_symbol = asset.ticker
+
+    repository = AlertRepository(db)
+    existing = repository.get_by_symbol(access["email"], symbol)
+    if (existing is None or existing.status != "active") and repository.active_count(access["email"]) >= limit:
+        raise HTTPException(409, detail={"price_alert_limit_reached": limit})
+    row = repository.upsert(
+        owner_email=access["email"], symbol=symbol, provider_symbol=provider_symbol,
+        display_name=display_name, market_scope=request.market_scope, rules=rules,
+    )
+    db.commit()
+    return alert_dict(row)
+
+
+@app.patch("/alerts/{alert_id}/status")
+def update_price_alert_status(
+    alert_id: UUID, request: PriceAlertStatusRequest,
+    access=Depends(require_permission("can_use_price_alerts")),
+    db: Session = Depends(get_db),
+):
+    repository = AlertRepository(db)
+    row = repository.get_for_owner(alert_id, access["email"])
+    if row is None:
+        raise HTTPException(404, "price_alert_not_found")
+    if request.status == "active":
+        limit = int(access.get("alert_asset_limit") or 0)
+        configured = {
+            "price_above": row.price_above,
+            "price_below": row.price_below,
+            "change_positive_pct": row.change_positive_pct,
+            "change_negative_pct": row.change_negative_pct,
+        }
+        configured = {key: value for key, value in configured.items() if value is not None}
+        if not configured:
+            raise HTTPException(422, "price_alert_requires_condition")
+        denied = [key for key in configured if not _alert_rule_permissions(access).get(key)]
+        if denied:
+            raise HTTPException(403, detail={"alert_conditions_not_granted": denied})
+        if row.status != "active" and repository.active_count(access["email"]) >= limit:
+            raise HTTPException(409, detail={"price_alert_limit_reached": limit})
+    repository.set_status(row, request.status)
+    db.commit()
+    return alert_dict(row)
+
+
+@app.get("/alerts/history")
+def price_alert_history(
+    limit: int = Query(default=100, ge=1, le=500),
+    access=Depends(require_permission("can_use_price_alerts")),
+    db: Session = Depends(get_db),
+):
+    return [event_dict(row) for row in AlertRepository(db).history(access["email"], limit)]
+
+
+@app.post("/alerts/test-email")
+def send_price_alert_test_email(
+    access=Depends(require_permission("can_use_price_alerts")),
+    db: Session = Depends(get_db),
+):
+    sender = AlertEmailSender()
+    if not sender.configured:
+        raise HTTPException(503, "alert_email_delivery_not_configured")
+    preference = AlertRepository(db).preference(access["email"])
+    recipients = [access["email"]]
+    if preference and preference.secondary_email:
+        recipients.append(preference.secondary_email)
+    try:
+        sender.send(
+            recipients=recipients,
+            subject="Teste de alertas - Formação do Investidor",
+            text_body="O envio de alertas do Formação do Investidor foi configurado corretamente.",
+            html_body="<p>O envio de alertas do <strong>Formação do Investidor</strong> foi configurado corretamente.</p>",
+        )
+    except Exception as exc:
+        raise HTTPException(502, detail={"alert_email_test_failed": str(exc)[:300]})
+    return {"status": "sent", "recipients": recipients}
+
+
+@app.post("/alerts/monitor/run")
+def run_alert_monitor_now(_access=Depends(require_owner)):
+    return _ALERT_MONITOR.run_once()
 
 
 @app.put("/portfolios/{portfolio_id}/positions/{ticker}")

@@ -43,6 +43,6 @@ def test_portfolio_keeps_metrics_visible_and_movements_collapsed():
 
 
 def test_release_version_is_consistent():
-    assert (ROOT / "investment_engine" / "__init__.py").read_text(encoding="utf-8").strip() == '__version__ = "0.14.1"'
-    assert 'version = "0.14.1"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'EXPECTED_EMBEDDED_API_VERSION"] = "0.14.1"' in (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+    assert (ROOT / "investment_engine" / "__init__.py").read_text(encoding="utf-8").strip() == '__version__ = "0.15.0"'
+    assert 'version = "0.15.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'EXPECTED_EMBEDDED_API_VERSION"] = "0.15.0"' in (ROOT / "streamlit_app.py").read_text(encoding="utf-8")

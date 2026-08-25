@@ -18,6 +18,11 @@ PERMISSION_FIELDS = (
     "can_refresh_backtest_signals",
     "can_view_backtest_studies",
     "can_view_news_insights",
+    "can_use_price_alerts",
+    "can_alert_price_above",
+    "can_alert_price_below",
+    "can_alert_change_positive",
+    "can_alert_change_negative",
     "can_sync_market",
     "can_manage_users",
 )
@@ -35,6 +40,7 @@ def full_owner_policy(email: str, display_name: str | None = None) -> dict:
         "status": "approved",
         **{field: True for field in PERMISSION_FIELDS},
         "custom_filter_limit": 3,
+        "alert_asset_limit": 10,
         "is_owner": True,
     }
 
@@ -50,6 +56,7 @@ def policy_dict(row: UserAccessPolicyORM, *, is_owner: bool = False) -> dict:
         "status": row.status,
         **{field: False if blocked else bool(getattr(row, field)) for field in PERMISSION_FIELDS},
         "custom_filter_limit": 0 if blocked else max(0, min(3, int(row.custom_filter_limit or 0))),
+        "alert_asset_limit": 0 if blocked else int(row.alert_asset_limit or 0),
         "is_owner": False,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -85,6 +92,7 @@ class AccessPolicyRepository:
             for field in PERMISSION_FIELDS:
                 setattr(row, field, True)
             row.custom_filter_limit = 3
+            row.alert_asset_limit = 10
         self.session.flush()
         return row
 
@@ -95,9 +103,14 @@ class AccessPolicyRepository:
         row = self.get(email)
         if row is None:
             return None
-        for field in ("display_name", "role", "status", "custom_filter_limit", *PERMISSION_FIELDS):
+        for field in ("display_name", "role", "status", "custom_filter_limit", "alert_asset_limit", *PERMISSION_FIELDS):
             if field in changes and changes[field] is not None:
-                value = max(0, min(3, int(changes[field]))) if field == "custom_filter_limit" else changes[field]
+                if field == "custom_filter_limit":
+                    value = max(0, min(3, int(changes[field])))
+                elif field == "alert_asset_limit":
+                    value = int(changes[field]) if int(changes[field]) in {0, 1, 3, 5, 10} else 0
+                else:
+                    value = changes[field]
                 setattr(row, field, value)
         row.updated_at = datetime.now(timezone.utc)
         self.session.flush()

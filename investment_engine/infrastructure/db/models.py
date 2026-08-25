@@ -219,9 +219,15 @@ class UserAccessPolicyORM(Base):
     can_refresh_backtest_signals: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_view_backtest_studies: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_view_news_insights: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_price_alerts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_alert_price_above: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_alert_price_below: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_alert_change_positive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_alert_change_negative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_sync_market: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_manage_users: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     custom_filter_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    alert_asset_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -309,6 +315,71 @@ class UserNewsCacheORM(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class UserAlertPreferenceORM(Base):
+    """Per-user delivery preferences for server-side price alerts."""
+    __tablename__ = "user_alert_preferences"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True, index=True)
+    secondary_email: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PriceAlertORM(Base):
+    """One monitored instrument with up to four independently configured rules."""
+    __tablename__ = "price_alerts"
+    __table_args__ = (
+        UniqueConstraint("owner_email", "symbol", name="uq_price_alert_owner_symbol"),
+        Index("ix_price_alert_due", "status", "market_scope", "last_checked_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    provider_symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(180), nullable=False)
+    market_scope: Mapped[str] = mapped_column(String(16), nullable=False)  # b3 | global
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    price_above: Mapped[Decimal | None] = mapped_column(Numeric(22, 8))
+    price_below: Mapped[Decimal | None] = mapped_column(Numeric(22, 8))
+    change_positive_pct: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    change_negative_pct: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_quote_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_price: Mapped[Decimal | None] = mapped_column(Numeric(22, 8))
+    last_change_pct: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PriceAlertEventORM(Base):
+    """Immutable alert history plus a retryable e-mail outbox."""
+    __tablename__ = "price_alert_events"
+    __table_args__ = (
+        Index("ix_price_alert_events_owner_created", "owner_email", "created_at"),
+        Index("ix_price_alert_events_delivery", "delivery_status", "next_attempt_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    alert_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("price_alerts.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(180), nullable=False)
+    triggered_rules_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    configured_values_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    observed_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    recipients_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    delivery_status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    delivery_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    quote_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class BacktestRunORM(Base):
     __tablename__ = "backtest_runs"
     __table_args__ = (
@@ -324,7 +395,7 @@ class BacktestRunORM(Base):
     scope: Mapped[str] = mapped_column(String(24), nullable=False, default="personal")
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     market_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    engine_version: Mapped[str] = mapped_column(String(24), nullable=False, default="0.14.1")
+    engine_version: Mapped[str] = mapped_column(String(24), nullable=False, default="0.15.0")
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     strategy_name: Mapped[str] = mapped_column(String(160), nullable=False)
     requested_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

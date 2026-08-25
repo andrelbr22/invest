@@ -1680,7 +1680,12 @@ def render_portfolio():
                 st.rerun()
 
     portfolio_tab_labels=["Posição atual","Alvos","Em análise","Composição geral","Setores / segmentos","Rebalanceamento"]
-    if can("can_view_news_insights"):portfolio_tab_labels.append("📰 Notícias")
+    news_tab_index=None
+    alerts_tab_index=None
+    if can("can_view_news_insights"):
+        news_tab_index=len(portfolio_tab_labels); portfolio_tab_labels.append("📰 Notícias")
+    if can("can_use_price_alerts"):
+        alerts_tab_index=len(portfolio_tab_labels); portfolio_tab_labels.append("🔔 Alertas")
     tabs=st.tabs(portfolio_tab_labels)
     pdf=pd.DataFrame(positions)
     display_cols={
@@ -1734,9 +1739,12 @@ def render_portfolio():
             rb=rb[cols].rename(columns={"ticker":"Ticker","asset_class_label":"Classe","stage_label":"Situação","current_price":"Preço atual","market_value":"Valor atual","current_weight_pct":"% atual","effective_target_weight_pct":"% alvo efetivo","target_value":"Valor alvo","rebalance_value":"Comprar (+) / reduzir (-) R$","rebalance_quantity":"Qtd. estimada"})
             st.dataframe(rb,hide_index=True,use_container_width=True)
             st.caption("A quantidade de rebalanceamento é uma estimativa baseada no preço atual e não considera lote padrão, impostos ou custos de execução.")
-    if can("can_view_news_insights"):
-        with tabs[6]:
+    if news_tab_index is not None:
+        with tabs[news_tab_index]:
             _render_market_news(selected_portfolio_id=pid,selected_portfolio_detail=snap)
+    if alerts_tab_index is not None:
+        with tabs[alerts_tab_index]:
+            _render_price_alerts()
 
 
 def _backtest_configuration_rows(result):
@@ -2698,6 +2706,96 @@ def _render_market_news(selected_portfolio_id=None,selected_portfolio_detail=Non
     st.caption("Fontes de descoberta: GDELT DOC 2.0 e Google News RSS. Títulos, datas e links pertencem às publicações indicadas. Sempre leia a matéria completa e verifique a data antes de tomar qualquer decisão.")
 
 
+def _render_price_alerts():
+    st.subheader("🔔 Alertas de ativos")
+    st.caption("O servidor monitora os ativos mesmo quando esta página está fechada. Cada ativo usa uma vaga e pode reunir até quatro condições.")
+    dashboard,error=api_get("/alerts")
+    catalog,catalog_error=api_get("/alerts/catalog")
+    if error or catalog_error:
+        st.error(f"Não foi possível carregar os alertas: {error or catalog_error}"); return
+    dashboard=dashboard or {}; catalog=catalog or {}
+    active_count=int(dashboard.get("active_count") or 0); limit=int(dashboard.get("limit") or 0)
+    m1,m2,m3=st.columns(3)
+    m1.metric("Alertas ativos",active_count); m2.metric("Limite autorizado",limit); m3.metric("Vagas disponíveis",max(0,limit-active_count))
+    st.info(f"B3: {catalog.get('b3_schedule')} Outros mercados: {catalog.get('market_schedule')}")
+    st.caption(catalog.get("quote_notice") or "Cotações indicativas podem apresentar atraso.")
+    if not dashboard.get("delivery_configured"):
+        st.error("O envio de e-mail ainda não foi configurado pelo administrador no servidor. O cadastro será liberado quando o SMTP estiver ativo.")
+
+    with st.expander("✉️ E-mails que receberão os alertas",expanded=False):
+        st.text_input("E-mail principal do cadastro",value=dashboard.get("primary_email") or CURRENT_USER_EMAIL,disabled=True,key="alert_primary_email")
+        secondary=st.text_input("Segundo e-mail (opcional)",value=dashboard.get("secondary_email") or "",placeholder="nome@exemplo.com",key="alert_secondary_email")
+        email_save,email_test=st.columns(2)
+        if email_save.button("Salvar e-mails",use_container_width=True,key="alert_save_emails"):
+            _,save_error=api_put("/alerts/preferences",{"secondary_email":secondary or None})
+            if save_error:st.error(f"Não foi possível salvar: {save_error}")
+            else:st.success("E-mails atualizados."); st.rerun()
+        if email_test.button("Enviar e-mail de teste",use_container_width=True,key="alert_test_email",disabled=not dashboard.get("delivery_configured")):
+            with st.spinner("Enviando teste..."):
+                _,test_error=api_post("/alerts/test-email",{},timeout=45)
+            if test_error:st.error(f"Falha no teste: {test_error}")
+            else:st.success("E-mail de teste enviado.")
+
+    with st.expander("➕ Cadastrar ou atualizar alerta",expanded=not bool(dashboard.get("alerts"))):
+        scope_label=st.radio("Tipo de ativo",["Ativo da B3","Ativo do Painel de Mercado"],horizontal=True,key="alert_scope")
+        market_scope="b3" if scope_label=="Ativo da B3" else "market"
+        options=catalog.get(market_scope) or []; by_key={str(item.get("key")):item for item in options}
+        selected_symbol=None
+        if not by_key:
+            st.warning("Não há ativos elegíveis carregados nesta categoria.")
+        else:
+            selected_symbol=st.selectbox("Ativo",list(by_key),format_func=lambda key:f"{key} — {by_key[key].get('label') or key}",key=f"alert_symbol_{market_scope}")
+        existing_by_symbol={str(item.get("symbol")):item for item in (dashboard.get("alerts") or [])}
+        existing=existing_by_symbol.get(selected_symbol) or {}
+        if existing:st.caption(f"Este ativo já possui um alerta ({existing.get('status')}). Ao salvar, as condições serão substituídas e reativadas.")
+        permissions=dashboard.get("permissions") or {}; c1,c2=st.columns(2); values={}
+        if permissions.get("price_above"):
+            values["price_above"]=c1.number_input("Preço subindo: atingir ou ultrapassar",min_value=0.0,value=float(existing.get("price_above")) if existing.get("price_above") is not None else None,step=0.01,format="%.4f",placeholder="Em branco = não usar",key=f"alert_above_{selected_symbol}")
+        if permissions.get("price_below"):
+            values["price_below"]=c1.number_input("Preço caindo: atingir ou ficar abaixo",min_value=0.0,value=float(existing.get("price_below")) if existing.get("price_below") is not None else None,step=0.01,format="%.4f",placeholder="Em branco = não usar",key=f"alert_below_{selected_symbol}")
+        if permissions.get("change_positive_pct"):
+            values["change_positive_pct"]=c2.number_input("Variação positiva desde o fechamento (%)",min_value=0.0,value=float(existing.get("change_positive_pct")) if existing.get("change_positive_pct") is not None else None,step=0.1,format="%.2f",placeholder="Ex.: 3,00",key=f"alert_pos_{selected_symbol}")
+        if permissions.get("change_negative_pct"):
+            values["change_negative_pct"]=c2.number_input("Variação negativa desde o fechamento (%)",min_value=0.0,value=float(existing.get("change_negative_pct")) if existing.get("change_negative_pct") is not None else None,step=0.1,format="%.2f",placeholder="Informe o módulo: 3,00",key=f"alert_neg_{selected_symbol}")
+        if not any(permissions.values()):st.warning("O administrador ainda não liberou nenhum tipo de condição para sua conta.")
+        if st.button("Ativar este alerta",type="primary",use_container_width=True,key="alert_save",disabled=not selected_symbol or not dashboard.get("delivery_configured") or not any(permissions.values())):
+            _,save_error=api_post("/alerts",{"market_scope":market_scope,"symbol":selected_symbol,**values})
+            if save_error:st.error(f"Não foi possível ativar: {save_error}")
+            else:st.success(f"Alerta de {selected_symbol} ativado."); st.rerun()
+
+    st.markdown("#### Alertas cadastrados")
+    alerts=dashboard.get("alerts") or []
+    if not alerts:
+        st.info("Nenhum alerta cadastrado.")
+    else:
+        alert_rows=[]
+        for item in alerts:
+            conditions=[]
+            if item.get("price_above") is not None:conditions.append(f"Preço ≥ {item['price_above']}")
+            if item.get("price_below") is not None:conditions.append(f"Preço ≤ {item['price_below']}")
+            if item.get("change_positive_pct") is not None:conditions.append(f"Variação ≥ +{item['change_positive_pct']}%")
+            if item.get("change_negative_pct") is not None:conditions.append(f"Variação ≤ -{item['change_negative_pct']}%")
+            alert_rows.append({"Ativo":item.get("symbol"),"Nome":item.get("display_name"),"Situação":{"active":"Ativo","triggered":"Disparado","disabled":"Desativado"}.get(item.get("status"),item.get("status")),"Condições":" • ".join(conditions),"Último preço":item.get("last_price"),"Última variação %":item.get("last_change_pct"),"Última verificação":br_datetime(item.get("last_checked_at"))})
+        st.dataframe(pd.DataFrame(alert_rows),hide_index=True,use_container_width=True)
+        selected_alert=st.selectbox("Gerenciar alerta",alerts,format_func=lambda item:f"{item.get('symbol')} — {item.get('display_name')} ({item.get('status')})",key="alert_manage_selected")
+        desired="disabled" if selected_alert.get("status")=="active" else "active"; label="Desativar alerta" if desired=="disabled" else "Reativar alerta"
+        if st.button(label,key="alert_toggle",use_container_width=True):
+            _,toggle_error=api_patch(f"/alerts/{selected_alert['id']}/status",{"status":desired})
+            if toggle_error:st.error(f"Não foi possível alterar: {toggle_error}")
+            else:st.success("Situação atualizada."); st.rerun()
+
+    st.markdown("#### Histórico de alertas enviados")
+    history=dashboard.get("history") or []
+    if not history:
+        st.info("Nenhum alerta foi disparado até agora.")
+    else:
+        labels={"price_above":"Preço subindo","price_below":"Preço caindo","change_positive_pct":"Variação positiva","change_negative_pct":"Variação negativa"}; history_rows=[]
+        for item in history:
+            observed=item.get("observed") or {}
+            history_rows.append({"Ativo":item.get("symbol"),"Condição":" • ".join(labels.get(rule,rule) for rule in item.get("triggered_rules") or []),"Preço":observed.get("price"),"Variação %":observed.get("change_pct"),"Cotação":br_datetime(observed.get("quote_at")),"E-mails":"; ".join(item.get("recipients") or []),"Envio":{"sent":"Enviado","pending":"Aguardando/repetindo","failed":"Falhou"}.get(item.get("delivery_status"),item.get("delivery_status")),"Enviado em":br_datetime(item.get("sent_at"))})
+        st.dataframe(pd.DataFrame(history_rows),hide_index=True,use_container_width=True)
+
+
 @st.fragment(run_every="15s")
 def _render_official_batch_history(
     github_token: str,
@@ -3078,6 +3176,8 @@ def _render_users_admin():
             "Atualizar sinais":user.get("can_refresh_backtest_signals"),
             "Estudo dos backtests":user.get("can_view_backtest_studies"),
             "Notícias na carteira":user.get("can_view_news_insights"),
+            "Alertas":user.get("can_use_price_alerts"),
+            "Limite de alertas":user.get("alert_asset_limit",0),
             "Atualizar banco":user.get("can_sync_market"),"Último acesso":user.get("last_seen_at"),
         })
     st.dataframe(pd.DataFrame(table),hide_index=True,use_container_width=True)
@@ -3113,6 +3213,34 @@ def _render_users_admin():
             index=max(0,min(3,int(current.get("custom_filter_limit") or 0))),
             help="Zero bloqueia o uso. De 1 a 3 define quantas configurações próprias esta conta pode manter salvas.",
         )
+        st.markdown("#### Alertas por e-mail")
+        st.caption("Cada ativo ocupa uma vaga e pode reunir as condições autorizadas abaixo.")
+        alert_enabled=st.checkbox(
+            "Permitir alertas de ativos",
+            value=bool(current.get("can_use_price_alerts")),
+        )
+        alert_limits=[0,1,3,5,10]
+        current_alert_limit=int(current.get("alert_asset_limit") or 0)
+        if current_alert_limit not in alert_limits:current_alert_limit=0
+        alert_limit=st.selectbox(
+            "Máximo de ativos monitorados",
+            alert_limits,index=alert_limits.index(current_alert_limit),
+            disabled=not alert_enabled,
+            help="Um ativo é um alerta, mesmo quando possui duas, três ou quatro condições.",
+        )
+        al1,al2=st.columns(2)
+        alert_price_above=al1.checkbox(
+            "Preço subindo até o valor definido",value=bool(current.get("can_alert_price_above")),disabled=not alert_enabled,
+        )
+        alert_price_below=al1.checkbox(
+            "Preço caindo até o valor definido",value=bool(current.get("can_alert_price_below")),disabled=not alert_enabled,
+        )
+        alert_change_positive=al2.checkbox(
+            "Variação percentual positiva",value=bool(current.get("can_alert_change_positive")),disabled=not alert_enabled,
+        )
+        alert_change_negative=al2.checkbox(
+            "Variação percentual negativa",value=bool(current.get("can_alert_change_negative")),disabled=not alert_enabled,
+        )
         st.caption("Nenhum usuário recebe permissão para administrar contas. Essa função permanece exclusiva do proprietário.")
         save=st.form_submit_button("Salvar permissões",type="primary")
     if save:
@@ -3123,6 +3251,12 @@ def _render_users_admin():
             "can_refresh_backtest_signals":refresh_signals,"can_view_backtest_studies":backtest_studies,
             "can_view_news_insights":news_insights,"can_sync_market":sync_market,
             "custom_filter_limit":custom_filter_limit,
+            "can_use_price_alerts":alert_enabled and alert_limit>0,
+            "alert_asset_limit":alert_limit if alert_enabled else 0,
+            "can_alert_price_above":alert_enabled and alert_price_above,
+            "can_alert_price_below":alert_enabled and alert_price_below,
+            "can_alert_change_positive":alert_enabled and alert_change_positive,
+            "can_alert_change_negative":alert_enabled and alert_change_negative,
         }
         _,save_err=api_put(f"/access/users/{selected}",payload)
         if save_err:st.error(f"Não foi possível salvar: {save_err}")
@@ -3192,4 +3326,4 @@ elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.13.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.14.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

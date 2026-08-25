@@ -1,4 +1,19 @@
-# Formação do Investidor • Investment Engine V1.13.1
+# Formação do Investidor • Investment Engine V1.14.0
+
+## Novidades da V1.14.0
+
+- nova aba **Alertas** após **Notícias**, dentro de **Minha carteira**;
+- limites individuais de 1, 3, 5 ou 10 ativos, concedidos exclusivamente pelo proprietário;
+- permissões independentes para preço acima, preço abaixo, variação positiva e variação negativa;
+- cada ativo ocupa uma vaga e aceita até quatro condições simultâneas;
+- ações, FIIs, ETFs e BDRs da B3 são observados a cada cinco minutos, em dias úteis, das 10h às 18h de Brasília;
+- índices, moedas, criptomoedas e commodities do Painel de Mercado são observados a cada 30 minutos;
+- o cruzamento de preço na B3 considera a máxima e a mínima do último candle de um minuto disponível;
+- o alerta é desativado após o disparo e permanece no histórico com horário, condição e destinatários;
+- envio para o e-mail Google do cadastro e, opcionalmente, para um segundo endereço;
+- fila de e-mails com novas tentativas e proteção contra ciclos simultâneos ou disparos duplicados;
+- processamento totalmente em segundo plano no servidor, inclusive com a tela fechada;
+- nova migração cria tabelas isoladas por usuário e amplia as permissões administrativas.
 
 ## Novidades da V1.13.1
 

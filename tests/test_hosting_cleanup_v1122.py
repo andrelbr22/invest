@@ -32,7 +32,7 @@ def test_operational_files_use_only_the_oracle_canonical_domain():
 def test_runtime_identifies_the_self_hosted_oracle_environment():
     entrypoint = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
     assert 'os.environ.setdefault("APP_ENVIRONMENT", "oracle-production")' in entrypoint
-    assert 'os.environ["EXPECTED_EMBEDDED_API_VERSION"] = "0.14.1"' in entrypoint
+    assert 'os.environ["EXPECTED_EMBEDDED_API_VERSION"] = "0.15.0"' in entrypoint
 
 
 def test_publication_refuses_an_accidental_nested_project_copy():

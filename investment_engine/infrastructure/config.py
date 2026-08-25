@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     # list when APP_OWNER_EMAILS has not been configured yet.
     app_allowed_emails: str = ""
     backtest_callback_token: str = ""
+    alert_monitor_enabled: bool = False
+    alert_monitor_poll_seconds: int = 60
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    smtp_from_name: str = "Formação do Investidor"
+    smtp_starttls: bool = True
 
     @property
     def allowed_hosts_list(self) -> list[str]:
@@ -32,6 +41,10 @@ class Settings(BaseSettings):
     def owner_emails(self) -> set[str]:
         raw = self.app_owner_emails or self.app_allowed_emails
         return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+    @property
+    def smtp_configured(self) -> bool:
+        return bool(self.smtp_host.strip() and self.smtp_from_email.strip())
 
 
 settings = Settings()
