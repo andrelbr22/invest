@@ -247,6 +247,16 @@ def row_from_orm(asset, fund, tech, score) -> dict:
     if fund_dict.get("daily_liquidity") is None:
         fund_dict["daily_liquidity"] = g(tech, "daily_liquidity")
     score_dict = {field: g(score, field) for field in SCORE_FIELDS}
+    graham_number = None
+    graham_upside_pct = None
+    price = fund_dict.get("price")
+    pe = fund_dict.get("pe")
+    pbv = fund_dict.get("pbv")
+    if asset.asset_type == "stock" and price is not None and price > 0 and pe is not None and pe > 0 and pbv is not None and pbv > 0:
+        # P/L = preço/LPA e P/VP = preço/VPA; esta forma é equivalente
+        # ao número de Graham e evita depender de campos derivados ausentes.
+        graham_number = price * math.sqrt(22.5 / (pe * pbv))
+        graham_upside_pct = ((graham_number / price) - 1.0) * 100.0
     size = company_size_category({
         "market_cap_category": asset.market_cap_category,
         "metadata_json": asset.metadata_json if isinstance(asset.metadata_json, dict) else {},
@@ -268,7 +278,11 @@ def row_from_orm(asset, fund, tech, score) -> dict:
             "company_size_label": COMPANY_SIZE_LABELS.get(size),
             "market_cap_category_label": COMPANY_SIZE_LABELS.get(size) or localize_classification(asset.market_cap_category),
         },
-        "fundamentals": fund_dict,
+        "fundamentals": {
+            **fund_dict,
+            "graham_number": graham_number,
+            "graham_upside_pct": graham_upside_pct,
+        },
         "scores": score_dict,
         "snapshot_technical": {
             "rsi14": g(tech, "rsi14"), "sma20": g(tech, "sma20"), "sma20_1w": g(tech, "sma20_1w"),
@@ -335,8 +349,16 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
             } if need_history else {}),
         }
         results.append(flat)
-        if len(results) >= limit:
-            break
+    if asset_type == "stock":
+        # Rank the complete approved universe before applying the display limit.
+        # Otherwise the first database rows, rather than the best Graham upside,
+        # would determine which assets are eligible to appear.
+        results.sort(
+            key=lambda item: _f(item.get("graham_upside_pct"))
+            if _f(item.get("graham_upside_pct")) is not None else float("-inf"),
+            reverse=True,
+        )
+    results = results[:limit]
     return {
         "rows": results,
         "meta": {

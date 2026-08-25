@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
-version = "0.15.1"
-description = "Formação do Investidor V1.14.1 with private alerts and fully self-hosted public branding."
+version = "0.15.2"
+description = "Formação do Investidor V1.14.2 with restored analysis filters, Graham ordering and complete B3 alert catalog."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

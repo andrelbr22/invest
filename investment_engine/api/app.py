@@ -37,7 +37,7 @@ from ..core.alerts.catalog import market_alert_catalog, market_alert_item
 from ..core.alerts.service import AlertMonitor, AlertService, valid_email
 from ..integrations.email_delivery import AlertEmailSender
 from ..infrastructure.db.models import AssetORM, UserNewsCacheORM
-from ..core.instruments import is_supported_ticker
+from ..core.instruments import is_alertable_b3_asset, is_supported_ticker
 from ..core.models.strategy import StockFilterSet, FiiFilterSet
 from ..infrastructure.db.session import get_session_factory
 from ..core.services_v14 import calculate_asset_intelligence
@@ -49,8 +49,8 @@ from ..data.providers.market_dashboard import MarketDashboardService
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.14.1",
-    version="0.15.1",
+    title="Investment Engine V1.14.2",
+    version="0.15.2",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -574,7 +574,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.15.1", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.15.2", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -1028,13 +1028,25 @@ def _screen_scores(score):
 
 
 def _stock_screen_row(asset, fundamental, score):
+    price = _num(fundamental.price) if fundamental else None
+    pe = _num(fundamental.pe) if fundamental else None
+    pbv = _num(fundamental.pbv) if fundamental else None
+    graham = add_upside(
+        graham_number(
+            price / pe if price is not None and pe not in (None, 0) else None,
+            price / pbv if price is not None and pbv not in (None, 0) else None,
+        ),
+        price,
+    )
     return {
         **_screen_identity(asset),
-        "price": _num(fundamental.price) if fundamental else None,
-        "pe": _num(fundamental.pe) if fundamental else None,
-        "pbv": _num(fundamental.pbv) if fundamental else None,
+        "price": price,
+        "pe": pe,
+        "pbv": pbv,
         "dy": _num(fundamental.dividend_yield_pct) if fundamental else None,
         "roe": _num(fundamental.roe_pct) if fundamental else None,
+        "graham_number": graham.value,
+        "graham_upside_pct": graham.upside_pct,
         **_screen_scores(score),
     }
 
@@ -1267,12 +1279,8 @@ def alert_catalog(
     db: Session = Depends(get_db),
 ):
     b3 = []
-    for asset in AssetRepository(db).list_assets(limit=1500):
-        if str(asset.exchange or "B3").upper() != "B3":
-            continue
-        if asset.asset_type not in {"stock", "fii", "etf", "bdr"}:
-            continue
-        if not is_supported_ticker(asset.ticker, asset.asset_type):
+    for asset in AssetRepository(db).list_assets(limit=5000):
+        if not is_alertable_b3_asset(asset.ticker, asset.asset_type):
             continue
         b3.append({
             "key": asset.ticker, "label": asset.name or asset.ticker,
@@ -1350,10 +1358,8 @@ def create_price_alert(
         provider_symbol = "|".join(catalog_item["symbols"])
     else:
         asset = AssetRepository(db).get_by_ticker(symbol)
-        if asset is None or asset.asset_type not in {"stock", "fii", "etf", "bdr"}:
+        if asset is None or not is_alertable_b3_asset(asset.ticker, asset.asset_type):
             raise HTTPException(422, "b3_alert_asset_not_found")
-        if not is_supported_ticker(asset.ticker, asset.asset_type):
-            raise HTTPException(422, "unsupported_b3_alert_symbol")
         display_name = asset.name or asset.ticker
         provider_symbol = asset.ticker
 

@@ -9,7 +9,7 @@ STOCK_STRATEGIES = {
                                current_ratio_min=1, daily_liquidity_min=1_000_000),
     ),
     "cnpi": StockStrategy(
-        id="cnpi", name="CNPI",
+        id="cnpi", name="FDI - CNPI",
         filters=StockFilterSet(roe_min=10, net_margin_min=5, pe_min=0.1, pe_max=20, pbv_max=3,
                                dividend_yield_min=4, current_ratio_min=1, daily_liquidity_min=1_000_000),
     ),
@@ -29,7 +29,7 @@ FII_STRATEGIES = {
                              vacancy_max=15, daily_liquidity_min=500_000),
     ),
     "cnpi": FiiStrategy(
-        id="cnpi", name="FII CNPI",
+        id="cnpi", name="FII FDI - CNPI",
         filters=FiiFilterSet(pbv_max=1.05, dividend_yield_min=9, ffo_yield_min=9, cap_rate_min=8,
                              vacancy_max=10, daily_liquidity_min=1_000_000),
     ),

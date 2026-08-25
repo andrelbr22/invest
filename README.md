@@ -1,4 +1,16 @@
-# Formação do Investidor • Investment Engine V1.14.1
+# Formação do Investidor • Investment Engine V1.14.2
+
+## Novidades da V1.14.2
+
+- **Mercado e Análises** passa a abrir em **Ações** com a análise **Padrão** já aplicada e no máximo 50 resultados;
+- ações são ordenadas pelo maior potencial percentual entre o preço atual e o Preço Justo de Graham;
+- um único bloco recolhido reúne Padrão, **FDI - CNPI**, ALB, análises personalizadas e ajustes de indicadores;
+- clicar novamente em uma análise restaura os valores oficiais dela antes de permitir novos ajustes;
+- indicadores ficam separados em **Fundamentalistas** e **Técnicos**, preservando todos os controles já suportados pelo motor;
+- Preço Justo de Graham e potencial percentual aparecem também nos resultados de análises ajustadas;
+- o catálogo de alertas reconhece códigos regulares da B3 mesmo quando a fonte identifica a bolsa como `BMFBOVESPA`, corrigindo a ausência de BBAS3;
+- fracionários terminados em `F` e categorias não monitoráveis continuam excluídos;
+- nenhuma migração de banco é necessária.
 
 ## Novidades da V1.14.1
 

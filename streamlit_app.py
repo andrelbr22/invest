@@ -20,7 +20,7 @@ os.environ.setdefault("SHOW_API_SELECTOR", "false")
 os.environ.setdefault("APP_AUTH_REQUIRED", "true")
 os.environ.setdefault("APP_ENVIRONMENT", "oracle-production")
 os.environ.setdefault("ALERT_MONITOR_ENABLED", "true")
-os.environ["EXPECTED_EMBEDDED_API_VERSION"] = "0.15.1"
+os.environ["EXPECTED_EMBEDDED_API_VERSION"] = "0.15.2"
 
 from investment_engine.cloud_runtime import ensure_cloud_runtime
 

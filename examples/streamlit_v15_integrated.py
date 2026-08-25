@@ -13,6 +13,7 @@ from investment_engine.core.screening.universe import (
     filter_rows_by_tickers,
     universe_tickers,
 )
+from investment_engine.core.strategies.presets import FII_STRATEGIES, STOCK_STRATEGIES
 from investment_engine.integrations.github_actions import (
     GitHubActionsError,
     cancel_workflow_run,
@@ -316,6 +317,46 @@ def _change_market_asset_class():
     st.session_state[f"market_scope_notice_{asset_type}"]="O tipo de ativo foi alterado; a lista Padrão deste mercado foi carregada."
 
 
+def _initialize_market_panel():
+    """Open the market area in the documented stock/default-analysis state."""
+    asset_type="stock"
+    st.session_state["market_asset_class"]="Ações"
+    st.session_state[f"market_universe_mode_{asset_type}"]="all"
+    _clear_market_subfilters(asset_type)
+    st.session_state[f"market_strategy_ref_{asset_type}"]="preset:default"
+    st.session_state[f"market_result_limit_{asset_type}"]=50
+    st.session_state[f"market_table_ticker_{asset_type}"]=""
+    st.session_state[f"market_analysis_revision_{asset_type}"]=int(st.session_state.get(f"market_analysis_revision_{asset_type}",0))+1
+    st.session_state["advanced_screen_result"]=None
+    st.session_state["analysis_payload_v14"]=None
+
+
+def _select_market_analysis(asset_type,strategy_ref):
+    """Select an analysis and recreate its editor from the preset's saved defaults."""
+    st.session_state[f"market_strategy_ref_{asset_type}"]=strategy_ref
+    st.session_state[f"market_table_ticker_{asset_type}"]=""
+    st.session_state[f"market_analysis_revision_{asset_type}"]=int(st.session_state.get(f"market_analysis_revision_{asset_type}",0))+1
+    st.session_state["advanced_screen_result"]=None
+
+
+def _analysis_filter_defaults(asset_type,strategy_ref,custom_by_id):
+    if strategy_ref.startswith("custom:"):
+        item=custom_by_id.get(strategy_ref.split(":",1)[1]) or {}
+        return dict(item.get("filters") or {})
+    if not strategy_ref.startswith("preset:") or strategy_ref=="preset:all":
+        return {}
+    strategy_id=strategy_ref.split(":",1)[1]
+    strategies=STOCK_STRATEGIES if asset_type=="stock" else FII_STRATEGIES
+    selected=strategies.get(strategy_id)
+    return selected.filters.model_dump() if selected else {}
+
+
+def _graham_sort_key(row):
+    value=row.get("graham_upside_pct")
+    try:return (value is not None,float(value))
+    except (TypeError,ValueError):return (False,float("-inf"))
+
+
 def _navigate_to(module):
     st.session_state["main_navigation"]=module
 
@@ -435,37 +476,49 @@ def _active_range(enabled, min_value=None, max_value=None):
     return out
 
 
-def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Universo completo"):
-    st.subheader("Screener configurável — Fundamentalista + Técnico")
+def render_advanced_screener(
+    asset_type,allowed_tickers=None,universe_label="Universo completo",
+    initial_filters=None,form_instance="default",compact=False,
+):
+    initial_filters=dict(initial_filters or {})
+    def seeded(name,fallback):
+        value=initial_filters.get(name)
+        return float(value) if value is not None else float(fallback)
+    def enabled(*names):
+        return any(initial_filters.get(name) is not None for name in names)
+
+    if compact:st.markdown("#### Ajustar indicadores desta análise")
+    else:st.subheader("Screener configurável — Fundamentalista + Técnico")
     st.caption(f"Universo atual: {universe_label}. Ative somente as regras que quiser. Filtros ativos são combinados por E (AND): o ativo precisa satisfazer todos eles. N/D nunca passa por um filtro ativo.")
     market_name={"stock":"Ações","fii":"FIIs","other_b3":"Demais Ativos B3"}.get(asset_type,"Ativos")
     if "advanced_screen_result" not in st.session_state:st.session_state.advanced_screen_result=None
 
-    with st.form(f"advanced_screen_form_{asset_type}"):
-        st.markdown(f"#### 1. Filtros fundamentalistas — {market_name}")
+    with st.form(f"advanced_screen_form_{asset_type}_{form_instance}"):
+        st.markdown(f"#### Indicadores Fundamentalistas — {market_name}")
+        st.caption("Ative, desative ou altere os limites abaixo. Ao clicar novamente no botão da análise, os valores originais daquele método são restaurados.")
         fundamental={}
         if asset_type=="stock":
             c1,c2,c3,c4=st.columns(4)
-            use_pe=c1.checkbox("Usar P/L"); pe_min=c1.number_input("P/L mínimo",value=0.0,step=0.5); pe_max=c1.number_input("P/L máximo",value=15.0,step=0.5)
-            use_pbv=c2.checkbox("Usar P/VP"); pbv_max=c2.number_input("P/VP máximo",value=2.0,step=0.1)
-            use_dy=c3.checkbox("Usar Dividend Yield"); dy_min=c3.number_input("DY mínimo (%)",value=4.0,step=0.5)
-            use_liq=c4.checkbox("Usar liquidez diária"); liq_min=c4.number_input("Liquidez diária mínima (R$)",value=1000000.0,step=100000.0,format="%.0f")
+            use_pe=c1.checkbox("Usar P/L",value=enabled("pe_min","pe_max")); pe_min=c1.number_input("P/L mínimo",value=seeded("pe_min",0),step=0.5); pe_max=c1.number_input("P/L máximo",value=seeded("pe_max",15),step=0.5)
+            use_pbv=c2.checkbox("Usar P/VP",value=enabled("pbv_max")); pbv_max=c2.number_input("P/VP máximo",value=seeded("pbv_max",2),step=0.1)
+            use_dy=c3.checkbox("Usar Dividend Yield",value=enabled("dividend_yield_min")); dy_min=c3.number_input("DY mínimo (%)",value=seeded("dividend_yield_min",4),step=0.5)
+            use_liq=c4.checkbox("Usar liquidez diária",value=enabled("daily_liquidity_min")); liq_min=c4.number_input("Liquidez diária mínima (R$)",value=seeded("daily_liquidity_min",1000000),step=100000.0,format="%.0f")
 
             c1,c2,c3,c4=st.columns(4)
-            use_roe=c1.checkbox("Usar ROE"); roe_min=c1.number_input("ROE mínimo (%)",value=10.0,step=1.0)
-            use_roic=c2.checkbox("Usar ROIC"); roic_min=c2.number_input("ROIC mínimo (%)",value=8.0,step=1.0)
-            use_ebit=c3.checkbox("Usar margem EBIT"); ebit_min=c3.number_input("Margem EBIT mínima (%)",value=8.0,step=1.0)
-            use_net=c4.checkbox("Usar margem líquida"); net_min=c4.number_input("Margem líquida mínima (%)",value=5.0,step=1.0)
+            use_roe=c1.checkbox("Usar ROE",value=enabled("roe_min")); roe_min=c1.number_input("ROE mínimo (%)",value=seeded("roe_min",10),step=1.0)
+            use_roic=c2.checkbox("Usar ROIC",value=enabled("roic_min")); roic_min=c2.number_input("ROIC mínimo (%)",value=seeded("roic_min",8),step=1.0)
+            use_ebit=c3.checkbox("Usar margem EBIT",value=enabled("ebit_margin_min")); ebit_min=c3.number_input("Margem EBIT mínima (%)",value=seeded("ebit_margin_min",8),step=1.0)
+            use_net=c4.checkbox("Usar margem líquida",value=enabled("net_margin_min")); net_min=c4.number_input("Margem líquida mínima (%)",value=seeded("net_margin_min",5),step=1.0)
 
             c1,c2,c3,c4=st.columns(4)
-            use_ev=c1.checkbox("Usar EV/EBITDA"); ev_max=c1.number_input("EV/EBITDA máximo",value=10.0,step=0.5)
-            use_debt=c2.checkbox("Usar dívida bruta/PL"); debt_max=c2.number_input("Dívida bruta/PL máxima",value=1.5,step=0.1)
-            use_ndebt=c3.checkbox("Usar dívida líquida/EBITDA"); ndebt_max=c3.number_input("Dív. líquida/EBITDA máxima",value=3.0,step=0.25)
-            use_cr=c4.checkbox("Usar liquidez corrente"); cr_min=c4.number_input("Liquidez corrente mínima",value=1.0,step=0.1)
+            use_ev=c1.checkbox("Usar EV/EBITDA",value=enabled("ev_ebitda_max")); ev_max=c1.number_input("EV/EBITDA máximo",value=seeded("ev_ebitda_max",10),step=0.5)
+            use_debt=c2.checkbox("Usar dívida bruta/PL",value=enabled("gross_debt_to_equity_max")); debt_max=c2.number_input("Dívida bruta/PL máxima",value=seeded("gross_debt_to_equity_max",1.5),step=0.1)
+            use_ndebt=c3.checkbox("Usar dívida líquida/EBITDA",value=enabled("net_debt_to_ebitda_max")); ndebt_max=c3.number_input("Dív. líquida/EBITDA máxima",value=seeded("net_debt_to_ebitda_max",3),step=0.25)
+            use_cr=c4.checkbox("Usar liquidez corrente",value=enabled("current_ratio_min")); cr_min=c4.number_input("Liquidez corrente mínima",value=seeded("current_ratio_min",1),step=0.1)
 
             c1,c2=st.columns(2)
-            use_rev=c1.checkbox("Usar CAGR receita 5 anos"); rev_min=c1.number_input("CAGR receita mínimo (%)",value=5.0,step=1.0)
-            use_earn=c2.checkbox("Usar CAGR lucro 5 anos"); earn_min=c2.number_input("CAGR lucro mínimo (%)",value=5.0,step=1.0)
+            use_rev=c1.checkbox("Usar CAGR receita 5 anos",value=enabled("revenue_cagr_5y_min")); rev_min=c1.number_input("CAGR receita mínimo (%)",value=seeded("revenue_cagr_5y_min",5),step=1.0)
+            use_earn=c2.checkbox("Usar CAGR lucro 5 anos",value=enabled("earnings_cagr_5y_min")); earn_min=c2.number_input("CAGR lucro mínimo (%)",value=seeded("earnings_cagr_5y_min",5),step=1.0)
 
             fundamental={
                 "pe":_active_range(use_pe,pe_min,pe_max), "pbv":_active_range(use_pbv,None,pbv_max),
@@ -478,16 +531,16 @@ def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Uni
             }
         elif asset_type=="fii":
             c1,c2,c3,c4=st.columns(4)
-            use_pbv=c1.checkbox("Usar P/VP"); pbv_min=c1.number_input("P/VP mínimo",value=0.5,step=0.05); pbv_max=c1.number_input("P/VP máximo",value=1.1,step=0.05)
-            use_dy=c2.checkbox("Usar Dividend Yield"); dy_min=c2.number_input("DY mínimo (%)",value=7.0,step=0.5)
-            use_ffo=c3.checkbox("Usar FFO Yield"); ffo_min=c3.number_input("FFO Yield mínimo (%)",value=5.0,step=0.5)
-            use_cap=c4.checkbox("Usar Cap Rate"); cap_min=c4.number_input("Cap Rate mínimo (%)",value=5.0,step=0.5)
+            use_pbv=c1.checkbox("Usar P/VP",value=enabled("pbv_min","pbv_max")); pbv_min=c1.number_input("P/VP mínimo",value=seeded("pbv_min",0.5),step=0.05); pbv_max=c1.number_input("P/VP máximo",value=seeded("pbv_max",1.1),step=0.05)
+            use_dy=c2.checkbox("Usar Dividend Yield",value=enabled("dividend_yield_min")); dy_min=c2.number_input("DY mínimo (%)",value=seeded("dividend_yield_min",7),step=0.5)
+            use_ffo=c3.checkbox("Usar FFO Yield",value=enabled("ffo_yield_min")); ffo_min=c3.number_input("FFO Yield mínimo (%)",value=seeded("ffo_yield_min",5),step=0.5)
+            use_cap=c4.checkbox("Usar Cap Rate",value=enabled("cap_rate_min")); cap_min=c4.number_input("Cap Rate mínimo (%)",value=seeded("cap_rate_min",5),step=0.5)
             c1,c2,c3,c4=st.columns(4)
-            use_vac=c1.checkbox("Usar vacância física"); vac_max=c1.number_input("Vacância máxima (%)",value=10.0,step=1.0)
-            use_fvac=c2.checkbox("Usar vacância financeira"); fvac_max=c2.number_input("Vacância financeira máxima (%)",value=10.0,step=1.0)
-            use_ltv=c3.checkbox("Usar LTV"); ltv_max=c3.number_input("LTV máximo (%)",value=40.0,step=1.0)
-            use_wale=c4.checkbox("Usar WALE"); wale_min=c4.number_input("WALE mínimo (anos)",value=2.0,step=0.5)
-            use_liq=st.checkbox("Usar liquidez diária do FII"); liq_min=st.number_input("Liquidez diária mínima (R$)",value=500000.0,step=100000.0,format="%.0f")
+            use_vac=c1.checkbox("Usar vacância física",value=enabled("vacancy_max")); vac_max=c1.number_input("Vacância máxima (%)",value=seeded("vacancy_max",10),step=1.0)
+            use_fvac=c2.checkbox("Usar vacância financeira",value=enabled("financial_vacancy_max")); fvac_max=c2.number_input("Vacância financeira máxima (%)",value=seeded("financial_vacancy_max",10),step=1.0)
+            use_ltv=c3.checkbox("Usar LTV",value=enabled("ltv_max")); ltv_max=c3.number_input("LTV máximo (%)",value=seeded("ltv_max",40),step=1.0)
+            use_wale=c4.checkbox("Usar WALE",value=enabled("wale_min")); wale_min=c4.number_input("WALE mínimo (anos)",value=seeded("wale_min",2),step=0.5)
+            use_liq=st.checkbox("Usar liquidez diária do FII",value=enabled("daily_liquidity_min")); liq_min=st.number_input("Liquidez diária mínima (R$)",value=seeded("daily_liquidity_min",500000),step=100000.0,format="%.0f")
             fundamental={
                 "pbv":_active_range(use_pbv,pbv_min,pbv_max), "dividend_yield_pct":_active_range(use_dy,dy_min,None),
                 "ffo_yield_pct":_active_range(use_ffo,ffo_min,None), "cap_rate_pct":_active_range(use_cap,cap_min,None),
@@ -497,20 +550,20 @@ def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Uni
             }
         else:
             st.info("Para ETFs, BDRs e futuros, os filtros empresariais e imobiliários incompatíveis ficam ocultos. Esta tela usa somente liquidez e indicadores técnicos comparáveis.")
-            use_liq=st.checkbox("Usar liquidez diária")
-            liq_min=st.number_input("Liquidez diária mínima (R$)",value=500000.0,step=100000.0,format="%.0f")
+            use_liq=st.checkbox("Usar liquidez diária",value=enabled("daily_liquidity_min"))
+            liq_min=st.number_input("Liquidez diária mínima (R$)",value=seeded("daily_liquidity_min",500000),step=100000.0,format="%.0f")
             fundamental={"daily_liquidity":_active_range(use_liq,liq_min,None)}
         fundamental={k:v for k,v in fundamental.items() if v is not None}
 
-        st.markdown("#### 2. Valuation e scores")
+        st.markdown("##### Valuation e scores fundamentalistas")
         score_filters={}
         if asset_type=="other_b3":
             below_graham=False; below_barsi=False; score_enabled=False
             st.caption("Oculto nesta categoria: Graham, Bazin/Barsi, ALB, Quality, Value e Growth. Esses modelos dependem de fundamentos de empresa ou FII.")
         else:
             v1,v2,v3=st.columns(3)
-            below_graham=v1.checkbox("Preço abaixo do Graham",disabled=asset_type!="stock")
-            below_barsi=v2.checkbox("Preço abaixo do Teto Bazin/Barsi (6%)")
+            below_graham=v1.checkbox("Preço abaixo do Graham",value=bool(initial_filters.get("require_below_graham")),disabled=asset_type!="stock")
+            below_barsi=v2.checkbox("Preço abaixo do Teto Bazin/Barsi (6%)",value=bool(initial_filters.get("require_below_dividend_target")))
             score_enabled=v3.checkbox("Filtrar também por scores")
         if score_enabled:
             q1,q2,q3,q4=st.columns(4)
@@ -524,7 +577,8 @@ def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Uni
             liquidity_score=q3.number_input("Liquidity mínimo",min_value=0.0,max_value=100.0,value=40.0,step=5.0)
             score_filters={"alb_score":{"min":alb},"quality_score":{"min":quality},"value_score":{"min":value},"data_quality_score":{"min":dataq},"technical_score":{"min":technical_score},"risk_score":{"min":risk_score},"liquidity_score":{"min":liquidity_score}}
 
-        st.markdown("#### 3. Filtros técnicos combináveis")
+        st.markdown("#### Indicadores Técnicos")
+        st.caption("Tendências diária, semanal e mensal, RSI 14 e Pivot Points podem ser combinados com os fundamentos acima.")
         t1,t2,t3,t4=st.columns(4)
         trend_choices=[20,21] if asset_type=="other_b3" else [21,20]
         trend_period=t1.selectbox("Período das médias",trend_choices,help="Para Demais Ativos B3, 20 aproveita o snapshot técnico do catálogo. Com histórico local, 21 também pode ser usado.")
@@ -563,7 +617,7 @@ def render_advanced_screener(asset_type,allowed_tickers=None,universe_label="Uni
 Para não usar informação ainda incompleta, a referência é sempre o **dia/semana/mês anterior encerrado**.
 """)
         limit=st.slider("Máximo de resultados do screener avançado",10,300,100,10)
-        submitted=st.form_submit_button("🔎 Executar filtros combinados",type="primary")
+        submitted=st.form_submit_button("🔎 Aplicar análise ajustada",type="primary")
 
     if submitted:
         tech={"daily_trend":daily,"weekly_trend":weekly,"monthly_trend":monthly,"pivot_zone":pivot_zone,"near_pivot_level":near_level,"pivot_tolerance_pct":tolerance}
@@ -578,9 +632,21 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
         with st.spinner("Aplicando fundamentos, scores, tendências e pivôs..."):
             result,e=api_post("/screen/advanced",payload,timeout=240)
         if e:st.error(f"Screener avançado não concluído: {e}")
-        else:st.session_state.advanced_screen_result=result
+        else:
+            result=dict(result or {})
+            result["_analysis_context"]=str(form_instance)
+            st.session_state.advanced_screen_result=result
 
     result=st.session_state.get("advanced_screen_result")
+    if result and compact:
+        meta=result.get("meta") or {}
+        st.success(
+            f"Análise ajustada aplicada: {int(meta.get('returned') or 0)} ativo(s) aprovado(s) "
+            f"dentro de {universe_label}. A tabela principal abaixo foi atualizada."
+        )
+        if meta.get("technical_filter_active") and meta.get("technical_history_missing",0)>0:
+            st.warning(f"{meta.get('technical_history_missing',0)} ativo(s) não possuíam histórico suficiente para os indicadores técnicos ativos.")
+        return result
     if result:
         meta=result.get("meta") or {}; rows=result.get("rows") or []
         st.caption(f"Resultado calculado dentro de: **{universe_label}**.")
@@ -600,10 +666,10 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
         else:
             df=pd.DataFrame(rows)
             rename={
-                "ticker":"Ticker","name":"Nome","asset_type_label":"Tipo","company_size_label":"Porte","sector_label":"Setor","segment_label":"Segmento","classification":"Categoria","price":"Preço","pe":"P/L","pbv":"P/VP","dividend_yield_pct":"DY %","roe_pct":"ROE %","roic_pct":"ROIC %","ebit_margin_pct":"Margem EBIT %","net_margin_pct":"Margem Líquida %","ev_ebitda":"EV/EBITDA","gross_debt_to_equity":"Dív. Bruta/PL","net_debt_to_ebitda":"Dív. Líq./EBITDA","current_ratio":"Liq. Corrente","revenue_cagr_5y_pct":"CAGR Receita %","earnings_cagr_5y_pct":"CAGR Lucro %","ffo_yield_pct":"FFO Yield %","cap_rate_pct":"Cap Rate %","vacancy_pct":"Vacância %","ltv_pct":"LTV %","wale_years":"WALE","daily_liquidity":"Liquidez diária","alb_score":"ALB","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","data_quality_score":"Data Quality","trend_daily":"Tend. Dia","trend_weekly":"Tend. Sem.","trend_monthly":"Tend. Mês","sma_daily":"Média Dia","sma_weekly":"Média Sem.","sma_monthly":"Média Mês","rsi14_screen":"RSI 14","pp":"PP","s1":"S1","s2":"S2","s3":"S3","r1":"R1","r2":"R2","r3":"R3","pivot_zone":"Faixa Pivot","pivot_reference":"Referência Pivot",
+                "ticker":"Ticker","name":"Nome","asset_type_label":"Tipo","company_size_label":"Porte","sector_label":"Setor","segment_label":"Segmento","classification":"Categoria","price":"Preço","graham_number":"Preço Justo Graham","graham_upside_pct":"Potencial Graham %","pe":"P/L","pbv":"P/VP","dividend_yield_pct":"DY %","roe_pct":"ROE %","roic_pct":"ROIC %","ebit_margin_pct":"Margem EBIT %","net_margin_pct":"Margem Líquida %","ev_ebitda":"EV/EBITDA","gross_debt_to_equity":"Dív. Bruta/PL","net_debt_to_ebitda":"Dív. Líq./EBITDA","current_ratio":"Liq. Corrente","revenue_cagr_5y_pct":"CAGR Receita %","earnings_cagr_5y_pct":"CAGR Lucro %","ffo_yield_pct":"FFO Yield %","cap_rate_pct":"Cap Rate %","vacancy_pct":"Vacância %","ltv_pct":"LTV %","wale_years":"WALE","daily_liquidity":"Liquidez diária","alb_score":"ALB","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","data_quality_score":"Data Quality","trend_daily":"Tend. Dia","trend_weekly":"Tend. Sem.","trend_monthly":"Tend. Mês","sma_daily":"Média Dia","sma_weekly":"Média Sem.","sma_monthly":"Média Mês","rsi14_screen":"RSI 14","pp":"PP","s1":"S1","s2":"S2","s3":"S3","r1":"R1","r2":"R2","r3":"R3","pivot_zone":"Faixa Pivot","pivot_reference":"Referência Pivot",
             }
             view=df.rename(columns=rename)
-            preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","P/L","P/VP","DY %","ROE %","ROIC %","FFO Yield %","Cap Rate %","Vacância %","Liquidez diária","ALB","Quality","Value","Technical","Risk","Liquidity","Tend. Dia","Tend. Sem.","Tend. Mês","Média Dia","Média Sem.","Média Mês","RSI 14","S3","S2","S1","PP","R1","R2","R3","Faixa Pivot","Referência Pivot"] if c in view.columns]
+            preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","Preço Justo Graham","Potencial Graham %","P/L","P/VP","DY %","ROE %","ROIC %","FFO Yield %","Cap Rate %","Vacância %","Liquidez diária","ALB","Quality","Value","Technical","Risk","Liquidity","Tend. Dia","Tend. Sem.","Tend. Mês","Média Dia","Média Sem.","Média Mês","RSI 14","S3","S2","S1","PP","R1","R2","R3","Faixa Pivot","Referência Pivot"] if c in view.columns]
             st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=520)
             st.caption("Tendência = preço atual acima/abaixo da média simples do período escolhido. Sem histórico suficiente, o filtro técnico ativo reprova o ativo em vez de assumir zero.")
             if asset_type=="stock" and PERMISSIONS.get("is_owner"):
@@ -618,6 +684,7 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
                         args=(advanced_tickers,f"Screener avançado • {universe_label}"),
                     )
                     if len(advanced_tickers)>100:st.caption("O lote administrativo aceita no máximo 100 ativos; serão levados os 100 primeiros desta tabela.")
+    return result
 
 
 def _optional_filter_number(label,key,initial=None,default=0.0,min_value=-1000000000.0,max_value=1000000000.0,step=0.5):
@@ -1169,7 +1236,7 @@ def render_market():
 
     notice=st.session_state.pop(f"market_scope_notice_{asset_type}",None)
     if notice:
-        st.info(f"{notice} Agora você pode aplicar novamente Padrão, CNPI, ALB, um filtro personalizado ou o screener avançado somente dentro dos {len(allowed_tickers)} ativo(s) deste universo.")
+        st.info(f"{notice} Agora você pode aplicar novamente Padrão, FDI - CNPI, ALB, um filtro personalizado ou indicadores ajustados somente dentro dos {len(allowed_tickers)} ativo(s) deste universo.")
 
     if asset_type=="other_b3":
         preset_labels={
@@ -1179,7 +1246,7 @@ def render_market():
     else:
         preset_labels={
             "preset:all":"Sem filtros — mostrar 100% do universo",
-            "preset:default":"Padrão","preset:cnpi":"CNPI","preset:alb":"ALB",
+            "preset:default":"Padrão","preset:cnpi":"FDI - CNPI","preset:alb":"ALB",
         }
     strategy_options=list(preset_labels)+[f"custom:{item['id']}" for item in custom_items]
     custom_by_id={str(item["id"]):item for item in custom_items}
@@ -1191,13 +1258,32 @@ def render_market():
     st.session_state.setdefault(strategy_key,"preset:default")
     if st.session_state[strategy_key] not in strategy_options:st.session_state[strategy_key]="preset:default"
 
-    with st.expander("🔎 Filtro de análise e localização — clique para ajustar",expanded=False):
-        st.subheader("Refinar o universo")
-        st.caption("O filtro escolhido abaixo nunca traz ativos de fora do universo atual.")
-        c1,c2=st.columns([3,1])
-        strategy_ref=c1.selectbox("Filtro de análise",strategy_options,format_func=strategy_name,key=strategy_key)
-        limit=c2.slider("Máximo exibido",10,200,50,10,key=f"market_result_limit_{asset_type}")
+    strategy_ref=st.session_state[strategy_key]
+    adjusted_result=None
+    active_form_instance=None
+    with st.expander("🧭 Análises, filtros e indicadores — clique para abrir",expanded=False):
+        st.subheader("Análises de ativos")
+        st.caption("Escolha um método. Clicar no botão restaura imediatamente os valores padrão daquela análise; depois você pode ajustar os indicadores abaixo sem alterar a definição oficial.")
+        analysis_buttons=[(key,label) for key,label in preset_labels.items() if key!="preset:all"]
+        analysis_buttons.extend((f"custom:{item['id']}",f"👤 {item['name']}") for item in custom_items)
+        button_columns=st.columns(min(3,max(1,len(analysis_buttons))))
+        for index,(analysis_ref,analysis_label) in enumerate(analysis_buttons):
+            button_columns[index%len(button_columns)].button(
+                analysis_label,key=f"analysis_button_{asset_type}_{analysis_ref}",use_container_width=True,
+                type="primary" if strategy_ref==analysis_ref else "secondary",
+                on_click=_select_market_analysis,args=(asset_type,analysis_ref),
+            )
+        st.button(
+            "Limpar análise e mostrar 100% do universo",key=f"analysis_button_all_{asset_type}",
+            use_container_width=True,type="primary" if strategy_ref=="preset:all" else "secondary",
+            on_click=_select_market_analysis,args=(asset_type,"preset:all"),
+        )
+
+        strategy_ref=st.session_state[strategy_key]
         strategy_label=strategy_name(strategy_ref)
+        c1,c2=st.columns([3,1])
+        c1.success(f"Análise ativa: **{strategy_label}**")
+        limit=c2.slider("Máximo exibido",10,200,50,10,key=f"market_result_limit_{asset_type}")
 
         ticker_labels={"":"Todos os ativos aprovados"}
         ticker_labels.update({item["ticker"]:f"{item['ticker']} — {item.get('name') or 'nome ainda não cadastrado'}" for item in scoped_catalog})
@@ -1205,6 +1291,17 @@ def render_market():
             "Localizar um ativo dentro deste universo",list(ticker_labels),
             format_func=lambda value:ticker_labels[value],key=f"market_table_ticker_{asset_type}",
         )
+
+        if can("can_use_advanced_filters"):
+            initial_analysis_filters=_analysis_filter_defaults(asset_type,strategy_ref,custom_by_id)
+            revision=int(st.session_state.get(f"market_analysis_revision_{asset_type}",0))
+            active_form_instance=f"{strategy_ref.replace(':','_')}_{revision}"
+            adjusted_result=render_advanced_screener(
+                asset_type,allowed_tickers=allowed_tickers,universe_label=scope_label,
+                initial_filters=initial_analysis_filters,form_instance=active_form_instance,compact=True,
+            )
+        else:
+            st.caption("Ajustes combinados de indicadores fundamentalistas e técnicos dependem de autorização do administrador. As análises oficiais acima continuam disponíveis.")
 
     _compact_summary(
         "VISUALIZAÇÃO",
@@ -1224,6 +1321,11 @@ def render_market():
         st.error(f"Não foi possível carregar o filtro: {err}"); raw_rows=[]
     if asset_type=="other_b3" and strategy_ref=="preset:default":
         raw_rows=sorted(raw_rows or [],key=lambda row:float(row.get("daily_liquidity") or 0),reverse=True)
+    if adjusted_result and adjusted_result.get("_analysis_context")==active_form_instance:
+        raw_rows=adjusted_result.get("rows") or []
+        strategy_label=f"{strategy_label} • ajustes ativos"
+    if asset_type=="stock":
+        raw_rows=sorted(raw_rows or [],key=_graham_sort_key,reverse=True)
     refined_rows=filter_rows_by_tickers(raw_rows or [],allowed_tickers)
     visible_rows=refined_rows[:limit]
     visible_rows=[{**catalog_map.get(str(row.get("ticker") or "").upper(),{}),**row} for row in visible_rows]
@@ -1255,6 +1357,8 @@ def render_market():
                 "pbv":fund_one.get("pbv"),
                 "dy":fund_one.get("dividend_yield_pct"),
                 "roe":fund_one.get("roe_pct"),
+                "graham_number":intel_one.get("graham_number"),
+                "graham_upside_pct":intel_one.get("graham_upside_pct"),
                 "ffo_yield":fund_one.get("ffo_yield_pct"),
                 "cap_rate":fund_one.get("cap_rate_pct"),
                 "vacancy":fund_one.get("vacancy_pct"),
@@ -1294,9 +1398,9 @@ def render_market():
         else:
             st.info(f"Nenhum dos {len(allowed_tickers)} ativo(s) passou por {strategy_label}. Escolha ‘Sem filtros’ para recuperar 100% deste universo ou ajuste o refinamento.")
     else:
-        rename={"ticker":"Ticker","name":"Nome","asset_type_label":"Tipo","company_size_label":"Porte","sector_label":"Setor","classification":"Categoria","segment_label":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dy":"DY %","roe":"ROE %","ffo_yield":"FFO Yield %","cap_rate":"Cap Rate %","vacancy":"Vacância %","daily_liquidity":"Liquidez","signal_tv":"Sinal técnico","rsi14_screen":"RSI 14","sma20":"SMA 20","sma50":"SMA 50","sma200":"SMA 200","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","alb_score":"ALB","data_quality_score":"Data Quality"}
+        rename={"ticker":"Ticker","name":"Nome","asset_type_label":"Tipo","company_size_label":"Porte","sector_label":"Setor","classification":"Categoria","segment_label":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dy":"DY %","roe":"ROE %","graham_number":"Preço Justo Graham","graham_upside_pct":"Potencial Graham %","ffo_yield":"FFO Yield %","cap_rate":"Cap Rate %","vacancy":"Vacância %","daily_liquidity":"Liquidez","signal_tv":"Sinal técnico","rsi14_screen":"RSI 14","sma20":"SMA 20","sma50":"SMA 50","sma200":"SMA 200","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","alb_score":"ALB","data_quality_score":"Data Quality"}
         view=df.rename(columns=rename)
-        preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","Liquidez","Sinal técnico","RSI 14","SMA 20","SMA 50","SMA 200","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
+        preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","Preço Justo Graham","Potencial Graham %","Liquidez","Sinal técnico","RSI 14","SMA 20","SMA 50","SMA 200","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
         st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=460)
 
         if asset_type=="stock" and PERMISSIONS.get("is_owner"):
@@ -1358,13 +1462,7 @@ def render_market():
     if int(PERMISSIONS.get("custom_filter_limit") or 0)>0 and asset_type in {"stock","fii"}:
         render_custom_filter_manager(asset_type,custom_payload)
     elif asset_type=="other_b3":
-        st.caption("Filtros personalizados fundamentalistas ficam ocultos em Demais Ativos B3; use o screener técnico abaixo.")
-
-    if can("can_use_advanced_filters"):
-        with st.expander("🧰 Screener avançado — clique para montar regras combinadas",expanded=False):
-            render_advanced_screener(asset_type,allowed_tickers=allowed_tickers,universe_label=scope_label)
-    else:
-        st.info("Os filtros avançados estão disponíveis somente mediante autorização do administrador.")
+        st.caption("Filtros personalizados fundamentalistas ficam ocultos em Demais Ativos B3; os indicadores técnicos compatíveis permanecem no bloco Análises acima.")
 
     st.markdown("---"); st.header("🔎 Análise individual")
     if "analysis_payload_v14" not in st.session_state:st.session_state.analysis_payload_v14=None
@@ -3331,10 +3429,14 @@ _render_sidebar_identity(health)
 if st.session_state.get("main_navigation") not in modules:st.session_state["main_navigation"]=modules[0]
 module=st.sidebar.radio("Escolha uma área",modules,index=0,format_func=lambda value:module_labels[value],label_visibility="collapsed",key="main_navigation")
 st.sidebar.markdown('<div class="ie-sidebar-footer">Ambiente privado e protegido</div>',unsafe_allow_html=True)
+previous_module=st.session_state.get("_previous_main_navigation")
+if module=="market" and previous_module!="market":
+    _initialize_market_panel()
+st.session_state["_previous_main_navigation"]=module
 if module=="dashboard":render_market_dashboard()
 elif module=="market":render_market()
 elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.14.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.14.2. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

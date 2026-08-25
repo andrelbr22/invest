@@ -11,6 +11,7 @@ import re
 
 
 B3_CATALOG_TYPES = frozenset({"stock", "fii", "etf", "bdr", "future"})
+ALERTABLE_B3_TYPES = frozenset({"stock", "fii", "etf", "bdr"})
 
 _REGULAR_STOCK = re.compile(r"^[A-Z]{3,5}(?:[3-8]|11)$")
 _FII_OR_ETF = re.compile(r"^[A-Z]{3,5}11$")
@@ -54,6 +55,12 @@ def ticker_exclusion_reason(ticker: str | None, asset_type: str | None) -> str |
 
 def is_supported_ticker(ticker: str | None, asset_type: str | None) -> bool:
     return ticker_exclusion_reason(ticker, asset_type) is None
+
+
+def is_alertable_b3_asset(ticker: str | None, asset_type: str | None) -> bool:
+    """Accept canonical B3 instruments independently of the provider's exchange alias."""
+    kind = str(asset_type or "").strip().lower()
+    return kind in ALERTABLE_B3_TYPES and is_supported_ticker(ticker, kind)
 
 
 def require_supported_ticker(ticker: str | None, asset_type: str | None) -> str:
