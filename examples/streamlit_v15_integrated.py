@@ -20,17 +20,28 @@ from investment_engine.integrations.github_actions import (
     list_workflow_runs,
 )
 
-st.set_page_config(page_title="Formação do Investidor", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="Formação do Investidor",
+    page_icon=":material/school:",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={"Get help": None, "Report a Bug": None, "About": None},
+)
 
 st.markdown("""
 <style>
-    /* A barra fixa do Streamlit ocupa o topo da janela. A compactação anterior
-       colocava o primeiro título por baixo dela. Mantemos o conteúdo compacto,
-       mas reservamos a altura real da barra antes do primeiro elemento. */
+    /* Mantém o cabeçalho estrutural para o controle da barra lateral, enquanto
+       remove os elementos técnicos e a identificação visual da plataforma. */
     header[data-testid="stHeader"] {
         background:rgba(248,251,250,.96); border-bottom:1px solid rgba(20,103,78,.08);
         backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
     }
+    #MainMenu,
+    [data-testid="stToolbar"],
+    [data-testid="stStatusWidget"],
+    [data-testid="stDecoration"],
+    .stDeployButton,
+    footer {display:none !important; visibility:hidden !important;}
     .block-container {padding-top: 4rem; padding-bottom: 2rem; max-width: 1500px;}
     .block-container h1 {font-size:2rem; line-height:1.12; margin:.15rem 0 .2rem;}
     .block-container h2 {font-size:1.38rem; margin:.35rem 0 .15rem;}
@@ -3326,4 +3337,4 @@ elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.14.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.14.1. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")

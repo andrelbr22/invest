@@ -118,7 +118,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Publica Investment Engine V1.14.0 com alertas privados por e-mail"
+    & $gitPath commit -m "Publica Investment Engine V1.14.1 com identidade visual própria"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
@@ -134,4 +134,4 @@ try {
 
 Write-Host ""
 Write-Host "PUBLICACAO CONCLUIDA." -ForegroundColor Green
-Write-Host "O Streamlit iniciara a atualizacao automaticamente."
+Write-Host "O servidor Oracle iniciara a atualizacao automaticamente."

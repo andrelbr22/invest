@@ -49,8 +49,8 @@ from ..data.providers.market_dashboard import MarketDashboardService
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.14.0",
-    version="0.15.0",
+    title="Investment Engine V1.14.1",
+    version="0.15.1",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
@@ -574,7 +574,7 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.15.0", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.15.1", "environment": settings.app_environment}
 
 
 @app.get("/health/db")

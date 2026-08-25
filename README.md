@@ -1,4 +1,13 @@
-# Formação do Investidor • Investment Engine V1.14.0
+# Formação do Investidor • Investment Engine V1.14.1
+
+## Novidades da V1.14.1
+
+- favicon educacional próprio da Formação do Investidor;
+- menu técnico, barra de ferramentas, decoração e créditos da plataforma deixam de aparecer ao visitante;
+- o controle necessário para abrir e recolher a navegação lateral permanece disponível;
+- a publicação passa a identificar explicitamente a atualização automática no servidor Oracle;
+- testes impedem o retorno involuntário dos elementos removidos;
+- nenhuma migração de banco é necessária.
 
 ## Novidades da V1.14.0
 
@@ -56,7 +65,7 @@
 
 ## Novidades da V1.12.4
 
-- o título da página agora começa abaixo da barra fixa do Streamlit, sem cortes;
+- o título da página agora começa abaixo da barra fixa da interface, sem cortes;
 - o cabeçalho superior recebeu fundo consistente, evitando a sensação de uma área vazia sobre o conteúdo;
 - o espaçamento do topo se adapta a telas de computador, tablet e celular;
 - a organização compacta, os filtros recolhidos e todas as regras da V1.12.3 foram preservados;
@@ -126,11 +135,10 @@
 - atualização automática do banco por migração Alembic, sem edição SQL manual.
 
 > Edição preparada para hospedagem própria na Oracle Cloud. `app.py` permanece
-> como entrada estável e `streamlit_app.py` inicializa a interface e a API
-> privada. Consulte `DEPLOY_STREAMLIT_CLOUD.md` — nome histórico preservado para
-> compatibilidade. O GitHub contém somente código; banco e credenciais ficam no servidor.
+> como entrada estável e a inicialização sobe a interface e a API privada.
+> O GitHub contém somente código; banco e credenciais ficam no servidor.
 
-Backend Python/FastAPI/PostgreSQL + Streamlit para triagem fundamentalista/técnica, valuation, carteira e backtests.
+Backend Python/FastAPI/PostgreSQL e interface web para triagem fundamentalista/técnica, valuation, carteira e backtests.
 
 ## Novidades da V1.10.4
 
