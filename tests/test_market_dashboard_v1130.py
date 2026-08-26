@@ -59,7 +59,7 @@ def test_calculated_exchange_holidays_include_requested_markets():
     assert nyse[date(2026, 11, 26)] == "Thanksgiving"
 
 
-def test_focus_accepts_numeric_years_and_exposes_cdi_reference_note():
+def test_focus_accepts_numeric_years_and_exposes_selic_projection_note():
     class Response:
         def __init__(self, payload):
             self.payload = payload
@@ -80,7 +80,8 @@ def test_focus_accepts_numeric_years_and_exposes_cdi_reference_note():
 
     assert result["current_year"]["value"] == pytest.approx(12.25)
     assert result["next_year"]["value"] == pytest.approx(10.50)
-    assert "Focus pesquisa a Selic" in result["projection_note"]
+    assert "meta da taxa Selic" in result["projection_note"]
+    assert "Não se trata de projeção do CDI" in result["projection_note"]
 
 
 def test_bls_calendar_has_official_fallback_for_cpi_and_payroll():
@@ -134,7 +135,8 @@ def test_market_dashboard_is_a_first_class_compact_module():
     assert '"dashboard":"🌐 Painel de Mercado"' in ui
     assert "Curva de juros brasileira" in ui
     assert "Ouro, prata e petróleo" in ui
-    assert "CDI projetado" in ui
+    assert "Selic Focus • fim de" in ui
+    assert "CDI projetado" not in ui
     assert "SUPER QUARTA" in ui
     assert '@app.post("/market-dashboard/ensure")' in api
     assert "MarketDashboardService" in provider

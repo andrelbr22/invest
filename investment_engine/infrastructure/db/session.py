@@ -8,11 +8,17 @@ from ..config import settings
 
 
 def make_engine(database_url: str | None = None, *, echo: bool | None = None):
-    return create_engine(
-        database_url or settings.database_url,
-        echo=settings.database_echo if echo is None else echo,
-        pool_pre_ping=True,
-    )
+    url = database_url or settings.database_url
+    options = {
+        "echo": settings.database_echo if echo is None else echo,
+        "pool_pre_ping": True,
+    }
+    # The Oracle Micro host has 1 GB of RAM and PostgreSQL is configured for a
+    # small number of clients. Keep the reusable application pool bounded.
+    # Non-PostgreSQL URLs used by isolated tests retain SQLAlchemy defaults.
+    if str(url).startswith(("postgresql://", "postgresql+psycopg://")):
+        options.update(pool_size=5, max_overflow=3, pool_timeout=30, pool_recycle=1800)
+    return create_engine(url, **options)
 
 
 @lru_cache(maxsize=1)

@@ -23,7 +23,7 @@ def test_market_filters_use_progressive_disclosure_and_visible_summaries():
     source = _source()
     assert 'st.expander("🎯 Universo e subfiltros — clique para ajustar",expanded=False)' in source
     assert 'st.expander("🧭 Análises, filtros e indicadores — clique para abrir",expanded=False)' in source
-    assert 'st.markdown("#### Indicadores Fundamentalistas' in source
+    assert 'st.markdown(f"#### Indicadores Fundamentalistas' in source
     assert 'st.markdown("#### Indicadores Técnicos")' in source
     assert '"UNIVERSO ATUAL"' in source
     assert '"VISUALIZAÇÃO"' in source
@@ -44,6 +44,6 @@ def test_portfolio_keeps_metrics_visible_and_movements_collapsed():
 
 
 def test_release_version_is_consistent():
-    assert (ROOT / "investment_engine" / "__init__.py").read_text(encoding="utf-8").strip() == '__version__ = "0.15.2"'
-    assert 'version = "0.15.2"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'EXPECTED_EMBEDDED_API_VERSION"] = "0.15.2"' in (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+    assert (ROOT / "investment_engine" / "__init__.py").read_text(encoding="utf-8").strip() == '__version__ = "0.16.0"'
+    assert 'version = "0.16.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'EXPECTED_EMBEDDED_API_VERSION"] = "0.16.0"' in (ROOT / "streamlit_app.py").read_text(encoding="utf-8")

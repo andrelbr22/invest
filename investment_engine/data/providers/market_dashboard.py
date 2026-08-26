@@ -259,8 +259,8 @@ class MarketDashboardService:
             "source": "Banco Central do Brasil • Selic/Focus",
             "url": "https://www.bcb.gov.br/publicacoes/focus",
             "projection_note": (
-                "O Focus pesquisa a Selic, não o CDI separadamente. "
-                "A mediana da Selic é exibida como referência transparente para o CDI projetado."
+                "Mediana das expectativas do Relatório Focus para a meta da taxa Selic "
+                "no encerramento de cada ano. Não se trata de projeção do CDI."
             ),
             "errors": errors,
         }

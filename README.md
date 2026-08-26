@@ -1,4 +1,25 @@
-# Formação do Investidor • Investment Engine V1.14.2
+# Formação do Investidor • Investment Engine V1.15.0
+
+## Novidades da V1.15.0
+
+- cabeçalho de trabalho fixo com busca global de ticker, quantidade de alertas ativos e identificação do usuário;
+- visão rápida de um ativo sem perder o universo, a análise e os filtros da tabela;
+- o score setorial ALB passa a ser apresentado também como **Saúde (ALB)**, sem criar uma segunda nota concorrente;
+- exportação CSV das operações, da comparação de estratégias e do histórico filtrado de backtests;
+- leituras da API usam conexão persistente e cache curto, privado por sessão e usuário;
+- qualquer gravação invalida imediatamente o cache de leitura daquela sessão;
+- configurações de carteira e e-mails de alertas só são submetidos pelo formulário de confirmação;
+- pool PostgreSQL limitado para proteger a memória da VM Oracle Micro;
+- nenhuma migração de banco é necessária.
+
+## Novidades da V1.14.3
+
+- o Painel de Mercado apresenta **Selic Focus** para o encerramento do ano corrente e do ano seguinte;
+- os anos são lidos da própria resposta do Banco Central, evitando rótulos divergentes em dados armazenados;
+- a ajuda esclarece que os valores são medianas das expectativas para a meta Selic e não projeções do CDI;
+- o menu lateral permanece fixo, conserva os controles de recolher/reabrir e não deixa uma faixa vazia entre menu e página;
+- em celulares, o menu sobrepõe temporariamente o conteúdo para preservar a largura útil da página;
+- nenhuma migração de banco é necessária.
 
 ## Novidades da V1.14.2
 
@@ -39,7 +60,7 @@
 ## Novidades da V1.13.1
 
 - projeções anuais do Relatório Focus aceitam o ano numérico devolvido pelo Banco Central;
-- o painel identifica claramente que o Focus pesquisa Selic e usa essa mediana como referência transparente para o CDI projetado;
+- o painel identifica as medianas anuais do Focus como projeções para a meta Selic;
 - CPI e Payroll usam agenda oficial do BLS com redundância entre calendário ICS, páginas oficiais e contingência verificada de 2026;
 - decisões do Fed foram acrescentadas à agenda;
 - Copom e Fed permanecem em linhas separadas e recebem destaque `SUPER QUARTA` quando decidem juros no mesmo dia;

@@ -1,6 +1,10 @@
+import copy
+import json
 import math
 import os
 import html
+import re
+import time
 from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import requests
@@ -28,13 +32,20 @@ st.set_page_config(
     initial_sidebar_state="expanded",
     menu_items={"Get help": None, "Report a Bug": None, "About": None},
 )
+
 st.markdown("""
-    <style>
-    /* Ocultar elementos desnecessários, mantendo o toolbar para o botão funcionar */
+<style>
+    /* Mantém o cabeçalho e a barra mínima porque os controles de recolher e
+       reabrir o menu lateral pertencem a essa estrutura. */
+    header[data-testid="stHeader"] {
+        background:rgba(248,251,250,.96); border-bottom:1px solid rgba(20,103,78,.08);
+        backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    }
     #MainMenu,
+    [data-testid="stStatusWidget"],
+    [data-testid="stDecoration"],
     .stDeployButton,
     footer {display:none !important; visibility:hidden !important;}
-
     .block-container {padding-top: 4rem; padding-bottom: 2rem; max-width: 1500px;}
     .block-container h1 {font-size:2rem; line-height:1.12; margin:.15rem 0 .2rem;}
     .block-container h2 {font-size:1.38rem; margin:.35rem 0 .15rem;}
@@ -42,7 +53,6 @@ st.markdown("""
     .block-container [data-testid="stVerticalBlock"] {gap:.55rem;}
     .block-container [data-testid="stHorizontalBlock"] {gap:.65rem;}
     .block-container [data-testid="stAlert"] {padding:.55rem .75rem; border-radius:.7rem;}
-    
     .block-container [data-testid="stExpander"] {
         border:1px solid rgba(20,103,78,.14); border-radius:.8rem;
         background:rgba(248,252,250,.72); overflow:hidden;
@@ -53,65 +63,36 @@ st.markdown("""
     .block-container [data-testid="stExpander"] details[open] > summary {
         background:rgba(222,243,234,.48); border-bottom:1px solid rgba(20,103,78,.10);
     }
-
-    /* Estilo visual base da barra lateral */
     section[data-testid="stSidebar"] {
         background: linear-gradient(180deg, #f4faf7 0%, #edf6f2 52%, #f8fbfa 100%);
-        border-right: 1px solid rgba(20, 103, 78, .14);
+        border-right:0 !important;
         box-shadow: 8px 0 30px rgba(21, 77, 60, .035);
     }
-
-    /* Torna a barra lateral fixa e com largura definida apenas quando expandida */
     section[data-testid="stSidebar"][aria-expanded="true"] {
-        position: fixed !important;
-        height: 100vh !important;
-        z-index: 999999 !important;
-        width: 20rem !important; 
-        min-width: 20rem !important; 
-        max-width: 20rem !important;
+        position:fixed !important; inset:0 auto 0 0 !important; height:100vh !important;
+        z-index:999999 !important; width:20rem !important; min-width:20rem !important; max-width:20rem !important;
     }
-    
-    section[data-testid="stSidebar"][aria-expanded="true"] > div {
-        width: 20rem !important; 
-        min-width: 20rem !important; 
-        max-width: 20rem !important;
+    section[data-testid="stSidebar"][aria-expanded="true"] > div {width:20rem !important; min-width:20rem !important; max-width:20rem !important;}
+    /* A barra fixa sai do fluxo da página. O conteúdo recebe exatamente a
+       mesma largura, sem a faixa vazia que o espaço lateral antigo reservava. */
+    section[data-testid="stMain"], .main {
+        width:100% !important; min-width:0 !important; margin-left:0 !important;
+        box-sizing:border-box !important; transition:padding-left .2s ease;
     }
-
-    /* MÁGICA DO EMPURRÃO: Quando a barra está expandida, desloca o painel principal para a direita */
     div.stApp:has(section[data-testid="stSidebar"][aria-expanded="true"]) section[data-testid="stMain"],
     div.stApp:has(section[data-testid="stSidebar"][aria-expanded="true"]) .main {
-        padding-left: 20rem !important;
-        transition: padding-left 0.2s ease;
+        padding-left:20rem !important;
     }
-
-    /* Garante que o botão interno de recolher fique acessível */
-    [data-testid="stSidebarCollapseButton"], button[kind="header"] {
-        z-index: 1000000 !important;
+    [data-testid="stSidebarCollapseButton"], button[kind="header"] {z-index:1000000 !important;}
+    [data-testid="collapsedControl"], [data-testid="stSidebarCollapsedControl"] {
+        display:flex !important; position:fixed !important; top:.8rem !important; left:.8rem !important;
+        z-index:9999999 !important; padding:6px 10px !important; border-radius:10px !important;
+        color:#fff !important; background:linear-gradient(135deg,#168765,#0b634b) !important;
+        border:1px solid rgba(255,255,255,.2) !important; box-shadow:0 4px 15px rgba(18,126,94,.35) !important;
     }
-
-    /* Botão flutuante para reabrir o menu quando ele estiver recolhido */
-    [data-testid="collapsedControl"] {
-        display: flex !important;
-        position: fixed !important;
-        top: 0.8rem !important;
-        left: 0.8rem !important;
-        z-index: 9999999 !important;
-        background: linear-gradient(135deg, #168765, #0b634b) !important;
-        color: white !important;
-        border-radius: 10px !important;
-        padding: 6px 10px !important;
-        box-shadow: 0 4px 15px rgba(18, 126, 94, 0.35) !important;
-        border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    }
-    
-    [data-testid="collapsedControl"] svg {
-        fill: white !important;
-        color: white !important;
-    }
-
+    [data-testid="collapsedControl"] svg, [data-testid="stSidebarCollapsedControl"] svg {fill:#fff !important; color:#fff !important;}
     section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {padding-top: .55rem;}
     section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {gap: .55rem;}
-
     .ie-brand {
         display:flex; align-items:center; gap:.8rem; padding:.35rem .05rem 1rem;
         border-bottom:1px solid rgba(20,103,78,.12); margin-bottom:.15rem;
@@ -124,7 +105,6 @@ st.markdown("""
     }
     .ie-brand-title {font-size:1rem; line-height:1.15; font-weight:750; color:#133f33;}
     .ie-brand-subtitle {font-size:.72rem; color:#658078; margin-top:.2rem; letter-spacing:.02em;}
-    
     .ie-account-card {
         padding:.85rem; border:1px solid rgba(20,103,78,.13); border-radius:14px;
         background:rgba(255,255,255,.76); box-shadow:0 5px 16px rgba(36,77,65,.045);
@@ -139,13 +119,11 @@ st.markdown("""
     .ie-account-name {font-size:.86rem; font-weight:700; color:#173e34; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
     .ie-account-email {font-size:.68rem; color:#71847e; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:.1rem;}
     .ie-account-meta {display:flex; align-items:center; justify-content:space-between; gap:.4rem; margin-top:.65rem;}
-    
     .ie-profile-badge {
         display:inline-flex; align-items:center; border-radius:999px; padding:.2rem .48rem;
         color:#17664f; background:#e1f3eb; font-size:.66rem; font-weight:650;
     }
     .ie-approved {font-size:.66rem; color:#54736a;}
-    
     .ie-engine-card {
         display:flex; align-items:center; gap:.7rem; padding:.72rem .82rem; margin-top:.1rem;
         border-radius:13px; color:#174f3e; background:linear-gradient(135deg,#d8f2e5,#cdebdc);
@@ -155,7 +133,6 @@ st.markdown("""
     .ie-engine-title {font-size:.78rem; font-weight:700; line-height:1.15;}
     .ie-engine-version {font-size:.66rem; opacity:.72; margin-top:.12rem;}
     .ie-menu-title {font-size:.68rem; font-weight:750; color:#698078; letter-spacing:.1em; margin:1rem 0 .15rem;}
-
     section[data-testid="stSidebar"] div[role="radiogroup"] {gap:.55rem; width:100%;}
     section[data-testid="stSidebar"] div[role="radiogroup"] label {
         position:relative; width:100%; min-height:49px; box-sizing:border-box;
@@ -186,7 +163,6 @@ st.markdown("""
     section[data-testid="stSidebar"] div[role="radiogroup"] [data-testid="stMarkdownContainer"] p {
         margin:0; font-size:.82rem; line-height:1.25;
     }
-    
     section[data-testid="stSidebar"] [data-testid="stButton"] button {
         width:100%; min-height:40px; border-radius:11px; border-color:rgba(33,91,73,.16);
         color:#36584e; background:rgba(255,255,255,.58);
@@ -194,21 +170,17 @@ st.markdown("""
     section[data-testid="stSidebar"] [data-testid="stButton"] button:hover {
         color:#0e684c; border-color:rgba(20,126,92,.28); background:#fff;
     }
-    
     .ie-sidebar-footer {
         margin-top:1.05rem; padding-top:.8rem; border-top:1px solid rgba(20,103,78,.12);
         color:#7a8c86; font-size:.65rem; text-align:center; letter-spacing:.02em;
     }
-    
     div[data-testid="stMetric"] {
         border: 1px solid rgba(128,128,128,.20); border-radius: .75rem; padding: .5rem .72rem;
         background: rgba(128,128,128,.035);
     }
     div[data-testid="stMetric"] [data-testid="stMetricLabel"] {font-size:.74rem;}
     div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size:1.35rem;}
-    
     div[data-testid="stDataFrame"] {border-radius: .75rem; overflow: hidden;}
-    
     .ie-compact-summary {
         display:flex; align-items:center; gap:.55rem; flex-wrap:wrap;
         margin:.15rem 0 .45rem; padding:.58rem .72rem; border-radius:.8rem;
@@ -222,15 +194,35 @@ st.markdown("""
     }
     .ie-filter-chip-muted {background:#edf1ef; color:#65736e;}
     .ie-section-hint {font-size:.7rem; color:#6b8179; margin:-.15rem 0 .2rem;}
-
+    .st-key-workspace_header {
+        position:sticky; top:3.15rem; z-index:900;
+        margin:-.2rem 0 .75rem; padding:.55rem .7rem;
+        border:1px solid rgba(20,103,78,.12); border-radius:14px;
+        background:rgba(249,252,251,.94); box-shadow:0 8px 24px rgba(20,77,59,.06);
+        backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+    }
+    .st-key-workspace_header [data-testid="stVerticalBlock"] {gap:.2rem;}
+    .st-key-workspace_header [data-testid="stTextInputRootElement"] {min-height:40px; border-radius:11px;}
+    .st-key-workspace_header [data-testid="stButton"] button {min-height:40px; border-radius:11px;}
+    .ie-workspace-current {font-size:.65rem; color:#70857e; letter-spacing:.06em; text-transform:uppercase;}
+    .ie-workspace-title {font-size:.9rem; color:#174d3d; font-weight:750; margin-top:.08rem;}
+    .ie-workspace-meta {font-size:.69rem; color:#55736a; text-align:right; line-height:1.35; padding-top:.2rem;}
+    .ie-health-note {font-size:.68rem; color:#647b73; margin-top:-.2rem;}
     @media (max-width: 768px) {
         .block-container {padding-top:4.35rem; padding-left:1rem; padding-right:1rem;}
         .block-container h1 {font-size:1.72rem; line-height:1.16;}
+        section[data-testid="stSidebar"][aria-expanded="true"],
+        section[data-testid="stSidebar"][aria-expanded="true"] > div {
+            width:min(20rem,88vw) !important; min-width:min(20rem,88vw) !important; max-width:min(20rem,88vw) !important;
+        }
+        div.stApp:has(section[data-testid="stSidebar"][aria-expanded="true"]) section[data-testid="stMain"],
+        div.stApp:has(section[data-testid="stSidebar"][aria-expanded="true"]) .main {padding-left:0 !important;}
+        .st-key-workspace_header {position:static; margin-top:0;}
     }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+</style>
+""",unsafe_allow_html=True)
+
+CURRENT_USER_EMAIL=""
 CURRENT_USER_NAME=""
 PERMISSIONS={}
 MARKET_ASSET_TYPES={"Ações":"stock","FIIs":"fii","Demais Ativos B3":"other_b3"}
@@ -267,11 +259,58 @@ if _env_flag("SHOW_API_SELECTOR",True):
 else:
     API=DEFAULT_API
 
+def _api_http_session():
+    """Reuse HTTP connections inside one browser session without sharing user data."""
+    session=st.session_state.get("_api_http_session_v1")
+    if session is None:
+        session=requests.Session()
+        adapter=requests.adapters.HTTPAdapter(pool_connections=4,pool_maxsize=8,max_retries=0)
+        session.mount("http://",adapter); session.mount("https://",adapter)
+        st.session_state["_api_http_session_v1"]=session
+    return session
+
+
+def _api_get_ttl(path):
+    """Short, endpoint-aware cache periods; private values remain in session_state."""
+    if path in {"/health","/backtests/strategies"}:return 300
+    if path=="/assets":return 120
+    if path.startswith("/market-dashboard"):return 15
+    if path.startswith("/access/"):return 5
+    if path.startswith("/alerts"):return 8
+    if path.startswith("/portfolios"):return 8
+    if path.startswith("/backtests/batch"):return 5
+    if path.startswith("/backtests/"):return 20
+    if path.startswith("/screen/") or path.startswith("/assets/"):return 30
+    return 15
+
+
+def _api_cache_key(path,params):
+    encoded=json.dumps(params or {},ensure_ascii=True,sort_keys=True,separators=(",",":"),default=str)
+    return f"{CURRENT_USER_EMAIL}|{API}|{path}|{encoded}"
+
+
+def _clear_api_read_cache():
+    st.session_state["_api_get_cache_v1"]={}
+
+
 def _request(method,path,params=None,json=None,timeout=120):
+    method=str(method).upper()
+    cache=None; cache_key=None
+    if method=="GET":
+        cache=st.session_state.setdefault("_api_get_cache_v1",{})
+        cache_key=_api_cache_key(path,params)
+        cached=cache.get(cache_key)
+        if cached and time.monotonic()-cached[0]<_api_get_ttl(path):
+            return copy.deepcopy(cached[1]),None
     try:
         headers={"X-App-User-Email":CURRENT_USER_EMAIL} if CURRENT_USER_EMAIL else {}
-        r=requests.request(method,f"{API}{path}",params=params,json=json,headers=headers,timeout=timeout)
-        r.raise_for_status(); return r.json(),None
+        r=_api_http_session().request(method,f"{API}{path}",params=params,json=json,headers=headers,timeout=timeout)
+        r.raise_for_status(); data=r.json()
+        if method=="GET" and cache is not None and cache_key is not None:
+            cache[cache_key]=(time.monotonic(),copy.deepcopy(data))
+        elif method!="GET":
+            _clear_api_read_cache()
+        return data,None
     except requests.RequestException as exc:
         detail=getattr(exc.response,"text",None) if getattr(exc,"response",None) is not None else None
         return None,(detail or str(exc))
@@ -414,6 +453,69 @@ def _navigate_to(module):
     st.session_state["main_navigation"]=module
 
 
+def _queue_global_asset_lookup(ticker):
+    clean=str(ticker or "").strip().upper()
+    if not re.fullmatch(r"[A-Z0-9_.-]{4,24}",clean):
+        st.session_state["global_asset_lookup_error"]="Informe um ticker válido, como PETR4, HGLG11 ou BOVA11."
+        return
+    st.session_state["global_asset_lookup_pending"]=clean
+    st.session_state["main_navigation"]="market"
+
+
+def _apply_pending_global_asset_lookup():
+    ticker=st.session_state.pop("global_asset_lookup_pending",None)
+    if not ticker:return
+    detail,error=api_get(f"/assets/{ticker}")
+    if error or not detail:
+        st.session_state["global_asset_lookup_error"]=f"{ticker} não foi localizado no catálogo disponível."
+        return
+    asset=(detail or {}).get("asset") or {}
+    asset_type=str(asset.get("asset_type") or "stock")
+    if asset_type not in {"stock","fii"}:asset_type="other_b3"
+    label={"stock":"Ações","fii":"FIIs","other_b3":"Demais Ativos B3"}[asset_type]
+    st.session_state["market_asset_class"]=label
+    _clear_market_subfilters(asset_type)
+    st.session_state[f"market_universe_mode_{asset_type}"]="specific"
+    st.session_state[f"market_specific_tickers_{asset_type}"]=[ticker]
+    st.session_state[f"market_table_ticker_{asset_type}"]=ticker
+    st.session_state[f"v14_ticker_{asset_type}"]=ticker
+    st.session_state[f"market_strategy_ref_{asset_type}"]="preset:default"
+    st.session_state["advanced_screen_result"]=None
+    st.session_state["global_asset_lookup_success"]=f"{ticker} aberto em Mercado e análise."
+
+
+def _render_workspace_header(module,module_labels):
+    active_alerts=0
+    if can("can_use_price_alerts"):
+        alert_dashboard,alert_error=api_get("/alerts")
+        if not alert_error:
+            active_alerts=sum(1 for item in (alert_dashboard or {}).get("alerts") or [] if item.get("status")=="active")
+    display_name=CURRENT_USER_NAME or (CURRENT_USER_EMAIL.split("@",1)[0] if CURRENT_USER_EMAIL else "Usuário")
+    with st.container(key="workspace_header"):
+        c1,c2,c3,c4=st.columns([1.55,2.7,.62,1.05],vertical_alignment="center")
+        c1.markdown(
+            f'<div class="ie-workspace-current">Área atual</div><div class="ie-workspace-title">{html.escape(module_labels[module])}</div>',
+            unsafe_allow_html=True,
+        )
+        ticker=c2.text_input(
+            "Busca global de ativo",placeholder="Buscar ativo: PETR4, HGLG11, BOVA11…",
+            key="global_asset_lookup_input",label_visibility="collapsed",
+        )
+        c3.button(
+            "Abrir",key="global_asset_lookup_button",use_container_width=True,
+            on_click=_queue_global_asset_lookup,args=(ticker,),
+        )
+        alert_text=f"🔔 {active_alerts} ativo(s)" if can("can_use_price_alerts") else "🔔 Sem acesso"
+        c4.markdown(
+            f'<div class="ie-workspace-meta">{html.escape(display_name)}<br>{html.escape(alert_text)}</div>',
+            unsafe_allow_html=True,
+        )
+    lookup_error=st.session_state.pop("global_asset_lookup_error",None)
+    lookup_success=st.session_state.pop("global_asset_lookup_success",None)
+    if lookup_error:st.warning(lookup_error)
+    if lookup_success:st.success(lookup_success)
+
+
 def _remember_market_backtest_selection(tickers,label):
     clean=[]
     for ticker in tickers or []:
@@ -461,6 +563,15 @@ def br_datetime(value):
     except Exception:
         return str(value)
 
+
+def _csv_download(dataframe):
+    return dataframe.to_csv(index=False).encode("utf-8-sig")
+
+
+def _safe_export_name(value):
+    clean=re.sub(r"[^A-Za-z0-9_.-]+","-",str(value or "resultado").strip())
+    return clean.strip("-.") or "resultado"
+
 def _datetime_sort_value(value):
     try:
         timestamp=pd.Timestamp(value)
@@ -477,6 +588,58 @@ def score_label(v):
     if v>=55:return "Moderado"
     if v>=40:return "Fraco"
     return "Muito fraco"
+
+
+def _health_score(intelligence):
+    """Reuse the sector-aware ALB score as the transparent 0-100 health view."""
+    value=(intelligence or {}).get("alb_score")
+    try:return max(0.0,min(100.0,float(value))) if value is not None else None
+    except (TypeError,ValueError):return None
+
+
+@st.dialog("Visão rápida do ativo",width="large")
+def _render_asset_quick_view(ticker):
+    detail,detail_error=api_get(f"/assets/{ticker}")
+    if detail_error or not detail:
+        st.error(f"Não foi possível abrir {ticker}: {detail_error or 'ativo não localizado'}")
+        return
+    asset=detail.get("asset") or {}; fund=detail.get("fundamentals") or {}; tech=detail.get("technical") or {}
+    asset_type=str(asset.get("asset_type") or "")
+    intelligence={}
+    if asset_type in {"stock","fii"}:
+        intelligence,intelligence_error=api_get(f"/assets/{ticker}/intelligence")
+        if intelligence_error:intelligence={}
+    prices,prices_error=api_get(f"/assets/{ticker}/prices",{"limit":90})
+    current_price=fund.get("price") if fund.get("price") is not None else tech.get("close")
+    st.subheader(f"{asset.get('ticker')} — {asset.get('name') or 'Nome não disponível'}")
+    st.caption(asset.get("classification") or asset.get("sector_label") or "Classificação ainda não disponível")
+    metrics=st.columns(5)
+    metrics[0].metric("Preço",br_money(current_price))
+    metrics[1].metric("Saúde (ALB)",br_num(_health_score(intelligence),1," / 100"))
+    metrics[2].metric("P/L",br_num(fund.get("pe"),2))
+    metrics[3].metric("P/VP",br_num(fund.get("pbv"),2))
+    metrics[4].metric("RSI 14",br_num(tech.get("rsi14"),1))
+    profile=(intelligence or {}).get("profile") or {}
+    coverage=(intelligence or {}).get("coverage_pct")
+    if intelligence:
+        st.markdown(
+            f'<div class="ie-health-note">Saúde (ALB) reutiliza o score setorial já auditável do sistema: '
+            f'{html.escape(str(profile.get("label") or "perfil do ativo"))} • cobertura {html.escape(br_num(coverage,0,"%"))}. '
+            'Não é recomendação de compra ou venda.</div>',unsafe_allow_html=True,
+        )
+    if prices_error:
+        st.caption("O histórico curto não pôde ser carregado agora.")
+    elif prices:
+        chart=pd.DataFrame(prices)
+        chart["timestamp"]=pd.to_datetime(chart["timestamp"],errors="coerce")
+        chart["Preço"]=pd.to_numeric(chart["adjusted_close"],errors="coerce").fillna(pd.to_numeric(chart["close"],errors="coerce"))
+        st.line_chart(chart.dropna(subset=["timestamp"]).set_index("timestamp")[["Preço"]],use_container_width=True)
+    component_names={"quality_score":"Qualidade","value_score":"Valor","growth_score":"Crescimento","technical_score":"Técnico","risk_score":"Proteção ao risco","liquidity_score":"Liquidez"}
+    components=[{"Componente":label,"Nota":intelligence.get(key)} for key,label in component_names.items() if intelligence.get(key) is not None]
+    if components:
+        with st.expander("Como a nota foi formada",expanded=False):
+            st.dataframe(pd.DataFrame(components),hide_index=True,use_container_width=True)
+            if profile.get("notes"):st.caption(profile["notes"])
 
 def render_score_card(name,value,coverage=None):
     st.metric(name,br_num(value,1))
@@ -719,10 +882,10 @@ Para não usar informação ainda incompleta, a referência é sempre o **dia/se
         else:
             df=pd.DataFrame(rows)
             rename={
-                "ticker":"Ticker","name":"Nome","asset_type_label":"Tipo","company_size_label":"Porte","sector_label":"Setor","segment_label":"Segmento","classification":"Categoria","price":"Preço","graham_number":"Preço Justo Graham","graham_upside_pct":"Potencial Graham %","pe":"P/L","pbv":"P/VP","dividend_yield_pct":"DY %","roe_pct":"ROE %","roic_pct":"ROIC %","ebit_margin_pct":"Margem EBIT %","net_margin_pct":"Margem Líquida %","ev_ebitda":"EV/EBITDA","gross_debt_to_equity":"Dív. Bruta/PL","net_debt_to_ebitda":"Dív. Líq./EBITDA","current_ratio":"Liq. Corrente","revenue_cagr_5y_pct":"CAGR Receita %","earnings_cagr_5y_pct":"CAGR Lucro %","ffo_yield_pct":"FFO Yield %","cap_rate_pct":"Cap Rate %","vacancy_pct":"Vacância %","ltv_pct":"LTV %","wale_years":"WALE","daily_liquidity":"Liquidez diária","alb_score":"ALB","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","data_quality_score":"Data Quality","trend_daily":"Tend. Dia","trend_weekly":"Tend. Sem.","trend_monthly":"Tend. Mês","sma_daily":"Média Dia","sma_weekly":"Média Sem.","sma_monthly":"Média Mês","rsi14_screen":"RSI 14","pp":"PP","s1":"S1","s2":"S2","s3":"S3","r1":"R1","r2":"R2","r3":"R3","pivot_zone":"Faixa Pivot","pivot_reference":"Referência Pivot",
+                "ticker":"Ticker","name":"Nome","asset_type_label":"Tipo","company_size_label":"Porte","sector_label":"Setor","segment_label":"Segmento","classification":"Categoria","price":"Preço","graham_number":"Preço Justo Graham","graham_upside_pct":"Potencial Graham %","pe":"P/L","pbv":"P/VP","dividend_yield_pct":"DY %","roe_pct":"ROE %","roic_pct":"ROIC %","ebit_margin_pct":"Margem EBIT %","net_margin_pct":"Margem Líquida %","ev_ebitda":"EV/EBITDA","gross_debt_to_equity":"Dív. Bruta/PL","net_debt_to_ebitda":"Dív. Líq./EBITDA","current_ratio":"Liq. Corrente","revenue_cagr_5y_pct":"CAGR Receita %","earnings_cagr_5y_pct":"CAGR Lucro %","ffo_yield_pct":"FFO Yield %","cap_rate_pct":"Cap Rate %","vacancy_pct":"Vacância %","ltv_pct":"LTV %","wale_years":"WALE","daily_liquidity":"Liquidez diária","alb_score":"Saúde (ALB)","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","data_quality_score":"Data Quality","trend_daily":"Tend. Dia","trend_weekly":"Tend. Sem.","trend_monthly":"Tend. Mês","sma_daily":"Média Dia","sma_weekly":"Média Sem.","sma_monthly":"Média Mês","rsi14_screen":"RSI 14","pp":"PP","s1":"S1","s2":"S2","s3":"S3","r1":"R1","r2":"R2","r3":"R3","pivot_zone":"Faixa Pivot","pivot_reference":"Referência Pivot",
             }
             view=df.rename(columns=rename)
-            preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","Preço Justo Graham","Potencial Graham %","P/L","P/VP","DY %","ROE %","ROIC %","FFO Yield %","Cap Rate %","Vacância %","Liquidez diária","ALB","Quality","Value","Technical","Risk","Liquidity","Tend. Dia","Tend. Sem.","Tend. Mês","Média Dia","Média Sem.","Média Mês","RSI 14","S3","S2","S1","PP","R1","R2","R3","Faixa Pivot","Referência Pivot"] if c in view.columns]
+            preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","Preço Justo Graham","Potencial Graham %","P/L","P/VP","DY %","ROE %","ROIC %","FFO Yield %","Cap Rate %","Vacância %","Liquidez diária","Saúde (ALB)","Quality","Value","Technical","Risk","Liquidity","Tend. Dia","Tend. Sem.","Tend. Mês","Média Dia","Média Sem.","Média Mês","RSI 14","S3","S2","S1","PP","R1","R2","R3","Faixa Pivot","Referência Pivot"] if c in view.columns]
             st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=520)
             st.caption("Tendência = preço atual acima/abaixo da média simples do período escolhido. Sem histórico suficiente, o filtro técnico ativo reprova o ativo em vez de assumir zero.")
             if asset_type=="stock" and PERMISSIONS.get("is_owner"):
@@ -939,9 +1102,13 @@ def _render_market_dashboard_data(payload):
     usdbrl=next((item for item in fx if item.get("label")=="Dólar / Real"),{})
     c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("Selic atual",_panel_number(selic.get("current"),"%"))
-    projection_help=selic.get("projection_note") or "Mediana da Selic no Relatório Focus, usada como referência para o CDI projetado."
-    c2.metric(f"CDI projetado • fim de {date.today().year}",_panel_number((selic.get("current_year") or {}).get("value"),"%"),help=projection_help)
-    c3.metric(f"CDI projetado • fim de {date.today().year+1}",_panel_number((selic.get("next_year") or {}).get("value"),"%"),help=projection_help)
+    current_projection=selic.get("current_year") or {}
+    next_projection=selic.get("next_year") or {}
+    current_reference_year=int(current_projection.get("reference_year") or date.today().year)
+    next_reference_year=int(next_projection.get("reference_year") or current_reference_year+1)
+    projection_help=selic.get("projection_note") or "Mediana das expectativas do Relatório Focus para a meta da taxa Selic no encerramento do ano."
+    c2.metric(f"Selic Focus • fim de {current_reference_year}",_panel_number(current_projection.get("value"),"%"),help=projection_help)
+    c3.metric(f"Selic Focus • fim de {next_reference_year}",_panel_number(next_projection.get("value"),"%"),help=projection_help)
     c4.metric("IBOV",_panel_number(ibov.get("current")),_panel_delta((ibov.get("variations") or {}).get("1d")))
     c5.metric("Dólar / Real",_panel_number(usdbrl.get("current"),"R$","BRL"),_panel_delta((usdbrl.get("variations") or {}).get("1d")))
 
@@ -1451,10 +1618,19 @@ def render_market():
         else:
             st.info(f"Nenhum dos {len(allowed_tickers)} ativo(s) passou por {strategy_label}. Escolha ‘Sem filtros’ para recuperar 100% deste universo ou ajuste o refinamento.")
     else:
-        rename={"ticker":"Ticker","name":"Nome","asset_type_label":"Tipo","company_size_label":"Porte","sector_label":"Setor","classification":"Categoria","segment_label":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dy":"DY %","roe":"ROE %","graham_number":"Preço Justo Graham","graham_upside_pct":"Potencial Graham %","ffo_yield":"FFO Yield %","cap_rate":"Cap Rate %","vacancy":"Vacância %","daily_liquidity":"Liquidez","signal_tv":"Sinal técnico","rsi14_screen":"RSI 14","sma20":"SMA 20","sma50":"SMA 50","sma200":"SMA 200","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","alb_score":"ALB","data_quality_score":"Data Quality"}
+        rename={"ticker":"Ticker","name":"Nome","asset_type_label":"Tipo","company_size_label":"Porte","sector_label":"Setor","classification":"Categoria","segment_label":"Segmento","price":"Preço","pe":"P/L","pbv":"P/VP","dy":"DY %","roe":"ROE %","graham_number":"Preço Justo Graham","graham_upside_pct":"Potencial Graham %","ffo_yield":"FFO Yield %","cap_rate":"Cap Rate %","vacancy":"Vacância %","daily_liquidity":"Liquidez","signal_tv":"Sinal técnico","rsi14_screen":"RSI 14","sma20":"SMA 20","sma50":"SMA 50","sma200":"SMA 200","quality_score":"Quality","value_score":"Value","growth_score":"Growth","technical_score":"Technical","risk_score":"Risk","liquidity_score":"Liquidity","alb_score":"Saúde (ALB)","data_quality_score":"Data Quality"}
         view=df.rename(columns=rename)
-        preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","Preço Justo Graham","Potencial Graham %","Liquidez","Sinal técnico","RSI 14","SMA 20","SMA 50","SMA 200","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Quality","Value","Growth","Technical","Risk","Liquidity","ALB","Data Quality"] if c in view.columns]
+        preferred=[c for c in ["Ticker","Nome","Tipo","Porte","Categoria","Setor","Segmento","Preço","Preço Justo Graham","Potencial Graham %","Liquidez","Sinal técnico","RSI 14","SMA 20","SMA 50","SMA 200","P/L","P/VP","DY %","ROE %","FFO Yield %","Cap Rate %","Vacância %","Saúde (ALB)","Quality","Value","Growth","Technical","Risk","Liquidity","Data Quality"] if c in view.columns]
         st.dataframe(view[preferred],hide_index=True,use_container_width=True,height=460)
+
+        quick_left,quick_right=st.columns([3,1])
+        quick_options=[str(value).upper() for value in df["ticker"].dropna().tolist()]
+        quick_ticker=quick_left.selectbox(
+            "Visão rápida sem sair da lista",quick_options,key=f"market_quick_ticker_{asset_type}",
+            help="Abre preço, gráfico curto e indicadores principais sem perder os filtros atuais.",
+        )
+        if quick_right.button("Abrir visão rápida",key=f"market_quick_open_{asset_type}",use_container_width=True):
+            _render_asset_quick_view(quick_ticker)
 
         if asset_type=="stock" and PERMISSIONS.get("is_owner"):
             market_tickers=_remember_market_backtest_selection(
@@ -1707,12 +1883,14 @@ def render_portfolio():
     portfolio=snap["portfolio"]; summary=snap["summary"]; positions=snap.get("positions") or []
 
     with st.expander("⚙️ Configurações da carteira"):
-        c1,c2,c3=st.columns(3)
-        name=c1.text_input("Nome",value=portfolio.get("name") or "Carteira Principal",key="pf_name")
-        cash=c2.number_input("Saldo em caixa (R$)",min_value=0.0,value=float(portfolio.get("cash_balance") or 0),step=100.0,key="pf_cash")
-        target_cash=c3.number_input("Alvo de caixa (%)",min_value=0.0,max_value=100.0,value=float(portfolio.get("target_cash_pct") or 0),step=0.5,key="pf_target_cash")
-        notes=st.text_area("Observações",value=portfolio.get("notes") or "",key="pf_notes")
-        if st.button("Salvar configurações da carteira",disabled=not can("can_write_portfolio")):
+        with st.form(f"portfolio_settings_{pid}"):
+            c1,c2,c3=st.columns(3)
+            name=c1.text_input("Nome",value=portfolio.get("name") or "Carteira Principal",key=f"pf_name_{pid}")
+            cash=c2.number_input("Saldo em caixa (R$)",min_value=0.0,value=float(portfolio.get("cash_balance") or 0),step=100.0,key=f"pf_cash_{pid}")
+            target_cash=c3.number_input("Alvo de caixa (%)",min_value=0.0,max_value=100.0,value=float(portfolio.get("target_cash_pct") or 0),step=0.5,key=f"pf_target_cash_{pid}")
+            notes=st.text_area("Observações",value=portfolio.get("notes") or "",key=f"pf_notes_{pid}")
+            save_portfolio_settings=st.form_submit_button("Salvar configurações da carteira",disabled=not can("can_write_portfolio"))
+        if save_portfolio_settings:
             _,e=api_patch(f"/portfolios/{pid}",{"name":name,"cash_balance":cash,"target_cash_pct":target_cash,"notes":notes})
             if e:st.error(e)
             else:st.success("Configurações salvas."); st.rerun()
@@ -2130,6 +2308,11 @@ def _render_backtest_result(result):
             st.caption("O diagnóstico separa as condições para mostrar qual regra está eliminando as entradas. Isso permite ajustar uma premissa por vez, evitando overfitting por tentativa e erro.")
     else:
         st.dataframe(trades,hide_index=True,use_container_width=True,height=350)
+        st.download_button(
+            "⬇️ Exportar operações em CSV",data=_csv_download(trades),
+            file_name=f"backtest-{_safe_export_name(result.get('ticker'))}-{_safe_export_name((result.get('strategy') or {}).get('id') or (result.get('strategy') or {}).get('name'))}.csv",
+            mime="text/csv",key=f"download_trades_{result.get('run_id') or result.get('ticker')}_{(result.get('strategy') or {}).get('id')}",
+        )
     with st.expander("Regras, filtros, parâmetros e premissas do backtest"):
         st.write(result.get("strategy",{}).get("rules"))
         st.json({"parameters":result.get("parameters"),"filters":result.get("filters"),"filter_diagnostics":result.get("filter_diagnostics"),"signal_diagnostics":result.get("signal_diagnostics"),"assumptions":result.get("assumptions")})
@@ -2315,6 +2498,16 @@ def render_backtests():
     by_id={x["id"]:x for x in strategies}
     periods=catalog.get("periods") or {"6m":"6 meses","1y":"1 ano","2y":"2 anos","3y":"3 anos","5y":"5 anos","10y":"10 anos","15y":"15 anos","20y":"20 anos"}
 
+    latest_runs,latest_error=api_get("/backtests/runs",{"limit":1})
+    if not latest_error and latest_runs:
+        latest=latest_runs[0]; latest_metrics=latest.get("metrics") or {}
+        summary_cols=st.columns(4)
+        summary_cols[0].metric("Último resultado salvo",f"{latest.get('ticker')} • {latest.get('strategy_name')}")
+        summary_cols[1].metric("Processamento","Concluído")
+        summary_cols[2].metric("CAGR",_pct(latest_metrics.get("cagr_pct")))
+        summary_cols[3].metric("Max drawdown",_pct(latest_metrics.get("max_drawdown_pct")))
+        st.caption(f"Análise salva em {br_datetime(latest.get('created_at'))}.")
+
     a,b,c=st.columns([2,1,1])
     ticker=a.text_input("Ativo para o backtest",value="BBAS3",key="bt_ticker").strip().upper()
     type_label=b.selectbox("Tipo do ativo",["Ação","FII","ETF","BDR","Outro"],key="bt_type")
@@ -2495,7 +2688,12 @@ def render_backtests():
         if isinstance(comp,list) and comp:
             cdf=pd.DataFrame.from_records(comp).rename(columns={"strategy_name":"Estratégia","total_return_pct":"Retorno %","cagr_pct":"CAGR %","sharpe_ratio":"Sharpe","sortino_ratio":"Sortino","max_drawdown_pct":"Max DD %","trades":"Trades encerrados","open_trades":"Posições abertas","win_rate_pct":"Acerto encerrados %","profit_factor":"PF encerrados","profit_factor_mark_to_market":"PF marcado a mercado","exposure_pct":"Exposição %","benchmark_total_return_pct":"Buy & Hold %","excess_total_return_pct":"Excesso %"})
             cols=[c for c in ["Estratégia","Retorno %","CAGR %","Buy & Hold %","Excesso %","Sharpe","Sortino","Max DD %","Trades encerrados","Posições abertas","Acerto encerrados %","PF encerrados","PF marcado a mercado","Exposição %"] if c in cdf]
-            st.dataframe(cdf[cols].sort_values("CAGR %",ascending=False,na_position="last"),hide_index=True,use_container_width=True)
+            comparison_view=cdf[cols].sort_values("CAGR %",ascending=False,na_position="last")
+            st.dataframe(comparison_view,hide_index=True,use_container_width=True)
+            st.download_button(
+                "⬇️ Exportar comparação em CSV",data=_csv_download(comparison_view),
+                file_name=f"comparacao-backtests-{_safe_export_name(ticker)}.csv",mime="text/csv",key="download_backtest_comparison",
+            )
             st.caption("A comparação não escolhe automaticamente a ‘melhor’ estratégia: retorno, drawdown, estabilidade, número de operações e robustez precisam ser avaliados em conjunto.")
 
     with history_tab:
@@ -2547,6 +2745,10 @@ def render_backtests():
                     "Posições abertas":m.get("open_trades",0),"Versão":r.get("engine_version"),
                 })
             hdf=pd.DataFrame(rows); st.dataframe(hdf,hide_index=True,use_container_width=True,height=360)
+            st.download_button(
+                "⬇️ Exportar histórico filtrado em CSV",data=_csv_download(hdf),
+                file_name="historico-backtests.csv",mime="text/csv",key="download_backtest_history",
+            )
             rid=st.selectbox("Abrir execução salva",[r["id"] for r in runs],format_func=lambda x:next((f"{r['ticker']} • {r['strategy_name']} • {br_datetime(r.get('created_at'))}" for r in runs if r["id"]==x),x))
             if st.button("Abrir resultado salvo"):
                 detail,e=api_get(f"/backtests/runs/{rid}")
@@ -2886,13 +3088,14 @@ def _render_price_alerts():
 
     with st.expander("✉️ E-mails que receberão os alertas",expanded=False):
         st.text_input("E-mail principal do cadastro",value=dashboard.get("primary_email") or CURRENT_USER_EMAIL,disabled=True,key="alert_primary_email")
-        secondary=st.text_input("Segundo e-mail (opcional)",value=dashboard.get("secondary_email") or "",placeholder="nome@exemplo.com",key="alert_secondary_email")
-        email_save,email_test=st.columns(2)
-        if email_save.button("Salvar e-mails",use_container_width=True,key="alert_save_emails"):
+        with st.form("alert_email_preferences"):
+            secondary=st.text_input("Segundo e-mail (opcional)",value=dashboard.get("secondary_email") or "",placeholder="nome@exemplo.com",key="alert_secondary_email")
+            save_alert_emails=st.form_submit_button("Salvar e-mails",use_container_width=True)
+        if save_alert_emails:
             _,save_error=api_put("/alerts/preferences",{"secondary_email":secondary or None})
             if save_error:st.error(f"Não foi possível salvar: {save_error}")
             else:st.success("E-mails atualizados."); st.rerun()
-        if email_test.button("Enviar e-mail de teste",use_container_width=True,key="alert_test_email",disabled=not dashboard.get("delivery_configured")):
+        if st.button("Enviar e-mail de teste",use_container_width=True,key="alert_test_email",disabled=not dashboard.get("delivery_configured")):
             with st.spinner("Enviando teste..."):
                 _,test_error=api_post("/alerts/test-email",{},timeout=45)
             if test_error:st.error(f"Falha no teste: {test_error}")
@@ -3485,11 +3688,14 @@ st.sidebar.markdown('<div class="ie-sidebar-footer">Ambiente privado e protegido
 previous_module=st.session_state.get("_previous_main_navigation")
 if module=="market" and previous_module!="market":
     _initialize_market_panel()
+if module=="market":
+    _apply_pending_global_asset_lookup()
 st.session_state["_previous_main_navigation"]=module
+_render_workspace_header(module,module_labels)
 if module=="dashboard":render_market_dashboard()
 elif module=="market":render_market()
 elif module=="portfolio":render_portfolio()
 elif module=="backtests":render_backtests()
 else:render_access_admin()
 st.markdown("---")
-st.caption("Formação do Investidor • Investment Engine V1.14.2. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
+st.caption("Formação do Investidor • Investment Engine V1.15.0. Ferramenta educacional de análise e simulação; não constitui recomendação de investimento.")
