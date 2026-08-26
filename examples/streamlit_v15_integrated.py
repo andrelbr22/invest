@@ -28,7 +28,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
     menu_items={"Get help": None, "Report a Bug": None, "About": None},
 )
-
 st.markdown("""
     <style>
     /* Ocultar elementos padrão do Streamlit e configurar container */
@@ -81,9 +80,30 @@ st.markdown("""
         max-width: 20rem !important;
     }
 
-    /* Garante que o botão de recolher/expandir fique sempre clicável acima de tudo */
+    /* Garante que o botão de recolher interno fique sempre acessível */
     [data-testid="stSidebarCollapseButton"], button[kind="header"] {
         z-index: 1000000 !important;
+    }
+
+    /* GARANTIA DE RETORNO: Estiliza o botão que reabre a barra lateral quando ela está fechada */
+    [data-testid="collapsedControl"] {
+        display: flex !important;
+        position: fixed !important;
+        top: 1rem !important;
+        left: 1rem !important;
+        z-index: 9999999 !important;
+        background: linear-gradient(135deg, #168765, #0b634b) !important;
+        color: white !important;
+        border-radius: 10px !important;
+        padding: 8px 12px !important;
+        box-shadow: 0 4px 15px rgba(18, 126, 94, 0.35) !important;
+        border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    }
+    
+    /* Garante que o ícone de seta dentro do botão fique visível (branco) */
+    [data-testid="collapsedControl"] svg {
+        fill: white !important;
+        color: white !important;
     }
 
     section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {padding-top: .55rem;}
