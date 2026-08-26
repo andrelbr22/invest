@@ -1,0 +1,97 @@
+name: formacao-do-investidor-oracle
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - .env.oracle
+    environment:
+      POSTGRES_USER: investment
+      POSTGRES_DB: investment_engine
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - effective_cache_size=192MB
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_connections=30
+    shm_size: 64mb
+    mem_limit: 220m
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U investment -d investment_engine"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+    restart: unless-stopped
+    command: ["/app/deployment/start-api.sh"]
+    environment:
+      APP_ENVIRONMENT: production
+      APP_AUTH_REQUIRED: "true"
+      APP_SECRETS_FILE: /app/secrets/app_secrets.toml
+      ALLOWED_HOSTS: formacaodoinvestidor.com.br,www.formacaodoinvestidor.com.br,app,api,localhost,127.0.0.1
+      CANONICAL_URL: https://formacaodoinvestidor.com.br
+      SECURE_COOKIES: "true"
+      API_DOCS_ENABLED: "false"
+      ALERT_MONITOR_ENABLED: "true"
+      ALERT_MONITOR_POLL_SECONDS: "60"
+    volumes:
+      - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
+    expose:
+      - "8000"
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: formacaodoinvestidor.com.br
+      ACME_EMAIL: contato@formacaodoinvestidor.com.br
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deployment/Caddyfile.oracle-micro.example:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - frontend
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  frontend:
+  backend:
+    internal: true

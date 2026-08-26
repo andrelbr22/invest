@@ -92,7 +92,7 @@ class MarketNewsService:
     Only metadata and links are displayed. Article text remains with the original
     publisher. GDELT is complemented by Google News RSS when it is unavailable or
     does not return enough related coverage. Responses are cached to protect both
-    sources and keep the Streamlit page responsive.
+    sources and keep interactive requests responsive.
     """
 
     def __init__(self, *, http_get=None, cache_ttl_seconds: int = 30 * 60):

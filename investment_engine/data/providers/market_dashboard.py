@@ -12,6 +12,7 @@ from io import StringIO
 import math
 import re
 import unicodedata
+from xml.etree import ElementTree
 
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -27,11 +28,15 @@ BCB_FOCUS_URL = (
 )
 ANBIMA_CURVE_URL = "https://www.anbima.com.br/informacoes/est-termo/CZ.asp"
 ANBIMA_IMA_URL = "https://www.anbima.com.br/informacoes/ima/ima.asp"
+ANBIMA_IMA_COMPLETE_URL = "https://www.anbima.com.br/informacoes/ima/arqs/ima_completo.xml"
 BLS_API_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/CUUR0000SA0"
 BLS_ICS_URL = "https://www.bls.gov/schedule/news_release/bls.ics"
 BLS_CPI_SCHEDULE_URL = "https://www.bls.gov/schedule/news_release/cpi.htm"
 BLS_PAYROLL_SCHEDULE_URL = "https://www.bls.gov/schedule/news_release/empsit.htm"
-FRED_RATES_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS2,DGS10"
+FRED_RATES_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS2,DGS5,DGS10,DGS30"
+TREASURY_RATES_URL = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml"
+AGENCIA_BRASIL_ECONOMY_RSS = "https://agenciabrasil.ebc.com.br/rss/economia/feed.xml"
+ADVFN_MARKET_NEWS_URL = "https://br.advfn.com/noticias/empresas"
 
 
 def _plain(value: object) -> str:
@@ -182,7 +187,9 @@ def b3_holidays(year: int) -> list[tuple[date, str]]:
 
 class MarketDashboardService:
     def __init__(self, http=None, prices=None, now=None):
-        self.http = http or HttpClient(timeout=18)
+        # Dashboard sources must fail fast. A stale completed snapshot remains
+        # visible while individual providers are retried on the next refresh.
+        self.http = http or HttpClient(timeout=8, retries=1)
         self.prices = prices or YahooPriceProvider(self.http)
         self.now = now or datetime.now(timezone.utc)
 
@@ -215,15 +222,17 @@ class MarketDashboardService:
             errors.append(f"Selic atual: {type(exc).__name__}")
         current = current_rows[-1][1] if current_rows else None
         year = self.now.year
-        # DataReferencia is not consistently exposed as text by every OData
-        # gateway.  Filtering the years as quoted strings made valid Focus
-        # rows disappear.  Fetch the Selic series and select the two years in
-        # Python, accepting both numeric and textual representations.
+        # The service currently rejects equality filters on its string fields
+        # with an internal Boolean/String type error. Prefix matching works,
+        # but its default sequence is historical. A late page plus a reduced
+        # field set stays small and contains the current Focus observations;
+        # the final reference-year selection remains explicit below.
         params = {
             "$format": "json",
-            "$filter": "Indicador eq 'Selic'",
-            "$orderby": "Data desc",
-            "$top": 600,
+            "$filter": "startswith(Indicador,'Sel')",
+            "$select": "Indicador,Data,DataReferencia,Mediana,baseCalculo",
+            "$skip": 35000,
+            "$top": 10000,
         }
         try:
             values = self.http.get(BCB_FOCUS_URL, params=params).json().get("value") or []
@@ -240,6 +249,8 @@ class MarketDashboardService:
             reverse=True,
         )
         for row in candidates:
+            if _plain(row.get("Indicador")) != "selic":
+                continue
             reference_match = re.search(r"20\d{2}", str(row.get("DataReferencia") or ""))
             reference = reference_match.group(0) if reference_match else ""
             value = parse_number(row.get("Mediana"))
@@ -272,10 +283,8 @@ class MarketDashboardService:
             "label": "CDI", "current": None, "unit": "%", "source": "Banco Central do Brasil • SGS 12",
             "url": "https://www.bcb.gov.br/estatisticas/txjuros", "proxy": False,
             "as_of": rows[-1][0].isoformat() if rows else None,
-            "variations": {
-                "1d": compound_percentages(values, 1), "1w": compound_percentages(values, 5),
-                "1m": compound_percentages(values, 21), "1y": compound_percentages(values, 252),
-            },
+            "monthly_return_pct": compound_percentages(values, 21),
+            "annual_return_pct": compound_percentages(values, 252),
         }
 
     def inflation(self) -> list[dict]:
@@ -402,29 +411,64 @@ class MarketDashboardService:
         except Exception as exc:
             cdi = {
                 "label": "CDI", "current": None, "unit": "%", "source": "Banco Central do Brasil • SGS 12",
-                "proxy": False, "as_of": None, "variations": {key: None for key in ("1d", "1w", "1m", "1y")},
+                "proxy": False, "as_of": None,
+                "monthly_return_pct": None, "annual_return_pct": None,
                 "error": f"{type(exc).__name__}: {str(exc)[:120]}",
             }
-        imab = self._yahoo_metric(
-            "IMA-B", ["IMAB11", "B5P211"], unit="R$", currency="BRL", proxy=True,
-            proxy_label="ETF de renda fixa indexado ao IMA-B",
-        )
-        irfm = self._yahoo_metric(
-            "IRF-M", ["IRFM11"], unit="R$", currency="BRL", proxy=True,
-            proxy_label="ETF de renda fixa indexado ao IRF-M",
-        )
-        for item in (imab, irfm):
-            item["official_reference"] = ANBIMA_IMA_URL
+        try:
+            response = self.http.get(ANBIMA_IMA_COMPLETE_URL)
+            root = ElementTree.fromstring(response.content)
+            official = {}
+            for family in root.findall("FAMILIA"):
+                label = str(family.attrib.get("INDICE") or "").strip()
+                if label not in {"IMA-B", "IRF-M"}:
+                    continue
+                totals = family.find("TOTAIS")
+                total = family.find("TOTAIS/TOTAL")
+                if total is None:
+                    continue
+                official[label] = {
+                    "label": label,
+                    "unit": "%",
+                    "proxy": False,
+                    "source": "ANBIMA • Índice de Mercado ANBIMA",
+                    "url": ANBIMA_IMA_URL,
+                    "as_of": datetime.strptime(
+                        str((totals.attrib if totals is not None else {}).get("DT_REF") or ""),
+                        "%d/%m/%Y",
+                    ).date().isoformat(),
+                    # Doze meses mantém a coluna anual comparável ao CDI.
+                    "annual_return_pct": parse_number(total.attrib.get("T_Var_Ult12M")),
+                    "monthly_return_pct": parse_number(total.attrib.get("T_Var_Mensal")),
+                }
+            imab, irfm = official["IMA-B"], official["IRF-M"]
+        except Exception as exc:
+            failure = f"{type(exc).__name__}: {str(exc)[:120]}"
+            imab = {
+                "label": "IMA-B", "unit": "%", "proxy": False,
+                "source": "ANBIMA • Índice de Mercado ANBIMA", "url": ANBIMA_IMA_URL,
+                "as_of": None, "annual_return_pct": None, "monthly_return_pct": None,
+                "error": failure,
+            }
+            irfm = {**imab, "label": "IRF-M"}
         return [cdi, imab, irfm]
 
     def crypto(self) -> list[dict]:
+        usd_brl = self._yahoo_metric("Dólar / Real", ["BRL=X"], unit="R$", currency="BRL")
+        conversion = parse_number(usd_brl.get("current"))
         out = []
         for label, base in (("Bitcoin", "BTC"), ("Ethereum", "ETH")):
             usd = self._yahoo_metric(label, [f"{base}-USD"], unit="USD", currency="USD")
             brl = self._yahoo_metric(label, [f"{base}-BRL"], unit="R$", currency="BRL")
+            value_brl = brl.get("current")
+            derived_brl = False
+            if value_brl is None and usd.get("current") is not None and conversion is not None:
+                value_brl = float(usd["current"]) * conversion
+                derived_brl = True
             out.append({
                 "label": label, "ticker": base, "value_usd": usd.get("current"),
-                "value_brl": brl.get("current"), "as_of": usd.get("as_of") or brl.get("as_of"),
+                "value_brl": value_brl, "brl_derived_from_fx": derived_brl,
+                "as_of": usd.get("as_of") or brl.get("as_of"),
                 "variations": usd.get("variations") or {}, "source": "Yahoo Finance",
                 "url": usd.get("url"),
             })
@@ -436,19 +480,98 @@ class MarketDashboardService:
             self._yahoo_metric("Euro / Dólar", ["EURUSD=X"], unit="USD", currency="USD"),
         ]
 
-    def us_rates(self) -> dict:
-        frame = pd.read_csv(StringIO(self.http.get(FRED_RATES_URL).text))
-        for column in ("DGS2", "DGS10"):
+    def _treasury_yields(self) -> tuple[dict, str, str, str]:
+        """Fetch the latest official U.S. Treasury par-yield observation."""
+        month = self.now.strftime("%Y%m")
+        response = self.http.get(
+            TREASURY_RATES_URL,
+            params={
+                "data": "daily_treasury_yield_curve",
+                "field_tdr_date_value_month": month,
+            },
+        )
+        root = ElementTree.fromstring(response.content)
+        data_namespace = "{http://schemas.microsoft.com/ado/2007/08/dataservices}"
+        metadata_namespace = "{http://schemas.microsoft.com/ado/2007/08/dataservices/metadata}"
+        observations = []
+        for properties in root.iter(f"{metadata_namespace}properties"):
+            values = {
+                child.tag.replace(data_namespace, ""): parse_number(child.text)
+                for child in properties
+            }
+            date_node = properties.find(f"{data_namespace}NEW_DATE")
+            observed = str(date_node.text or "") if date_node is not None else ""
+            values["date"] = observed[:10]
+            if values.get("BC_2YEAR") is not None and values.get("BC_10YEAR") is not None:
+                observations.append(values)
+        if not observations:
+            raise ValueError("official_treasury_yields_unavailable")
+        latest = max(observations, key=lambda item: item.get("date") or "")
+        return latest, latest["date"], "U.S. Department of the Treasury", (
+            "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+            "TextView?type=daily_treasury_yield_curve"
+        )
+
+    def _fred_yields(self) -> tuple[dict, str, str, str]:
+        columns = ("DGS2", "DGS5", "DGS10", "DGS30")
+        start = (self.now.date() - timedelta(days=45)).isoformat()
+        frame = pd.read_csv(StringIO(self.http.get(FRED_RATES_URL, params={"cosd": start}).text))
+        for column in columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
         valid = frame.dropna(subset=["DGS2", "DGS10"])
         if valid.empty:
-            return {"two_year": None, "ten_year": None, "spread_10y_2y": None, "as_of": None}
+            raise ValueError("fred_treasury_yields_unavailable")
         row = valid.iloc[-1]
+        return dict(row), str(row.iloc[0]), "Federal Reserve Bank of St. Louis • FRED", "https://fred.stlouisfed.org/series/DGS10"
+
+    def us_rates(self) -> dict:
+        try:
+            row, observed_at, source, source_url = self._treasury_yields()
+            field_map = {"DGS2": "BC_2YEAR", "DGS5": "BC_5YEAR", "DGS10": "BC_10YEAR", "DGS30": "BC_30YEAR"}
+        except Exception:
+            row, observed_at, source, source_url = self._fred_yields()
+            field_map = {key: key for key in ("DGS2", "DGS5", "DGS10", "DGS30")}
+        yields = [
+            {"maturity": label, "years": years, "yield_pct": parse_number(row.get(field_map[column]))}
+            for label, years, column in (
+                ("2 anos", 2, "DGS2"), ("5 anos", 5, "DGS5"),
+                ("10 anos", 10, "DGS10"), ("30 anos", 30, "DGS30"),
+            )
+        ]
+        bond_specs = (
+            ("Treasuries curtos", "SHY", "ETF de títulos do Tesouro de 1–3 anos"),
+            ("Treasuries intermediários", "IEF", "ETF de títulos do Tesouro de 7–10 anos"),
+            ("Treasuries longos", "TLT", "ETF de títulos do Tesouro acima de 20 anos"),
+        )
+
+        def bond_return(spec):
+            label, symbol, description = spec
+            metric = self._yahoo_metric(
+                label, [symbol], unit="USD", currency="USD",
+                proxy=True, proxy_label=description,
+            )
+            variations = metric.get("variations") or {}
+            return {
+                "label": label, "ticker": symbol, "proxy": True,
+                "proxy_label": description, "monthly_return_pct": variations.get("1m"),
+                "annual_return_pct": variations.get("1y"), "as_of": metric.get("as_of"),
+                "source": metric.get("source"), "url": metric.get("url"),
+            }
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            bond_returns = list(executor.map(bond_return, bond_specs))
+        two_year = parse_number(row.get(field_map["DGS2"]))
+        ten_year = parse_number(row.get(field_map["DGS10"]))
+        spread = ten_year - two_year if two_year is not None and ten_year is not None else None
         return {
-            "two_year": float(row["DGS2"]), "ten_year": float(row["DGS10"]),
-            "spread_10y_2y": float(row["DGS10"] - row["DGS2"]),
-            "as_of": str(row.iloc[0]), "source": "Federal Reserve Bank of St. Louis • FRED",
-            "url": "https://fred.stlouisfed.org/series/DGS10",
+            "yields": yields, "two_year": two_year, "ten_year": ten_year,
+            "spread_10y_2y": spread, "bond_returns": bond_returns,
+            "spread_explanation": (
+                "O spread de 10 anos menos 2 anos mede a inclinação da curva americana. "
+                "Positivo sugere prêmio maior no longo prazo; negativo indica curva invertida "
+                "e costuma sinalizar expectativa de desaceleração e cortes de juros."
+            ),
+            "as_of": observed_at, "source": source, "url": source_url,
         }
 
     @staticmethod
@@ -462,7 +585,11 @@ class MarketDashboardService:
 
     def interest_curve(self) -> dict:
         response = self.http.get(ANBIMA_CURVE_URL)
-        tables = pd.read_html(StringIO(response.text), decimal=",", thousands=".")
+        # The page declares ISO-8859-1 in an XML preamble. Passing an already
+        # decoded Unicode string with that declaration to lxml raises a
+        # ValueError, which was why the curve disappeared in production.
+        html = re.sub(r"^\s*<\?xml[^>]*\?>", "", response.text, count=1, flags=re.IGNORECASE)
+        tables = pd.read_html(StringIO(html), decimal=",", thousands=".", flavor="lxml")
         points = []
         as_of = None
         date_match = re.search(r"(\d{2}/\d{2}/\d{4})", response.text)
@@ -495,6 +622,50 @@ class MarketDashboardService:
             "as_of": as_of, "points": [unique[key] for key in sorted(unique)],
             "source": "ANBIMA • Estrutura a Termo das Taxas de Juros",
             "url": ANBIMA_CURVE_URL,
+        }
+
+    def economy_headlines(self, limit: int = 5) -> dict:
+        """Return linked headlines only; article content is never reproduced."""
+        items: list[dict] = []
+        errors: list[str] = []
+        try:
+            soup = BeautifulSoup(self.http.get(AGENCIA_BRASIL_ECONOMY_RSS).text, "xml")
+            for entry in soup.find_all("item")[:12]:
+                title = entry.find("title")
+                link = entry.find("link")
+                published = entry.find("pubDate")
+                if title and link:
+                    items.append({
+                        "title": title.get_text(" ", strip=True),
+                        "url": link.get_text(strip=True), "source": "Agência Brasil",
+                        "published_at": published.get_text(strip=True) if published else None,
+                    })
+        except Exception as exc:
+            errors.append(f"Agência Brasil: {type(exc).__name__}")
+        try:
+            soup = BeautifulSoup(self.http.get(ADVFN_MARKET_NEWS_URL).text, "html.parser")
+            for heading in soup.find_all(["h2", "h3"]):
+                anchor = heading.find("a", href=True)
+                if anchor is None:
+                    continue
+                title = re.sub(r"\s+", " ", anchor.get_text(" ", strip=True))
+                href = str(anchor.get("href") or "")
+                if len(title) < 25 or not href:
+                    continue
+                if href.startswith("/"):
+                    href = "https://br.advfn.com" + href
+                items.append({"title": title, "url": href, "source": "ADVFN", "published_at": None})
+        except Exception as exc:
+            errors.append(f"ADVFN: {type(exc).__name__}")
+        unique: dict[str, dict] = {}
+        for item in items:
+            key = _plain(item["title"])
+            if key and key not in unique:
+                unique[key] = item
+        selected = list(unique.values())[:max(1, min(int(limit), 10))]
+        return {
+            "items": selected, "updated_at": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 3600, "errors": errors,
         }
 
     @staticmethod

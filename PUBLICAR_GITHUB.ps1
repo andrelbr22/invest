@@ -118,7 +118,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Publica Investment Engine V1.15.0 com painel SaaS e desempenho otimizado"
+    & $gitPath commit -m "Publica Formação do Investidor V1.16.0 com interface web própria"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
@@ -134,4 +134,4 @@ try {
 
 Write-Host ""
 Write-Host "PUBLICACAO CONCLUIDA." -ForegroundColor Green
-Write-Host "O servidor Oracle iniciara a atualizacao automaticamente."
+Write-Host "Na primeira migracao, conclua os passos do arquivo INSTRUCOES_ORACLE_V1160.md."

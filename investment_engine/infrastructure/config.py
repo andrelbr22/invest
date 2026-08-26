@@ -1,6 +1,42 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import tomllib
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _load_application_secrets() -> None:
+    """Load the self-hosted TOML file before Pydantic reads the environment."""
+    configured = os.getenv("APP_SECRETS_FILE", "").strip()
+    candidates = [
+        Path(configured) if configured else None,
+        Path("/app/secrets/app_secrets.toml"),
+        Path("deployment/secrets/app_secrets.toml"),
+    ]
+    path = next((item for item in candidates if item is not None and item.is_file()), None)
+    if path is None:
+        return
+    payload = tomllib.loads(path.read_text(encoding="utf-8"))
+    for key, value in payload.items():
+        if isinstance(value, (str, int, float, bool)):
+            os.environ.setdefault(str(key).upper(), str(value))
+    auth = payload.get("auth") if isinstance(payload.get("auth"), dict) else {}
+    aliases = {
+        "client_id": "GOOGLE_CLIENT_ID",
+        "client_secret": "GOOGLE_CLIENT_SECRET",
+        "cookie_secret": "SESSION_SECRET",
+        "redirect_uri": "OAUTH_REDIRECT_URI",
+        "server_metadata_url": "GOOGLE_SERVER_METADATA_URL",
+    }
+    for source, destination in aliases.items():
+        value = auth.get(source)
+        if value:
+            os.environ.setdefault(destination, str(value))
+
+
+_load_application_secrets()
 
 
 class Settings(BaseSettings):
@@ -32,6 +68,14 @@ class Settings(BaseSettings):
     smtp_from_email: str = ""
     smtp_from_name: str = "Formação do Investidor"
     smtp_starttls: bool = True
+    session_secret: str = ""
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_server_metadata_url: str = "https://accounts.google.com/.well-known/openid-configuration"
+    oauth_redirect_uri: str = ""
+    canonical_url: str = "https://formacaodoinvestidor.com.br"
+    secure_cookies: bool = True
+    economy_headlines_ttl_seconds: int = 3600
 
     @property
     def allowed_hosts_list(self) -> list[str]:
@@ -45,6 +89,14 @@ class Settings(BaseSettings):
     @property
     def smtp_configured(self) -> bool:
         return bool(self.smtp_host.strip() and self.smtp_from_email.strip())
+
+    @property
+    def google_auth_configured(self) -> bool:
+        return bool(
+            self.google_client_id.strip()
+            and self.google_client_secret.strip()
+            and len(self.session_secret.strip()) >= 32
+        )
 
 
 settings = Settings()

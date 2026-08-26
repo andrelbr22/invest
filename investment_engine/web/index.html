@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b5d4b">
+  <meta name="description" content="Formação do Investidor — análise de ativos, carteira, mercado e backtests.">
+  <title>Formação do Investidor</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/ui-assets/app.css">
+</head>
+<body>
+  <div id="login-view" class="login-view hidden">
+    <section class="login-card">
+      <div class="brand-mark brand-mark-large" aria-hidden="true">FI</div>
+      <p class="eyebrow">Formação do Investidor</p>
+      <h1>Decisões mais claras.<br>Dados no lugar certo.</h1>
+      <p>Acompanhe o mercado, analise ativos, organize sua carteira e consulte seus estudos em um ambiente seguro.</p>
+      <a class="button primary large" href="/login">Entrar com Google</a>
+      <small>Ferramenta educacional. Não constitui recomendação de investimento.</small>
+    </section>
+  </div>
+
+  <div id="app-shell" class="app-shell hidden">
+    <aside id="sidebar" class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">FI</div>
+        <div class="brand-copy">
+          <strong>Formação</strong>
+          <span>do Investidor</span>
+        </div>
+        <button id="collapse-sidebar" class="icon-button collapse-button" aria-label="Recolher menu" title="Recolher menu">‹</button>
+      </div>
+      <nav id="primary-nav" class="primary-nav" aria-label="Navegação principal">
+        <button class="nav-item active" data-view="dashboard"><span class="nav-icon">◈</span><span class="nav-label">Painel de Mercado</span></button>
+        <button class="nav-item" data-view="analysis"><span class="nav-icon">◫</span><span class="nav-label">Mercado e Análises</span></button>
+        <button class="nav-item" data-view="portfolio"><span class="nav-icon">▣</span><span class="nav-label">Minha Carteira</span></button>
+        <button class="nav-item" data-view="backtests"><span class="nav-icon">◎</span><span class="nav-label">Backtests</span></button>
+        <button class="nav-item owner-only hidden" data-view="admin"><span class="nav-icon">⚙</span><span class="nav-label">Administração</span></button>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="status-dot"></span>
+        <span class="nav-label">Sistema operacional</span>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <button id="mobile-menu" class="icon-button mobile-menu" aria-label="Abrir menu">☰</button>
+        <div class="global-search-wrap">
+          <span class="search-icon">⌕</span>
+          <input id="global-search" type="search" autocomplete="off" placeholder="Buscar PETR4, XPML11, ETF, Bitcoin..." aria-label="Buscar ativo ou indicador">
+          <kbd>/</kbd>
+          <div id="search-results" class="search-results hidden"></div>
+        </div>
+        <button class="icon-button notification-button" title="Alertas" data-view-link="portfolio" data-tab-link="alerts">
+          ◌<span id="notification-count" class="badge hidden">0</span>
+        </button>
+        <div class="profile">
+          <div id="profile-avatar" class="profile-avatar">U</div>
+          <div class="profile-copy"><strong id="profile-name">Usuário</strong><span id="profile-role">Acesso</span></div>
+          <button id="logout-button" class="ghost-button">Sair</button>
+        </div>
+      </header>
+
+      <main id="main-content" class="main-content">
+        <section id="view-dashboard" class="view active">
+          <div class="page-heading">
+            <div><p class="eyebrow">Visão geral</p><h1>Painel de Mercado</h1><p>Indicadores essenciais, taxas, curvas e agenda econômica em uma leitura rápida.</p></div>
+            <div class="heading-actions"><span id="market-updated" class="updated-label"></span><button id="refresh-market" class="button secondary">Atualizar dados</button></div>
+          </div>
+          <div id="market-summary" class="metric-grid summary-grid"></div>
+          <div class="tabs" data-tabs="dashboard">
+            <button class="tab active" data-tab="overview">Resumo</button>
+            <button class="tab" data-tab="rates">Juros e renda fixa</button>
+            <button class="tab" data-tab="global">Mercados globais</button>
+            <button class="tab" data-tab="crypto">Câmbio e cripto</button>
+            <button class="tab" data-tab="curve">Curva de juros</button>
+            <button class="tab" data-tab="calendar">Agenda</button>
+            <button class="tab" data-tab="headlines">Notícias</button>
+          </div>
+          <div id="dashboard-tab-content" class="tab-content"></div>
+        </section>
+
+        <section id="view-analysis" class="view">
+          <div class="page-heading">
+            <div><p class="eyebrow">Seleção inteligente</p><h1>Mercado e Análises</h1><p>Comece pelo filtro Padrão e refine os critérios apenas quando precisar.</p></div>
+            <div class="heading-actions"><span id="analysis-count" class="updated-label"></span></div>
+          </div>
+          <div class="tabs" data-tabs="analysis">
+            <button class="tab active" data-tab="stocks">Ações</button>
+            <button class="tab" data-tab="fiis">FIIs</button>
+            <button class="tab" data-tab="etfs">ETFs</button>
+            <button class="tab" data-tab="bdrs">BDRs</button>
+            <button class="tab" data-tab="futures">Futuros</button>
+          </div>
+          <details class="filter-drawer">
+            <summary><span><strong>Filtros e análises</strong><small>Padrão, FDI - CNPI, ALB e personalizados</small></span><span class="summary-action">Abrir ajustes</span></summary>
+            <div class="filter-body">
+              <div class="preset-row">
+                <button class="preset-button active" data-preset="padrao">Padrão</button>
+                <button class="preset-button" data-preset="cnpi">FDI - CNPI</button>
+                <button class="preset-button" data-preset="alb">ALB</button>
+                <button class="preset-button" data-preset="custom">Meus filtros</button>
+              </div>
+              <div class="filter-columns">
+                <section><h3>Indicadores fundamentalistas</h3><div id="fundamental-filters" class="filter-grid"></div></section>
+                <section><h3>Indicadores técnicos</h3><div id="technical-filters" class="filter-grid"></div></section>
+              </div>
+            </div>
+          </details>
+          <div id="analysis-table" class="data-card"></div>
+        </section>
+
+        <section id="view-portfolio" class="view">
+          <div class="page-heading">
+            <div><p class="eyebrow">Seu patrimônio</p><h1>Minha Carteira</h1><p>Posições, notícias relacionadas e alertas em um só lugar.</p></div>
+            <div id="portfolio-selector-wrap" class="heading-actions"></div>
+          </div>
+          <div class="tabs" data-tabs="portfolio">
+            <button class="tab active" data-tab="positions">Posições</button>
+            <button class="tab" data-tab="news">Notícias</button>
+            <button class="tab" data-tab="alerts">Alertas</button>
+          </div>
+          <div id="portfolio-tab-content" class="tab-content"></div>
+        </section>
+
+        <section id="view-backtests" class="view">
+          <div class="page-heading">
+            <div><p class="eyebrow">Estratégias e evidências</p><h1>Backtests</h1><p>Histórico, comparações e estudos das estratégias mais consistentes.</p></div>
+          </div>
+          <div class="tabs" data-tabs="backtests">
+            <button class="tab active" data-tab="history">Histórico</button>
+            <button class="tab" data-tab="run">Executar teste</button>
+            <button class="tab permission-study hidden" data-tab="study">Estudos</button>
+            <button class="tab owner-only hidden" data-tab="official">Rodadas oficiais</button>
+          </div>
+          <div id="backtests-tab-content" class="tab-content"></div>
+        </section>
+
+        <section id="view-admin" class="view">
+          <div class="page-heading"><div><p class="eyebrow">Controle de acesso</p><h1>Administração</h1><p>Usuários, permissões e situação dos serviços.</p></div></div>
+          <div class="tabs" data-tabs="admin"><button class="tab active" data-tab="users">Usuários</button><button class="tab" data-tab="system">Sistema</button></div>
+          <div id="admin-tab-content" class="tab-content"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <dialog id="asset-dialog" class="asset-dialog"><button id="close-asset-dialog" class="icon-button dialog-close" aria-label="Fechar">×</button><div id="asset-dialog-content"></div></dialog>
+  <script src="/ui-assets/app.js" defer></script>
+</body>
+</html>

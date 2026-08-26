@@ -7,8 +7,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-.streamlit/secrets.toml
-deployment/secrets/streamlit_secrets.toml
+deployment/secrets/app_secrets.toml
 chaves_oracle/
 *.key
 *.pem

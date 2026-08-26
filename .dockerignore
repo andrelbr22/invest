@@ -9,7 +9,7 @@ __pycache__
 .pytest_cache
 outputs
 work
-deployment/secrets/streamlit_secrets.toml
+deployment/secrets/app_secrets.toml
 *.db
 *.sqlite
 *.sqlite3

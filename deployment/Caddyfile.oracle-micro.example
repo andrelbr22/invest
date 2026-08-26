@@ -5,20 +5,10 @@
 formacaodoinvestidor.com.br, www.formacaodoinvestidor.com.br {
     encode zstd gzip
 
-    @backtest_callback path /automation/backtests/*
-    handle @backtest_callback {
-        request_body {
-            max_size 8MB
-        }
-        reverse_proxy app:8765 {
-            # O restante da API interna continua invisível; somente este caminho é roteado.
-            header_up Host api
-        }
+    request_body {
+        max_size 8MB
     }
-
-    handle {
-        reverse_proxy app:8501
-    }
+    reverse_proxy app:8000
 
     header {
         X-Content-Type-Options nosniff

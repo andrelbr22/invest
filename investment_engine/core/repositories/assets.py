@@ -30,6 +30,28 @@ class AssetRepository:
             stmt = stmt.where(AssetORM.asset_type == asset_type)
         return list(self.session.scalars(stmt))
 
+    def search_assets(self, query: str, limit: int = 12) -> list[AssetORM]:
+        clean = str(query or "").strip().upper()
+        if not clean:
+            return []
+        prefix = f"{clean}%"
+        contains = f"%{clean}%"
+        stmt = (
+            select(AssetORM)
+            .where(
+                AssetORM.is_active.is_(True),
+                self._supported_catalog_clause(),
+                or_(AssetORM.ticker.ilike(prefix), AssetORM.name.ilike(contains)),
+            )
+            .order_by(
+                (AssetORM.ticker == clean).desc(),
+                AssetORM.ticker.startswith(clean).desc(),
+                AssetORM.ticker,
+            )
+            .limit(max(1, min(int(limit), 25)))
+        )
+        return list(self.session.scalars(stmt))
+
     def upsert_asset(self, *, ticker: str, asset_type: str, **fields) -> AssetORM:
         ticker = require_supported_ticker(ticker, asset_type)
         asset = self.get_by_ticker(ticker)

@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
-version = "0.16.0"
-description = "Formação do Investidor V1.15.0 with SaaS workspace navigation, private read cache and investor workflow improvements."
+version = "1.16.0"
+description = "Formação do Investidor V1.16.0 with a self-hosted web interface, resilient market data and Google OIDC."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

@@ -2,14 +2,19 @@ from __future__ import annotations
 
 from decimal import Decimal
 from datetime import datetime, timezone
-from secrets import compare_digest
+from secrets import compare_digest, token_urlsafe
+from pathlib import Path
 import threading
 from time import monotonic
 from uuid import UUID
 from typing import Literal
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
+from authlib.integrations.starlette_client import OAuth, OAuthError
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -49,13 +54,36 @@ from ..data.providers.market_dashboard import MarketDashboardService
 from ..infrastructure.config import settings
 
 app = FastAPI(
-    title="Investment Engine V1.15.0",
-    version="0.16.0",
+    title="Formação do Investidor",
+    version="1.16.0",
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
 )
+if settings.app_environment == "production" and settings.app_auth_required and len(settings.session_secret) < 32:
+    raise RuntimeError("SESSION_SECRET deve ter ao menos 32 caracteres em produção.")
+_SESSION_SECRET = settings.session_secret or token_urlsafe(48)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_SESSION_SECRET,
+    same_site="lax",
+    https_only=bool(settings.secure_cookies and settings.app_environment == "production"),
+    max_age=60 * 60 * 12,
+)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts_list)
+
+_WEB_ROOT = Path(__file__).resolve().parents[1] / "web"
+app.mount("/ui-assets", StaticFiles(directory=str(_WEB_ROOT / "static")), name="ui-assets")
+
+_OAUTH = OAuth()
+if settings.google_client_id and settings.google_client_secret:
+    _OAUTH.register(
+        name="google",
+        client_id=settings.google_client_id,
+        client_secret=settings.google_client_secret,
+        server_metadata_url=settings.google_server_metadata_url,
+        client_kwargs={"scope": "openid email profile"},
+    )
 
 _INDEX_PORTFOLIO_CACHE: dict[str, tuple[float, dict]] = {}
 _INDEX_PORTFOLIO_TTL_SECONDS = 6 * 60 * 60
@@ -63,8 +91,10 @@ _MARKET_NEWS = MarketNewsService()
 _NEWS_QUEUE_LOCK = threading.Lock()
 _MARKET_DASHBOARD = MarketDashboardService()
 _MARKET_DASHBOARD_OWNER = "market-dashboard@system.local"
-_MARKET_DASHBOARD_CACHE_KEY = "main-v2"
+_MARKET_DASHBOARD_CACHE_KEY = "main-v4"
 _MARKET_DASHBOARD_LOCK = threading.Lock()
+_HEADLINES_LOCK = threading.Lock()
+_HEADLINES_CACHE: dict = {"data": {}, "expires_at": 0.0, "refreshing": False, "error": None}
 _ALERT_MONITOR = AlertMonitor()
 
 
@@ -144,7 +174,7 @@ def _run_daily_news_refresh(cache_id: str) -> None:
 
 
 def _run_market_dashboard_refresh(cache_id: str) -> None:
-    """Build the shared market snapshot without blocking a Streamlit session."""
+    """Build the shared market snapshot without blocking an interactive request."""
     db = get_session_factory()()
     try:
         row = db.get(UserNewsCacheORM, UUID(cache_id))
@@ -172,13 +202,39 @@ def _run_market_dashboard_refresh(cache_id: str) -> None:
         db.close()
 
 
+def _refresh_economy_headlines() -> None:
+    with _HEADLINES_LOCK:
+        _HEADLINES_CACHE["refreshing"] = True
+        _HEADLINES_CACHE["error"] = None
+    try:
+        result = _MARKET_DASHBOARD.economy_headlines(limit=5)
+        with _HEADLINES_LOCK:
+            _HEADLINES_CACHE["data"] = result
+            _HEADLINES_CACHE["expires_at"] = monotonic() + max(300, settings.economy_headlines_ttl_seconds)
+    except Exception as exc:
+        with _HEADLINES_LOCK:
+            _HEADLINES_CACHE["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+            _HEADLINES_CACHE["expires_at"] = monotonic() + 300
+    finally:
+        with _HEADLINES_LOCK:
+            _HEADLINES_CACHE["refreshing"] = False
+
+
 @app.middleware("http")
 async def security_headers(request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    private_path = request.url.path.startswith(("/portfolios", "/backtests", "/access", "/insights", "/automation", "/market-dashboard"))
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; base-uri 'self'; form-action 'self' https://accounts.google.com; "
+        "frame-ancestors 'none'; object-src 'none'; img-src 'self' data: https:; "
+        "style-src 'self'; script-src 'self'; connect-src 'self'"
+    )
+    private_path = request.url.path.startswith((
+        "/session", "/search", "/alerts", "/portfolios", "/backtests",
+        "/access", "/insights", "/automation", "/market-dashboard",
+    ))
     response.headers["Cache-Control"] = "no-store" if private_path else "no-cache"
     return response
 
@@ -191,12 +247,14 @@ def get_db():
         db.close()
 
 
-def _request_email(x_app_user_email: str = Header(default="")) -> str:
-    email = str(x_app_user_email or "").strip().lower()
-    if email:
-        return email
+def _request_email(request: Request, x_app_user_email: str = Header(default="")) -> str:
+    session_user = request.session.get("user") if hasattr(request, "session") else None
+    if isinstance(session_user, dict):
+        email = str(session_user.get("email") or "").strip().lower()
+        if email:
+            return email
     if not settings.app_auth_required:
-        return "local-owner@localhost"
+        return str(x_app_user_email or "").strip().lower() or "local-owner@localhost"
     raise HTTPException(401, "authenticated_google_account_required")
 
 
@@ -572,9 +630,86 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
     filters: dict | None = None
 
 
+@app.get("/", include_in_schema=False)
+def web_application():
+    return FileResponse(_WEB_ROOT / "index.html")
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon():
+    return FileResponse(_WEB_ROOT / "static" / "favicon.svg", media_type="image/svg+xml")
+
+
+@app.get("/login", include_in_schema=False)
+async def login(request: Request):
+    if not settings.app_auth_required:
+        return RedirectResponse("/")
+    client = _OAUTH.create_client("google")
+    if client is None or not settings.google_auth_configured:
+        raise HTTPException(503, "google_auth_not_configured")
+    redirect_uri = settings.oauth_redirect_uri.strip() or str(request.url_for("oauth2callback"))
+    return await client.authorize_redirect(request, redirect_uri)
+
+
+@app.get("/oauth2callback", include_in_schema=False, name="oauth2callback")
+async def oauth2callback(request: Request):
+    client = _OAUTH.create_client("google")
+    if client is None:
+        return RedirectResponse("/?auth_error=not_configured", status_code=303)
+    try:
+        token = await client.authorize_access_token(request)
+        userinfo = token.get("userinfo") or await client.userinfo(token=token)
+    except OAuthError:
+        return RedirectResponse("/?auth_error=authorization_failed", status_code=303)
+    email = str((userinfo or {}).get("email") or "").strip().lower()
+    verified = (userinfo or {}).get("email_verified")
+    if not email or verified is False:
+        return RedirectResponse("/?auth_error=email_not_verified", status_code=303)
+    display_name = str((userinfo or {}).get("name") or email.split("@", 1)[0]).strip()[:160]
+    request.session.clear()
+    request.session["user"] = {
+        "email": email,
+        "name": display_name,
+        "picture": str((userinfo or {}).get("picture") or "")[:500],
+    }
+    db = get_session_factory()()
+    try:
+        AccessPolicyRepository(db).register(email, display_name, is_owner=email in settings.owner_emails)
+        db.commit()
+    finally:
+        db.close()
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/logout", include_in_schema=False)
+def logout(request: Request):
+    request.session.clear()
+    return {"status": "signed_out"}
+
+
+@app.get("/session/me", include_in_schema=False)
+def session_me(request: Request, db: Session = Depends(get_db)):
+    session_user = request.session.get("user") if hasattr(request, "session") else None
+    if not settings.app_auth_required and not isinstance(session_user, dict):
+        session_user = {"email": "local-owner@localhost", "name": "Ambiente local", "picture": ""}
+    if not isinstance(session_user, dict) or not session_user.get("email"):
+        return {
+            "authenticated": False,
+            "auth_required": settings.app_auth_required,
+            "google_configured": settings.google_auth_configured,
+        }
+    email = str(session_user["email"]).strip().lower()
+    return {
+        "authenticated": True,
+        "auth_required": settings.app_auth_required,
+        "user": session_user,
+        "access": _access_policy(db, email),
+    }
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.16.0", "environment": settings.app_environment}
+    return {"status": "ok", "version": "0.17.0", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -896,6 +1031,45 @@ def assets(
         }
         for a in rows
     ]
+
+
+@app.get("/search")
+def global_search(
+    q: str = Query(min_length=1, max_length=80),
+    _access=Depends(require_permission("can_view_market")),
+    db: Session = Depends(get_db),
+):
+    clean = str(q or "").strip().upper()
+    panel_by_type = {
+        "stock": "stocks", "fii": "fiis", "etf": "etfs",
+        "bdr": "bdrs", "future": "futures",
+    }
+    items = [
+        {
+            "symbol": asset.ticker, "label": asset.name or asset.ticker,
+            "asset_type": asset.asset_type, "area": "analysis",
+            "panel": panel_by_type.get(asset.asset_type, "other"),
+        }
+        for asset in AssetRepository(db).search_assets(clean, limit=15)
+    ]
+    market_tab_by_group = {
+        "Brasil": "overview",
+        "Índices globais": "global",
+        "Risco": "global",
+        "Commodities": "global",
+        "Criptoativos": "crypto",
+        "Câmbio": "crypto",
+    }
+    for market_item in market_alert_catalog():
+        haystack = f"{market_item['key']} {market_item['label']}".upper()
+        if clean in haystack:
+            items.append({
+                "symbol": market_item["key"], "label": market_item["label"],
+                "asset_type": "market_indicator", "area": "dashboard",
+                "panel": "market", "group": market_item.get("group"),
+                "target_tab": market_tab_by_group.get(market_item.get("group"), "overview"),
+            })
+    return {"query": clean, "items": items[:20]}
 
 
 @app.get("/assets/{ticker}")
@@ -1571,6 +1745,42 @@ def refresh_market_dashboard(
     payload = _market_dashboard_payload(db)
     payload["scheduled"] = should_run
     return payload
+
+
+@app.get("/market-dashboard/headlines")
+def market_dashboard_headlines(
+    background_tasks: BackgroundTasks,
+    _access=Depends(require_permission("can_view_market")),
+):
+    now = monotonic()
+    with _HEADLINES_LOCK:
+        should_run = now >= float(_HEADLINES_CACHE.get("expires_at") or 0) and not _HEADLINES_CACHE.get("refreshing")
+        if should_run:
+            _HEADLINES_CACHE["refreshing"] = True
+        payload = {
+            "data": dict(_HEADLINES_CACHE.get("data") or {}),
+            "refreshing": bool(_HEADLINES_CACHE.get("refreshing")),
+            "error": _HEADLINES_CACHE.get("error"),
+            "ttl_seconds": settings.economy_headlines_ttl_seconds,
+        }
+    if should_run:
+        background_tasks.add_task(_refresh_economy_headlines)
+    payload["scheduled"] = should_run
+    return payload
+
+
+@app.post("/market-dashboard/headlines/refresh")
+def refresh_market_dashboard_headlines(
+    background_tasks: BackgroundTasks,
+    _access=Depends(require_permission("can_view_market")),
+):
+    with _HEADLINES_LOCK:
+        should_run = not _HEADLINES_CACHE.get("refreshing")
+        if should_run:
+            _HEADLINES_CACHE["refreshing"] = True
+    if should_run:
+        background_tasks.add_task(_refresh_economy_headlines)
+    return {"scheduled": should_run, "refreshing": True}
 
 
 # -----------------------------

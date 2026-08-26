@@ -200,7 +200,7 @@ class ScoreSnapshotORM(Base):
 class UserAccessPolicyORM(Base):
     """Authorization policy for a Google account.
 
-    Authentication remains with Google/Streamlit.  This table only controls
+    Authentication remains with Google OIDC. This table only controls
     what an authenticated account may see or change inside the application.
     """
     __tablename__ = "user_access_policies"

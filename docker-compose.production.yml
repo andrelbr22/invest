@@ -18,7 +18,7 @@ services:
       timeout: 5s
       retries: 10
 
-  api:
+  app:
     build: .
     restart: unless-stopped
     command: ["/app/deployment/start-api.sh"]
@@ -26,7 +26,12 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-investment_app}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-investment}
       APP_ENVIRONMENT: production
       API_DOCS_ENABLED: ${API_DOCS_ENABLED:-false}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-api,localhost,127.0.0.1}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-formacaodoinvestidor.com.br,www.formacaodoinvestidor.com.br,app,api,localhost,127.0.0.1}
+      APP_AUTH_REQUIRED: ${APP_AUTH_REQUIRED:-true}
+      APP_OWNER_EMAILS: ${APP_OWNER_EMAILS:?Defina APP_OWNER_EMAILS em .env.production}
+      APP_SECRETS_FILE: /app/secrets/app_secrets.toml
+      CANONICAL_URL: https://${DOMAIN:-formacaodoinvestidor.com.br}
+      SECURE_COOKIES: "true"
       DATA_STALE_HOURS_MARKET: ${DATA_STALE_HOURS_MARKET:-6}
       DATA_STALE_HOURS_FUNDAMENTALS: ${DATA_STALE_HOURS_FUNDAMENTALS:-72}
       GORDON_REQUIRED_RETURN_PCT: ${GORDON_REQUIRED_RETURN_PCT:-12.0}
@@ -42,40 +47,18 @@ services:
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Formação do Investidor}
       SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+    volumes:
+      - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
     expose:
       - "8000"
     networks:
       - backend
+      - frontend
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  web:
-    build: .
-    restart: unless-stopped
-    command: ["python", "-m", "streamlit", "run", "examples/streamlit_v15_integrated.py", "--server.address=0.0.0.0", "--server.port=8501"]
-    environment:
-      INVESTMENT_API_URL: http://api:8000
-      SHOW_API_SELECTOR: "false"
-      APP_AUTH_REQUIRED: ${APP_AUTH_REQUIRED:-true}
-      APP_ALLOWED_EMAILS: ${APP_ALLOWED_EMAILS:?Defina APP_ALLOWED_EMAILS em .env.production}
-    volumes:
-      - ./deployment/secrets/streamlit_secrets.toml:/app/.streamlit/secrets.toml:ro
-    expose:
-      - "8501"
-    networks:
-      - backend
-      - frontend
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -92,14 +75,13 @@ services:
       - "443:443/udp"
     volumes:
       - ./deployment/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./deployment/site:/srv:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
       - frontend
       - backend
     depends_on:
-      web:
+      app:
         condition: service_healthy
 
 volumes:
