@@ -30,7 +30,7 @@ st.set_page_config(
 )
 st.markdown("""
     <style>
-    /* Ocultar apenas elementos irrelevantes, MANTENDO o toolbar do Streamlit para não quebrar o menu */
+    /* Ocultar elementos desnecessários, mantendo o toolbar para o botão funcionar */
     #MainMenu,
     .stDeployButton,
     footer {display:none !important; visibility:hidden !important;}
@@ -61,7 +61,7 @@ st.markdown("""
         box-shadow: 8px 0 30px rgba(21, 77, 60, .035);
     }
 
-    /* Torna fixo e em tela cheia apenas quando está aberta (expandida) */
+    /* Torna a barra lateral fixa e com largura definida apenas quando expandida */
     section[data-testid="stSidebar"][aria-expanded="true"] {
         position: fixed !important;
         height: 100vh !important;
@@ -77,12 +77,19 @@ st.markdown("""
         max-width: 20rem !important;
     }
 
-    /* Garante que o botão de recolher interno fique sempre acessível */
+    /* MÁGICA DO EMPURRÃO: Quando a barra está expandida, desloca o painel principal para a direita */
+    div.stApp:has(section[data-testid="stSidebar"][aria-expanded="true"]) section[data-testid="stMain"],
+    div.stApp:has(section[data-testid="stSidebar"][aria-expanded="true"]) .main {
+        padding-left: 20rem !important;
+        transition: padding-left 0.2s ease;
+    }
+
+    /* Garante que o botão interno de recolher fique acessível */
     [data-testid="stSidebarCollapseButton"], button[kind="header"] {
         z-index: 1000000 !important;
     }
 
-    /* Botão flutuante/alça para reabrir o menu quando ele estiver recolhido */
+    /* Botão flutuante para reabrir o menu quando ele estiver recolhido */
     [data-testid="collapsedControl"] {
         display: flex !important;
         position: fixed !important;
