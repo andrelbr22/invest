@@ -30,19 +30,15 @@ st.set_page_config(
 )
 
 st.markdown("""
-<style>
-    /* Mantém o cabeçalho estrutural para o controle da barra lateral, enquanto
-       remove os elementos técnicos e a identificação visual da plataforma. */
-    header[data-testid="stHeader"] {
-        background:rgba(248,251,250,.96); border-bottom:1px solid rgba(20,103,78,.08);
-        backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
-    }
+    <style>
+    /* Ocultar elementos padrão do Streamlit e configurar container */
     #MainMenu,
     [data-testid="stToolbar"],
     [data-testid="stStatusWidget"],
     [data-testid="stDecoration"],
     .stDeployButton,
     footer {display:none !important; visibility:hidden !important;}
+
     .block-container {padding-top: 4rem; padding-bottom: 2rem; max-width: 1500px;}
     .block-container h1 {font-size:2rem; line-height:1.12; margin:.15rem 0 .2rem;}
     .block-container h2 {font-size:1.38rem; margin:.35rem 0 .15rem;}
@@ -50,6 +46,7 @@ st.markdown("""
     .block-container [data-testid="stVerticalBlock"] {gap:.55rem;}
     .block-container [data-testid="stHorizontalBlock"] {gap:.65rem;}
     .block-container [data-testid="stAlert"] {padding:.55rem .75rem; border-radius:.7rem;}
+    
     .block-container [data-testid="stExpander"] {
         border:1px solid rgba(20,103,78,.14); border-radius:.8rem;
         background:rgba(248,252,250,.72); overflow:hidden;
@@ -60,18 +57,38 @@ st.markdown("""
     .block-container [data-testid="stExpander"] details[open] > summary {
         background:rgba(222,243,234,.48); border-bottom:1px solid rgba(20,103,78,.10);
     }
+
+    /* Estilo visual base da barra lateral */
     section[data-testid="stSidebar"] {
-    position: fixed !important;
-    height: 100vh !important;
-    z-index: 999999 !important;
-    background: linear-gradient(180deg, #f4faf7 0%, #edf6f2 52%, #f8fbfa 100%);
-    border-right: 1px solid rgba(20, 103, 78, .14);
-    box-shadow: 8px 0 30px rgba(21, 77, 60, .035);
-}
-    section[data-testid="stSidebar"][aria-expanded="true"] {width:20rem !important; min-width:20rem !important; max-width:20rem !important;}
-    section[data-testid="stSidebar"][aria-expanded="true"] > div {width:20rem !important; min-width:20rem !important; max-width:20rem !important;}
+        background: linear-gradient(180deg, #f4faf7 0%, #edf6f2 52%, #f8fbfa 100%);
+        border-right: 1px solid rgba(20, 103, 78, .14);
+        box-shadow: 8px 0 30px rgba(21, 77, 60, .035);
+    }
+
+    /* Torna fixo e em tela cheia apenas quando está aberta (expandida) */
+    section[data-testid="stSidebar"][aria-expanded="true"] {
+        position: fixed !important;
+        height: 100vh !important;
+        z-index: 999999 !important;
+        width: 20rem !important; 
+        min-width: 20rem !important; 
+        max-width: 20rem !important;
+    }
+    
+    section[data-testid="stSidebar"][aria-expanded="true"] > div {
+        width: 20rem !important; 
+        min-width: 20rem !important; 
+        max-width: 20rem !important;
+    }
+
+    /* Garante que o botão de recolher/expandir fique sempre clicável acima de tudo */
+    [data-testid="stSidebarCollapseButton"], button[kind="header"] {
+        z-index: 1000000 !important;
+    }
+
     section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {padding-top: .55rem;}
     section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {gap: .55rem;}
+
     .ie-brand {
         display:flex; align-items:center; gap:.8rem; padding:.35rem .05rem 1rem;
         border-bottom:1px solid rgba(20,103,78,.12); margin-bottom:.15rem;
@@ -84,6 +101,7 @@ st.markdown("""
     }
     .ie-brand-title {font-size:1rem; line-height:1.15; font-weight:750; color:#133f33;}
     .ie-brand-subtitle {font-size:.72rem; color:#658078; margin-top:.2rem; letter-spacing:.02em;}
+    
     .ie-account-card {
         padding:.85rem; border:1px solid rgba(20,103,78,.13); border-radius:14px;
         background:rgba(255,255,255,.76); box-shadow:0 5px 16px rgba(36,77,65,.045);
@@ -98,11 +116,13 @@ st.markdown("""
     .ie-account-name {font-size:.86rem; font-weight:700; color:#173e34; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
     .ie-account-email {font-size:.68rem; color:#71847e; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:.1rem;}
     .ie-account-meta {display:flex; align-items:center; justify-content:space-between; gap:.4rem; margin-top:.65rem;}
+    
     .ie-profile-badge {
         display:inline-flex; align-items:center; border-radius:999px; padding:.2rem .48rem;
         color:#17664f; background:#e1f3eb; font-size:.66rem; font-weight:650;
     }
     .ie-approved {font-size:.66rem; color:#54736a;}
+    
     .ie-engine-card {
         display:flex; align-items:center; gap:.7rem; padding:.72rem .82rem; margin-top:.1rem;
         border-radius:13px; color:#174f3e; background:linear-gradient(135deg,#d8f2e5,#cdebdc);
@@ -112,6 +132,7 @@ st.markdown("""
     .ie-engine-title {font-size:.78rem; font-weight:700; line-height:1.15;}
     .ie-engine-version {font-size:.66rem; opacity:.72; margin-top:.12rem;}
     .ie-menu-title {font-size:.68rem; font-weight:750; color:#698078; letter-spacing:.1em; margin:1rem 0 .15rem;}
+
     section[data-testid="stSidebar"] div[role="radiogroup"] {gap:.55rem; width:100%;}
     section[data-testid="stSidebar"] div[role="radiogroup"] label {
         position:relative; width:100%; min-height:49px; box-sizing:border-box;
@@ -142,6 +163,7 @@ st.markdown("""
     section[data-testid="stSidebar"] div[role="radiogroup"] [data-testid="stMarkdownContainer"] p {
         margin:0; font-size:.82rem; line-height:1.25;
     }
+    
     section[data-testid="stSidebar"] [data-testid="stButton"] button {
         width:100%; min-height:40px; border-radius:11px; border-color:rgba(33,91,73,.16);
         color:#36584e; background:rgba(255,255,255,.58);
@@ -149,17 +171,21 @@ st.markdown("""
     section[data-testid="stSidebar"] [data-testid="stButton"] button:hover {
         color:#0e684c; border-color:rgba(20,126,92,.28); background:#fff;
     }
+    
     .ie-sidebar-footer {
         margin-top:1.05rem; padding-top:.8rem; border-top:1px solid rgba(20,103,78,.12);
         color:#7a8c86; font-size:.65rem; text-align:center; letter-spacing:.02em;
     }
+    
     div[data-testid="stMetric"] {
         border: 1px solid rgba(128,128,128,.20); border-radius: .75rem; padding: .5rem .72rem;
         background: rgba(128,128,128,.035);
     }
     div[data-testid="stMetric"] [data-testid="stMetricLabel"] {font-size:.74rem;}
     div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size:1.35rem;}
+    
     div[data-testid="stDataFrame"] {border-radius: .75rem; overflow: hidden;}
+    
     .ie-compact-summary {
         display:flex; align-items:center; gap:.55rem; flex-wrap:wrap;
         margin:.15rem 0 .45rem; padding:.58rem .72rem; border-radius:.8rem;
@@ -173,14 +199,15 @@ st.markdown("""
     }
     .ie-filter-chip-muted {background:#edf1ef; color:#65736e;}
     .ie-section-hint {font-size:.7rem; color:#6b8179; margin:-.15rem 0 .2rem;}
+
     @media (max-width: 768px) {
         .block-container {padding-top:4.35rem; padding-left:1rem; padding-right:1rem;}
         .block-container h1 {font-size:1.72rem; line-height:1.16;}
     }
-</style>
-""",unsafe_allow_html=True)
-
-CURRENT_USER_EMAIL=""
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 CURRENT_USER_NAME=""
 PERMISSIONS={}
 MARKET_ASSET_TYPES={"Ações":"stock","FIIs":"fii","Demais Ativos B3":"other_b3"}
