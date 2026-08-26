@@ -30,11 +30,8 @@ st.set_page_config(
 )
 st.markdown("""
     <style>
-    /* Ocultar elementos padrão do Streamlit e configurar container */
+    /* Ocultar apenas elementos irrelevantes, MANTENDO o toolbar do Streamlit para não quebrar o menu */
     #MainMenu,
-    [data-testid="stToolbar"],
-    [data-testid="stStatusWidget"],
-    [data-testid="stDecoration"],
     .stDeployButton,
     footer {display:none !important; visibility:hidden !important;}
 
@@ -85,22 +82,21 @@ st.markdown("""
         z-index: 1000000 !important;
     }
 
-    /* GARANTIA DE RETORNO: Estiliza o botão que reabre a barra lateral quando ela está fechada */
+    /* Botão flutuante/alça para reabrir o menu quando ele estiver recolhido */
     [data-testid="collapsedControl"] {
         display: flex !important;
         position: fixed !important;
-        top: 1rem !important;
-        left: 1rem !important;
+        top: 0.8rem !important;
+        left: 0.8rem !important;
         z-index: 9999999 !important;
         background: linear-gradient(135deg, #168765, #0b634b) !important;
         color: white !important;
         border-radius: 10px !important;
-        padding: 8px 12px !important;
+        padding: 6px 10px !important;
         box-shadow: 0 4px 15px rgba(18, 126, 94, 0.35) !important;
         border: 1px solid rgba(255, 255, 255, 0.2) !important;
     }
     
-    /* Garante que o ícone de seta dentro do botão fique visível (branco) */
     [data-testid="collapsedControl"] svg {
         fill: white !important;
         color: white !important;
