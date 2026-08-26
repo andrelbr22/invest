@@ -61,10 +61,13 @@ st.markdown("""
         background:rgba(222,243,234,.48); border-bottom:1px solid rgba(20,103,78,.10);
     }
     section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #f4faf7 0%, #edf6f2 52%, #f8fbfa 100%);
-        border-right: 1px solid rgba(20, 103, 78, .14);
-        box-shadow: 8px 0 30px rgba(21, 77, 60, .035);
-    }
+    position: fixed !important;
+    height: 100vh !important;
+    z-index: 999999 !important;
+    background: linear-gradient(180deg, #f4faf7 0%, #edf6f2 52%, #f8fbfa 100%);
+    border-right: 1px solid rgba(20, 103, 78, .14);
+    box-shadow: 8px 0 30px rgba(21, 77, 60, .035);
+}
     section[data-testid="stSidebar"][aria-expanded="true"] {width:20rem !important; min-width:20rem !important; max-width:20rem !important;}
     section[data-testid="stSidebar"][aria-expanded="true"] > div {width:20rem !important; min-width:20rem !important; max-width:20rem !important;}
     section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {padding-top: .55rem;}
