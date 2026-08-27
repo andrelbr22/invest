@@ -226,6 +226,7 @@ class MarketIngestionPipeline:
                 asset = self.repo.upsert_asset(
                     ticker=ticker,
                     asset_type=saved_type,
+                    is_active=True,
                     name=raw.get("name"), exchange=raw.get("exchange"),
                     sector=raw.get("sector"), industry=raw.get("industry"), segment=segment_label,
                     metadata_json={

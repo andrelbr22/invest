@@ -58,7 +58,7 @@ def test_other_b3_pipeline_reclassifies_legacy_aura33_without_duplicate():
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
     session = Session(engine)
-    legacy = AssetORM(ticker="AURA33", asset_type="stock", is_active=True)
+    legacy = AssetORM(ticker="AURA33", asset_type="stock", is_active=False)
     session.add(legacy)
     session.commit()
     repo = AssetRepository(session)
@@ -74,4 +74,5 @@ def test_other_b3_pipeline_reclassifies_legacy_aura33_without_duplicate():
     row = AssetRepository(session).get_by_ticker("AURA33")
     assert result.rows_valid == 1
     assert row.asset_type == "bdr"
+    assert row.is_active is True
     assert session.scalar(select(func.count(AssetORM.id))) == 1
