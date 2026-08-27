@@ -70,7 +70,7 @@ async def _application_lifespan(_application: FastAPI):
 
 app = FastAPI(
     title="Formação do Investidor",
-    version="1.17.1",
+    version="1.17.2",
     lifespan=_application_lifespan,
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
@@ -737,7 +737,7 @@ def session_me(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "1.17.1", "environment": settings.app_environment}
+    return {"status": "ok", "version": "1.17.2", "environment": settings.app_environment}
 
 
 @app.get("/health/db")

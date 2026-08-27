@@ -19,10 +19,14 @@ class AssetRepository:
         self.session = session
 
     def get_by_ticker(self, ticker: str) -> AssetORM | None:
-        asset = self.session.scalar(select(AssetORM).where(AssetORM.ticker == ticker.upper()))
+        asset = self.get_any_by_ticker(ticker)
         if asset is not None and not is_supported_ticker(asset.ticker, asset.asset_type):
             return None
         return asset
+
+    def get_any_by_ticker(self, ticker: str) -> AssetORM | None:
+        """Internal lookup that can also see legacy, currently unsupported rows."""
+        return self.session.scalar(select(AssetORM).where(AssetORM.ticker == ticker.upper()))
 
     def list_assets(self, asset_type: str | None = None, limit: int = 100, offset: int = 0) -> list[AssetORM]:
         stmt = select(AssetORM).where(AssetORM.is_active.is_(True), self._supported_catalog_clause()).order_by(AssetORM.ticker).limit(limit).offset(offset)
@@ -54,7 +58,7 @@ class AssetRepository:
 
     def upsert_asset(self, *, ticker: str, asset_type: str, **fields) -> AssetORM:
         ticker = require_supported_ticker(ticker, asset_type)
-        asset = self.get_by_ticker(ticker)
+        asset = self.get_any_by_ticker(ticker)
         if asset is None:
             asset = AssetORM(ticker=ticker, asset_type=asset_type)
             self.session.add(asset)

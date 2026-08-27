@@ -207,15 +207,15 @@ class MarketIngestionPipeline:
                     rejected.append({"ticker": raw.get("ticker"), "asset_type": saved_type, "errors": result.errors})
                     continue
                 ticker = str(raw.get("ticker") or "").strip().upper()
-                existing = self.repo.get_by_ticker(ticker)
+                existing = self.repo.get_any_by_ticker(ticker)
                 if existing is not None and existing.asset_type in {"stock", "fii"}:
                     # Repair ETFs that an older broad "fund" scan may have
                     # labeled as FII, but never reclassify a genuine asset that
                     # already has fundamental history.
-                    can_repair = saved_type == "etf" and existing.asset_type == "fii" and self.repo.latest_fundamentals(existing.id) is None
+                    can_repair = self.repo.latest_fundamentals(existing.id) is None
                     if not can_repair:
                         continue
-                    existing.asset_type = "etf"
+                    existing.asset_type = saved_type
                 asset = self.repo.upsert_asset(
                     ticker=ticker,
                     asset_type=saved_type,

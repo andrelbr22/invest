@@ -1,8 +1,14 @@
 from pathlib import Path
 
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import Session
+
 from investment_engine.api.app import MarketSyncRequest
 from investment_engine.core.instruments import is_supported_ticker
+from investment_engine.core.repositories.assets import AssetRepository
+from investment_engine.data.ingestion.pipeline import MarketIngestionPipeline
 from investment_engine.data.providers.fundamentus import FundamentusFiiProvider
+from investment_engine.infrastructure.db.models import AssetORM, Base
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,3 +43,26 @@ def test_owner_interface_exposes_catalog_counts_and_actions():
     assert 'data-tab="data">Dados de mercado' in index
     assert 'api("/data/catalog-summary")' in script
     assert 'data-market-sync="fii" data-technicals="false"' in script
+
+
+def test_other_b3_pipeline_reclassifies_legacy_aura33_without_duplicate():
+    class Technicals:
+        def fetch(self, asset_type, *, type_specs=None):
+            if asset_type != "dr":
+                return []
+            return [{"ticker": "AURA33", "name": "Aura Minerals", "score_tv": .2,
+                     "sma20": 30, "sma50": 29, "sma200": 25, "rsi14": 55,
+                     "close": 31, "daily_liquidity": 100000}]
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = Session(engine)
+    session.add(AssetORM(ticker="AURA33", asset_type="stock", is_active=True))
+    session.commit()
+    result = MarketIngestionPipeline(session, technical_provider=Technicals()).ingest_other_b3()
+    session.commit()
+
+    row = AssetRepository(session).get_by_ticker("AURA33")
+    assert result.rows_valid == 1
+    assert row.asset_type == "bdr"
+    assert session.scalar(select(func.count(AssetORM.id))) == 1
