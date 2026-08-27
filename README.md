@@ -1,4 +1,4 @@
-# Formação do Investidor • V1.17.0
+# Formação do Investidor • V1.17.1
 
 Plataforma educacional de análise fundamentalista e técnica, carteiras,
 alertas, dados de mercado e backtests. A aplicação é hospedada na Oracle

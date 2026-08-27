@@ -581,11 +581,37 @@ async function loadAdmin() {
       const users=await api("/access/users");
       const body=`<div class="table-scroll"><table><thead><tr><th>Usuário</th><th>Status</th><th>Executa backtests</th><th>Ativos por análise</th><th>Análises por dia</th><th>Alertas</th><th></th></tr></thead><tbody>${users.map(user=>`<tr data-user-row="${esc(user.email)}"><td><strong>${esc(user.display_name||user.email)}</strong><br><small>${esc(user.email)}</small></td><td>${user.is_owner?'<span class="pill">Permanente</span>':`<select data-user-field="status"><option value="pending" ${user.status==="pending"?"selected":""}>Pendente</option><option value="approved" ${user.status==="approved"?"selected":""}>Aprovado</option><option value="blocked" ${user.status==="blocked"?"selected":""}>Bloqueado</option></select>`}</td><td>${user.is_owner?"Sim":`<label class="check"><input type="checkbox" data-user-field="can_run_backtests" ${user.can_run_backtests?"checked":""}> Permitir</label>`}</td><td>${user.is_owner?"30":`<select data-user-field="backtest_asset_limit">${[0,1,3,5,10,20,30].map(value=>`<option value="${value}" ${Number(user.backtest_asset_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${user.is_owner?"30":`<select data-user-field="backtest_daily_limit">${[0,1,5,10,20,30].map(value=>`<option value="${value}" ${Number(user.backtest_daily_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${number(user.alert_asset_limit||0,0)}</td><td>${user.is_owner?"":`<button class="button secondary" data-save-user="${esc(user.email)}">Salvar</button>`}</td></tr>`).join("")}</tbody></table></div>`;
       root.innerHTML=sectionCard("Usuários e permissões",body,"Os limites de backtest podem ser 1, 3, 5, 10, 20 ou 30 ativos e 1, 5, 10, 20 ou 30 análises por dia.");
+    } else if(state.tabs.admin==="data") {
+      const summary=await api("/data/catalog-summary");
+      const counts=summary.counts||{}, groups=summary.groups||{};
+      root.innerHTML=`<div class="metric-grid">${metricCard("Ações",number(groups.stock||0,0),"Ativos ativos")}${metricCard("FIIs",number(groups.fii||0,0),"Fundos imobiliários")}${metricCard("ETFs",number(counts.etf||0,0),"Fundos de índice")}${metricCard("BDRs",number(counts.bdr||0,0),"Recibos negociados na B3")}</div>
+        ${sectionCard("Atualizar catálogos",`<div class="action-grid">
+          <button class="button secondary" data-market-sync="stock" data-technicals="false">Atualizar Ações</button>
+          <button class="button primary" data-market-sync="fii" data-technicals="false">Atualizar FIIs</button>
+          <button class="button secondary" data-market-sync="other_b3" data-technicals="true">Atualizar ETFs, BDRs e futuros</button>
+          <button class="button ghost" data-market-sync="fii" data-technicals="true">Atualização completa dos FIIs</button>
+        </div><div id="market-sync-status" class="notice hidden" style="margin-top:14px"></div>`,`A atualização simples cria ou renova o catálogo rapidamente. A atualização completa também consulta indicadores técnicos e pode levar mais tempo.`)}`;
     } else {
       const [health,db]=await Promise.all([api("/health"),api("/health/db")]);
       root.innerHTML=`<div class="metric-grid">${metricCard("Aplicação",health.status==="ok"?"Operacional":"Atenção",`Versão ${health.version}`)}${metricCard("Banco de dados",db.status==="ok"?"Conectado":"Indisponível",db.database||"")}${metricCard("Hospedagem","Oracle Cloud","Produção")}${metricCard("Domínio","HTTPS ativo","Conexão segura")}</div>`;
     }
   } catch(error) { root.innerHTML=errorState(error); }
+}
+
+async function syncMarketCatalog(assetType, includeTechnicals) {
+  const status=$("#market-sync-status");
+  const buttons=$$("[data-market-sync]");
+  buttons.forEach(button=>button.disabled=true);
+  if(status){status.classList.remove("hidden");status.textContent="Atualizando o catálogo…";}
+  try {
+    const result=await api("/data/sync-market",{method:"POST",body:JSON.stringify({asset_type:assetType,include_technicals:includeTechnicals})});
+    toast(`Catálogo atualizado: ${number(result.catalog_count||0,0)} ativo(s).`,"success");
+    await loadAdmin();
+  } catch(error) {
+    if(status){status.textContent=error.message;status.classList.remove("hidden");}
+    toast(error.message,"error");
+    buttons.forEach(button=>button.disabled=false);
+  }
 }
 
 async function saveUserAccess(email) {
@@ -649,6 +675,7 @@ function bindEvents() {
     const linked=event.target.closest("[data-view-link]");if(linked)setView(linked.dataset.viewLink,linked.dataset.tabLink||null);
     const curve=event.target.closest("[data-curve-years]");if(curve){state.curveYears=Number(curve.dataset.curveYears);renderDashboardTab();}
     const saveUser=event.target.closest("[data-save-user]");if(saveUser)saveUserAccess(saveUser.dataset.saveUser);
+    const marketSync=event.target.closest("[data-market-sync]");if(marketSync)syncMarketCatalog(marketSync.dataset.marketSync,marketSync.dataset.technicals==="true");
     if(!event.target.closest(".global-search-wrap"))$("#search-results").classList.add("hidden");
   });
   $("#close-asset-dialog").addEventListener("click",()=>$("#asset-dialog").close());

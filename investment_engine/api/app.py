@@ -70,7 +70,7 @@ async def _application_lifespan(_application: FastAPI):
 
 app = FastAPI(
     title="Formação do Investidor",
-    version="1.17.0",
+    version="1.17.1",
     lifespan=_application_lifespan,
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
@@ -596,6 +596,7 @@ class AdvancedScreenRequest(BaseModel):
 
 class MarketSyncRequest(BaseModel):
     asset_type: Literal["stock", "fii", "other_b3"] = "stock"
+    include_technicals: bool = True
 
 
 class AccessRegisterRequest(BaseModel):
@@ -736,7 +737,7 @@ def session_me(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "1.17.0", "environment": settings.app_environment}
+    return {"status": "ok", "version": "1.17.1", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -1007,10 +1008,12 @@ def sync_market(req: MarketSyncRequest, _access=Depends(require_permission("can_
 
     if req.asset_type == "stock":
         run_step("fundamentals", pipeline.ingest_stocks)
-        run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals("stock"))
+        if req.include_technicals:
+            run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals("stock"))
     elif req.asset_type == "fii":
         run_step("fundamentals", pipeline.ingest_fiis)
-        run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals("fii"))
+        if req.include_technicals:
+            run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals("fii"))
     else:
         run_step("catalog_and_technicals", pipeline.ingest_other_b3)
 
@@ -1032,6 +1035,26 @@ def sync_market(req: MarketSyncRequest, _access=Depends(require_permission("can_
     if catalog_count == 0:
         raise HTTPException(502, detail={"market_sync_failed": steps})
     return {"asset_type": req.asset_type, "catalog_count": catalog_count, "steps": steps}
+
+
+@app.get("/data/catalog-summary")
+def market_catalog_summary(_access=Depends(require_permission("can_sync_market")), db: Session = Depends(get_db)):
+    """Small administrative summary; never transfers the full asset catalog."""
+    rows = db.execute(
+        select(AssetORM.asset_type, func.count(AssetORM.id))
+        .where(AssetORM.is_active.is_(True))
+        .group_by(AssetORM.asset_type)
+        .order_by(AssetORM.asset_type)
+    ).all()
+    counts = {str(asset_type): int(quantity) for asset_type, quantity in rows}
+    return {
+        "counts": counts,
+        "groups": {
+            "stock": counts.get("stock", 0),
+            "fii": counts.get("fii", 0),
+            "other_b3": sum(counts.get(item, 0) for item in ("etf", "bdr", "future")),
+        },
+    }
 
 
 @app.get("/market/index-members/{index_code}")
