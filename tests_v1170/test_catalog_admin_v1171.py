@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import create_engine, func, select
@@ -57,7 +58,15 @@ def test_other_b3_pipeline_reclassifies_legacy_aura33_without_duplicate():
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
     session = Session(engine)
-    session.add(AssetORM(ticker="AURA33", asset_type="stock", is_active=True))
+    legacy = AssetORM(ticker="AURA33", asset_type="stock", is_active=True)
+    session.add(legacy)
+    session.commit()
+    repo = AssetRepository(session)
+    now = datetime.now(timezone.utc)
+    repo.upsert_fundamentals(
+        legacy, source="legacy", reference_date=now, retrieved_at=now,
+        status="valid", quality_score=100, data={"price": 30}, raw_payload={},
+    )
     session.commit()
     result = MarketIngestionPipeline(session, technical_provider=Technicals()).ingest_other_b3()
     session.commit()

@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
-version = "1.17.2"
-description = "Formação do Investidor V1.17.2 with safe legacy catalog repair and isolated staging promotion."
+version = "1.17.3"
+description = "Formação do Investidor V1.17.3 with deterministic BDR repair and isolated staging promotion."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

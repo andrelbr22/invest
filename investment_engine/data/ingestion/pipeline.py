@@ -212,7 +212,14 @@ class MarketIngestionPipeline:
                     # Repair ETFs that an older broad "fund" scan may have
                     # labeled as FII, but never reclassify a genuine asset that
                     # already has fundamental history.
-                    can_repair = self.repo.latest_fundamentals(existing.id) is None
+                    unambiguous_code_repair = (
+                        not is_supported_ticker(ticker, existing.asset_type)
+                        and is_supported_ticker(ticker, saved_type)
+                    )
+                    can_repair = (
+                        unambiguous_code_repair
+                        or self.repo.latest_fundamentals(existing.id) is None
+                    )
                     if not can_repair:
                         continue
                     existing.asset_type = saved_type
