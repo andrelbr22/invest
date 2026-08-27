@@ -82,7 +82,10 @@ def _bars_frame(bars: Iterable) -> pd.DataFrame:
 def _completed_resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
-    agg = df.resample(rule).agg({"open": "first", "high": "max", "low": "min", "close": "last", "price": "last"}).dropna(subset=["price"])
+    aggregations = {"open": "first", "high": "max", "low": "min", "close": "last", "price": "last"}
+    if "volume" in df.columns:
+        aggregations["volume"] = "sum"
+    agg = df.resample(rule).agg(aggregations).dropna(subset=["price"])
     # The final bucket may represent the week/month currently in formation. Always excluding it is conservative
     # and guarantees that weekly/monthly filters only depend on completed periods.
     return agg.iloc[:-1].copy() if len(agg) >= 2 else agg.iloc[0:0].copy()
@@ -125,6 +128,8 @@ def technical_features(bars: Iterable, *, trend_period: int = 21, pivot_timefram
             "sma_daily": None, "sma_weekly": None, "sma_monthly": None,
             "trend_daily": None, "trend_weekly": None, "trend_monthly": None,
             "rsi14": None, "pivot_timeframe": pivot_timeframe,
+            "volume_daily": None, "volume_daily_ma9": None, "volume_daily_ratio": None,
+            "volume_monthly": None, "volume_monthly_ma9": None, "volume_monthly_ratio": None,
             **{k: None for k in ("pp", "r1", "s1", "r2", "s2", "r3", "s3")},
         }
     current = float(df["price"].iloc[-1])
@@ -147,11 +152,21 @@ def technical_features(bars: Iterable, *, trend_period: int = 21, pivot_timefram
         ref = monthly.iloc[-1] if len(monthly) >= 1 else None
     piv = pivot_points(ref["high"], ref["low"], ref["close"]) if ref is not None else pivot_points(None, None, None)
     ref_ts = None if ref is None else ref.name.isoformat()
+    daily_volume = _f(df["volume"].iloc[-1]) if "volume" in df.columns else None
+    daily_volume_ma9 = _simple_sma(df["volume"].iloc[:-1], 9) if "volume" in df.columns else None
+    monthly_volume = _f(monthly["volume"].iloc[-1]) if "volume" in monthly.columns and not monthly.empty else None
+    monthly_volume_ma9 = _simple_sma(monthly["volume"].iloc[:-1], 9) if "volume" in monthly.columns else None
     return {
         "current_price": current, "trend_period": trend_period,
         "sma_daily": daily_sma, "sma_weekly": weekly_sma, "sma_monthly": monthly_sma,
         "trend_daily": trend(daily_sma), "trend_weekly": trend(weekly_sma), "trend_monthly": trend(monthly_sma),
         "rsi14": _rsi(df["price"], 14), "pivot_timeframe": pivot_timeframe, "pivot_reference": ref_ts,
+        "volume_daily": daily_volume,
+        "volume_daily_ma9": daily_volume_ma9,
+        "volume_daily_ratio": daily_volume / daily_volume_ma9 if daily_volume is not None and daily_volume_ma9 else None,
+        "volume_monthly": monthly_volume,
+        "volume_monthly_ma9": monthly_volume_ma9,
+        "volume_monthly_ratio": monthly_volume / monthly_volume_ma9 if monthly_volume is not None and monthly_volume_ma9 else None,
         **piv,
     }
 
@@ -197,6 +212,10 @@ def technical_filters_pass(features: dict, spec: dict | None) -> bool:
     if not _trend_pass(features.get("trend_weekly"), spec.get("weekly_trend")): return False
     if not _trend_pass(features.get("trend_monthly"), spec.get("monthly_trend")): return False
     if not _range_pass(features.get("rsi14"), spec.get("rsi14")): return False
+    if spec.get("volume_daily_above_ma9") and (_f(features.get("volume_daily_ratio")) or 0) <= 1:
+        return False
+    if spec.get("volume_monthly_above_ma9") and (_f(features.get("volume_monthly_ratio")) or 0) <= 1:
+        return False
 
     zone = spec.get("pivot_zone")
     if zone and zone != "any":
@@ -249,6 +268,8 @@ def row_from_orm(asset, fund, tech, score) -> dict:
     score_dict = {field: g(score, field) for field in SCORE_FIELDS}
     graham_number = None
     graham_upside_pct = None
+    barsi_ceiling_price = None
+    barsi_upside_pct = None
     price = fund_dict.get("price")
     pe = fund_dict.get("pe")
     pbv = fund_dict.get("pbv")
@@ -257,6 +278,12 @@ def row_from_orm(asset, fund, tech, score) -> dict:
         # ao número de Graham e evita depender de campos derivados ausentes.
         graham_number = price * math.sqrt(22.5 / (pe * pbv))
         graham_upside_pct = ((graham_number / price) - 1.0) * 100.0
+    dy = fund_dict.get("dividend_yield_pct")
+    if asset.asset_type == "stock" and price is not None and price > 0 and dy is not None and dy >= 0:
+        # Preço-teto de dividendos: provento anual estimado dividido pela
+        # rentabilidade mínima desejada de 6% ao ano.
+        barsi_ceiling_price = price * dy / 6.0
+        barsi_upside_pct = (barsi_ceiling_price / price - 1.0) * 100.0
     size = company_size_category({
         "market_cap_category": asset.market_cap_category,
         "metadata_json": asset.metadata_json if isinstance(asset.metadata_json, dict) else {},
@@ -282,6 +309,8 @@ def row_from_orm(asset, fund, tech, score) -> dict:
             **fund_dict,
             "graham_number": graham_number,
             "graham_upside_pct": graham_upside_pct,
+            "barsi_ceiling_price": barsi_ceiling_price,
+            "barsi_upside_pct": barsi_upside_pct,
         },
         "scores": score_dict,
         "snapshot_technical": {
@@ -295,11 +324,31 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
                     score_filters: dict | None = None, valuation_flags: dict | None = None,
                     technical_filters: dict | None = None, trend_period: int = 21,
                     pivot_timeframe: str = "daily", include_technical_columns: bool = True,
-                    limit: int = 100, allowed_tickers: Iterable[str] | None = None) -> dict:
+                    limit: int = 100, allowed_tickers: Iterable[str] | None = None,
+                    company_sizes: Iterable[str] | None = None,
+                    ibov_membership: str = "any", ibov_tickers: Iterable[str] | None = None) -> dict:
     universe = repo.latest_universe(asset_type=asset_type, limit=1200)
     if allowed_tickers is not None:
         allowed = {str(ticker).strip().upper() for ticker in allowed_tickers if str(ticker).strip()}
         universe = [row for row in universe if str(row[0].ticker).upper() in allowed]
+    requested_sizes = {str(value) for value in (company_sizes or []) if str(value)}
+    if requested_sizes:
+        invalid_sizes = requested_sizes.difference(COMPANY_SIZE_LABELS)
+        if invalid_sizes:
+            raise ValueError("invalid_company_size")
+        universe = [row for row in universe if company_size_category({
+            "market_cap_category": row[0].market_cap_category,
+            "metadata_json": row[0].metadata_json if isinstance(row[0].metadata_json, dict) else {},
+            "market_cap": getattr(row[2], "market_cap", None),
+        }) in requested_sizes]
+    ibov = {str(value).strip().upper() for value in (ibov_tickers or []) if str(value).strip()}
+    if ibov_membership not in {"any", "inside", "outside"}:
+        raise ValueError("invalid_ibov_membership")
+    if ibov_membership != "any":
+        if not ibov:
+            raise ValueError("ibov_membership_unavailable")
+        should_be_inside = ibov_membership == "inside"
+        universe = [row for row in universe if ((str(row[0].ticker).upper() in ibov) == should_be_inside)]
     preliminary = []
     for asset, fund, tech, score in universe:
         if fund is None and asset_type in {"stock", "fii"}:
@@ -314,6 +363,7 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
         tech_spec.get("daily_trend") not in (None, "any"), tech_spec.get("weekly_trend") not in (None, "any"),
         tech_spec.get("monthly_trend") not in (None, "any"), bool(tech_spec.get("rsi14")),
         tech_spec.get("pivot_zone") not in (None, "any"), tech_spec.get("near_pivot_level") not in (None, "none"),
+        bool(tech_spec.get("volume_daily_above_ma9")), bool(tech_spec.get("volume_monthly_above_ma9")),
     ])
     need_history = technical_active or include_technical_columns
     histories = repo.price_histories_batch([a.id for a, _ in preliminary]) if need_history and preliminary else {}
@@ -346,6 +396,11 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
                 "rsi14_screen": features.get("rsi14"), "pivot_timeframe": pivot_timeframe, "pivot_reference": features.get("pivot_reference"),
                 "pp": features.get("pp"), "r1": features.get("r1"), "s1": features.get("s1"), "r2": features.get("r2"), "s2": features.get("s2"), "r3": features.get("r3"), "s3": features.get("s3"),
                 "pivot_zone": _pivot_zone(features.get("current_price"), features),
+                "volume_daily": features.get("volume_daily"), "volume_daily_ma9": features.get("volume_daily_ma9"),
+                "volume_daily_ratio": features.get("volume_daily_ratio"),
+                "volume_monthly": features.get("volume_monthly"), "volume_monthly_ma9": features.get("volume_monthly_ma9"),
+                "volume_monthly_ratio": features.get("volume_monthly_ratio"),
+                "in_ibov": str(asset.ticker).upper() in ibov if ibov else None,
             } if need_history else {}),
         }
         results.append(flat)

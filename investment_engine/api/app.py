@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from datetime import datetime, timezone
 from secrets import compare_digest, token_urlsafe
@@ -16,14 +17,14 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from ..core.valuation.graham import graham_number, add_upside
 from ..core.valuation.dividend_target import dividend_yield_target_price
 from ..core.strategies.presets import STOCK_STRATEGIES, FII_STRATEGIES
 from ..core.screening.filters import stock_passes, fii_passes
-from ..core.screening.advanced import advanced_screen
+from ..core.screening.advanced import advanced_screen, row_from_orm, technical_features
 from ..core.screening.universe import COMPANY_SIZE_LABELS, company_size_category
 from ..core.repositories.assets import AssetRepository
 from ..core.repositories.portfolio import PortfolioRepository
@@ -41,7 +42,7 @@ from ..core.backtesting.study import build_strategy_configuration_catalog, build
 from ..core.alerts.catalog import market_alert_catalog, market_alert_item
 from ..core.alerts.service import AlertMonitor, AlertService, valid_email
 from ..integrations.email_delivery import AlertEmailSender
-from ..infrastructure.db.models import AssetORM, UserNewsCacheORM
+from ..infrastructure.db.models import AssetORM, BacktestRequestUsageORM, UserNewsCacheORM
 from ..core.instruments import is_alertable_b3_asset, is_supported_ticker
 from ..core.models.strategy import StockFilterSet, FiiFilterSet
 from ..infrastructure.db.session import get_session_factory
@@ -53,21 +54,36 @@ from ..data.providers.news import MarketNewsService
 from ..data.providers.market_dashboard import MarketDashboardService
 from ..infrastructure.config import settings
 
+
+_ALERT_MONITOR = AlertMonitor()
+
+
+@asynccontextmanager
+async def _application_lifespan(_application: FastAPI):
+    if settings.alert_monitor_enabled:
+        _ALERT_MONITOR.start()
+    try:
+        yield
+    finally:
+        _ALERT_MONITOR.stop()
+
+
 app = FastAPI(
     title="Formação do Investidor",
-    version="1.16.0",
+    version="1.17.0",
+    lifespan=_application_lifespan,
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
 )
-if settings.app_environment == "production" and settings.app_auth_required and len(settings.session_secret) < 32:
+if settings.app_environment in {"production", "staging"} and settings.app_auth_required and len(settings.session_secret) < 32:
     raise RuntimeError("SESSION_SECRET deve ter ao menos 32 caracteres em produção.")
 _SESSION_SECRET = settings.session_secret or token_urlsafe(48)
 app.add_middleware(
     SessionMiddleware,
     secret_key=_SESSION_SECRET,
     same_site="lax",
-    https_only=bool(settings.secure_cookies and settings.app_environment == "production"),
+    https_only=bool(settings.secure_cookies),
     max_age=60 * 60 * 12,
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts_list)
@@ -91,24 +107,10 @@ _MARKET_NEWS = MarketNewsService()
 _NEWS_QUEUE_LOCK = threading.Lock()
 _MARKET_DASHBOARD = MarketDashboardService()
 _MARKET_DASHBOARD_OWNER = "market-dashboard@system.local"
-_MARKET_DASHBOARD_CACHE_KEY = "main-v4"
+_MARKET_DASHBOARD_CACHE_KEY = "main-v5"
 _MARKET_DASHBOARD_LOCK = threading.Lock()
 _HEADLINES_LOCK = threading.Lock()
 _HEADLINES_CACHE: dict = {"data": {}, "expires_at": 0.0, "refreshing": False, "error": None}
-_ALERT_MONITOR = AlertMonitor()
-
-
-@app.on_event("startup")
-def _start_alert_monitor():
-    if settings.alert_monitor_enabled:
-        _ALERT_MONITOR.start()
-
-
-@app.on_event("shutdown")
-def _stop_alert_monitor():
-    _ALERT_MONITOR.stop()
-
-
 def _portfolio_news_assets(db: Session, portfolio_id) -> list[dict]:
     assets = []
     for position, asset in PortfolioRepository(db).positions(portfolio_id):
@@ -482,7 +484,7 @@ class BacktestRequest(BaseModel):
 class BacktestCompareRequest(BaseModel):
     ticker: str
     asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other)$")
-    strategy_ids: list[str] = Field(min_length=1, max_length=20)
+    strategy_ids: list[str] = Field(min_length=1, max_length=3)
     period: str = Field(default="1y", pattern="^(6m|1y|2y|3y|5y|10y|15y|20y|custom)$")
     start: datetime | None = None
     end: datetime | None = None
@@ -509,6 +511,22 @@ class BacktestBasketRequest(BaseModel):
     apply_cash_yield: bool = False
     cash_yield_rate_pct: float = Field(default=0.0, gt=-100, le=100)
     params: dict = Field(default_factory=dict)
+    filters: BacktestFiltersRequest = Field(default_factory=BacktestFiltersRequest)
+
+
+class BacktestMatrixRequest(BaseModel):
+    tickers: list[str] = Field(min_length=1, max_length=30)
+    strategy_ids: list[str] = Field(min_length=1, max_length=3)
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other)$")
+    period: str = Field(default="5y", pattern="^(6m|1y|2y|3y|5y|10y|15y|20y|custom)$")
+    start: datetime | None = None
+    end: datetime | None = None
+    initial_capital: float = Field(default=10000.0, gt=0)
+    fee_pct: float = Field(default=0.03, ge=0, le=5)
+    slippage_pct: float = Field(default=0.05, ge=0, le=5)
+    risk_free_rate_pct: float = Field(default=0.0, ge=-20, le=100)
+    apply_cash_yield: bool = False
+    cash_yield_rate_pct: float = Field(default=0.0, gt=-100, le=100)
     filters: BacktestFiltersRequest = Field(default_factory=BacktestFiltersRequest)
 
 
@@ -557,6 +575,8 @@ class AdvancedTechnicalFiltersRequest(BaseModel):
     pivot_zone: str = Field(default="any", pattern="^(any|below_s3|s3_s2|s2_s1|s1_pp|pp_r1|r1_r2|r2_r3|above_r3)$")
     near_pivot_level: str = Field(default="none", pattern="^(none|s3|s2|s1|pp|r1|r2|r3)$")
     pivot_tolerance_pct: float = Field(default=0.5, ge=0, le=20)
+    volume_daily_above_ma9: bool = False
+    volume_monthly_above_ma9: bool = False
 
 
 class AdvancedScreenRequest(BaseModel):
@@ -570,6 +590,8 @@ class AdvancedScreenRequest(BaseModel):
     include_technical_columns: bool = True
     limit: int = Field(default=100, ge=1, le=300)
     allowed_tickers: list[str] | None = Field(default=None, max_length=1200)
+    company_sizes: list[str] = Field(default_factory=list, max_length=3)
+    ibov_membership: Literal["any", "inside", "outside"] = "any"
 
 
 class MarketSyncRequest(BaseModel):
@@ -600,6 +622,8 @@ class AccessPolicyUpdateRequest(BaseModel):
     can_sync_market: bool | None = None
     custom_filter_limit: int | None = Field(default=None, ge=0, le=3)
     alert_asset_limit: int | None = Field(default=None)
+    backtest_asset_limit: int | None = Field(default=None)
+    backtest_daily_limit: int | None = Field(default=None)
 
 
 class AlertPreferenceRequest(BaseModel):
@@ -647,6 +671,8 @@ async def login(request: Request):
     client = _OAUTH.create_client("google")
     if client is None or not settings.google_auth_configured:
         raise HTTPException(503, "google_auth_not_configured")
+    destination = str(request.query_params.get("next") or "/")
+    request.session["oauth_next"] = destination if destination == "/testefdi/" else "/"
     redirect_uri = settings.oauth_redirect_uri.strip() or str(request.url_for("oauth2callback"))
     return await client.authorize_redirect(request, redirect_uri)
 
@@ -666,6 +692,7 @@ async def oauth2callback(request: Request):
     if not email or verified is False:
         return RedirectResponse("/?auth_error=email_not_verified", status_code=303)
     display_name = str((userinfo or {}).get("name") or email.split("@", 1)[0]).strip()[:160]
+    destination = request.session.get("oauth_next") if request.session.get("oauth_next") == "/testefdi/" else "/"
     request.session.clear()
     request.session["user"] = {
         "email": email,
@@ -678,7 +705,7 @@ async def oauth2callback(request: Request):
         db.commit()
     finally:
         db.close()
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse(destination, status_code=303)
 
 
 @app.post("/logout", include_in_schema=False)
@@ -709,7 +736,7 @@ def session_me(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.17.0", "environment": settings.app_environment}
+    return {"status": "ok", "version": "1.17.0", "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -773,6 +800,9 @@ def update_access_user(
         changes["can_view_portfolio"] = True
     if changes.get("can_run_backtests") or changes.get("can_refresh_backtest_signals") or changes.get("can_view_backtest_studies"):
         changes["can_view_backtests"] = True
+    if changes.get("can_run_backtests"):
+        changes.setdefault("backtest_asset_limit", 1)
+        changes.setdefault("backtest_daily_limit", 1)
     if changes.get("can_view_market") is False:
         changes["can_use_advanced_filters"] = False
         changes["can_sync_market"] = False
@@ -798,6 +828,15 @@ def update_access_user(
         changes["can_run_backtests"] = False
         changes["can_refresh_backtest_signals"] = False
         changes["can_view_backtest_studies"] = False
+        changes["backtest_asset_limit"] = 0
+        changes["backtest_daily_limit"] = 0
+    if changes.get("can_run_backtests") is False:
+        changes["backtest_asset_limit"] = 0
+        changes["backtest_daily_limit"] = 0
+    if changes.get("backtest_asset_limit") is not None and int(changes["backtest_asset_limit"]) not in {0, 1, 3, 5, 10, 20, 30}:
+        raise HTTPException(422, "invalid_backtest_asset_limit")
+    if changes.get("backtest_daily_limit") is not None and int(changes["backtest_daily_limit"]) not in {0, 1, 5, 10, 20, 30}:
+        raise HTTPException(422, "invalid_backtest_daily_limit")
     row = AccessPolicyRepository(db).update(clean, **changes)
     if row is None:
         raise HTTPException(404, "user_not_found")
@@ -1073,13 +1112,22 @@ def global_search(
 
 
 @app.get("/assets/{ticker}")
-def asset_detail(ticker: str, _access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
+def asset_detail(ticker: str, access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
     repo = AssetRepository(db)
     asset = repo.get_by_ticker(ticker.upper())
     if asset is None:
         raise HTTPException(404, "asset_not_found")
     fundamentals = repo.latest_fundamentals(asset.id)
     technical = repo.latest_technical(asset.id)
+    score = repo.latest_scores(asset.id)
+    derived = row_from_orm(asset, fundamentals, technical, score)
+    history = repo.price_history(asset.id, limit=760)
+    features = technical_features(history, trend_period=21, pivot_timeframe="daily")
+    leaders = []
+    if access.get("can_view_backtests"):
+        leaders = [run_summary(run, leader_asset) for run, leader_asset in BacktestRepository(db).leaderboard(
+            tickers=[asset.ticker], per_asset=3,
+        ).get(asset.ticker, [])]
     return {
         "asset": {
             "id": str(asset.id), "ticker": asset.ticker, "name": asset.name, "asset_type": asset.asset_type,
@@ -1093,6 +1141,10 @@ def asset_detail(ticker: str, _access=Depends(require_permission("can_view_marke
         },
         "fundamentals": _fundamental_dict(fundamentals),
         "technical": _technical_dict(technical),
+        "derived": derived.get("fundamentals") or {},
+        "technical_analysis": features,
+        "scores": derived.get("scores") or {},
+        "backtests": leaders,
     }
 
 
@@ -1212,15 +1264,19 @@ def _stock_screen_row(asset, fundamental, score):
         ),
         price,
     )
+    dy = _num(fundamental.dividend_yield_pct) if fundamental else None
+    barsi = price * dy / 6.0 if price is not None and price > 0 and dy is not None and dy >= 0 else None
     return {
         **_screen_identity(asset),
         "price": price,
         "pe": pe,
         "pbv": pbv,
-        "dy": _num(fundamental.dividend_yield_pct) if fundamental else None,
+        "dy": dy,
         "roe": _num(fundamental.roe_pct) if fundamental else None,
         "graham_number": graham.value,
         "graham_upside_pct": graham.upside_pct,
+        "barsi_ceiling_price": barsi,
+        "barsi_upside_pct": ((barsi / price) - 1.0) * 100.0 if barsi is not None and price else None,
         **_screen_scores(score),
     }
 
@@ -1273,11 +1329,47 @@ def _universe_screen_result(rows, asset_type: str):
         return [_fii_screen_row(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
     return [_other_b3_screen_row(asset, technical, score) for asset, _fundamental, technical, score in rows]
 
+
+def _alb_stock_rows(repo: AssetRepository, *, limit: int, offset: int = 0):
+    """Return a useful ALB shortlist without silently turning it into a broad universe.
+
+    The first tier is the published ALB preset.  When sparse provider fields
+    leave fewer than five candidates, two explicit relaxation tiers recover
+    the best ranked companies while preserving value, profitability,
+    dividends and liquidity.  The public shortlist is always capped at 20.
+    """
+    tiers = [
+        STOCK_STRATEGIES["alb"].filters,
+        StockFilterSet(
+            roe_min=8, net_margin_min=3, pe_min=0.1, pe_max=22, pbv_max=4,
+            dividend_yield_min=3, current_ratio_min=0.8,
+            daily_liquidity_min=500_000, require_below_graham=True,
+        ),
+        StockFilterSet(
+            roe_min=5, pe_min=0.1, pe_max=25, pbv_max=5,
+            dividend_yield_min=2, daily_liquidity_min=250_000,
+            require_below_graham=True,
+        ),
+    ]
+    selected, seen = [], set()
+    for filters in tiers:
+        for row in repo.screen_latest_stocks(filters, limit=40, offset=0):
+            asset = row[0]
+            if asset.id in seen:
+                continue
+            seen.add(asset.id)
+            selected.append(row)
+        if len(selected) >= 5:
+            break
+    maximum = min(max(int(limit), 1), 20)
+    return selected[max(0, int(offset)):max(0, int(offset)) + maximum]
+
 @app.get("/screen/db/stocks/{strategy_id}")
 def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, _access=Depends(require_permission("can_view_market")), db: Session=Depends(get_db)):
     strategy=STOCK_STRATEGIES.get(strategy_id)
     if not strategy: raise HTTPException(404,"strategy_not_found")
-    rows=AssetRepository(db).screen_latest_stocks(strategy.filters,limit=limit,offset=offset)
+    repo = AssetRepository(db)
+    rows = _alb_stock_rows(repo, limit=limit, offset=offset) if strategy_id == "alb" else repo.screen_latest_stocks(strategy.filters,limit=limit,offset=offset)
     return _stock_screen_result(rows)
 
 @app.get("/screen/db/fiis/{strategy_id}")
@@ -1323,13 +1415,19 @@ def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permissi
     try:
         fundamental_filters = {k: v.model_dump(exclude_none=True) for k, v in req.fundamental_filters.items()}
         score_filters = {k: v.model_dump(exclude_none=True) for k, v in req.score_filters.items()}
-        return advanced_screen(
+        ibov_tickers = None
+        if req.ibov_membership != "any":
+            portfolio = _index_portfolio("IBOV")
+            ibov_tickers = [item.get("ticker") for item in portfolio.get("members") or [] if item.get("ticker")]
+        result = advanced_screen(
             AssetRepository(db), asset_type=req.asset_type, fundamental_filters=fundamental_filters,
             score_filters=score_filters, valuation_flags=req.valuation_flags,
             technical_filters=req.technical_filters.model_dump(exclude_none=True), trend_period=req.trend_period,
             pivot_timeframe=req.pivot_timeframe, include_technical_columns=req.include_technical_columns, limit=req.limit,
             allowed_tickers=req.allowed_tickers,
+            company_sizes=req.company_sizes, ibov_membership=req.ibov_membership, ibov_tickers=ibov_tickers,
         )
+        return result
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
 
@@ -2021,6 +2119,69 @@ def backtest_compare(req: BacktestCompareRequest, access=Depends(require_permiss
         db.rollback(); raise HTTPException(400, str(exc))
     except Exception as exc:
         db.rollback(); raise HTTPException(502, detail={"backtest_compare_failed": str(exc)})
+
+
+@app.post("/backtests/matrix")
+def backtest_matrix(
+    req: BacktestMatrixRequest,
+    access=Depends(require_permission("can_run_backtests")),
+    db: Session = Depends(get_db),
+):
+    """Compare up to three strategies across the user's authorized asset set."""
+    tickers = list(dict.fromkeys(str(value).strip().upper() for value in req.tickers if str(value).strip()))
+    strategies = list(dict.fromkeys(req.strategy_ids))
+    unknown = [strategy for strategy in strategies if strategy not in STRATEGIES]
+    if unknown:
+        raise HTTPException(404, detail={"strategies_not_found": unknown})
+    asset_limit = int(access.get("backtest_asset_limit") or 0)
+    daily_limit = int(access.get("backtest_daily_limit") or 0)
+    if len(tickers) > asset_limit:
+        raise HTTPException(403, detail={"backtest_asset_limit": asset_limit})
+    if not asset_limit or not daily_limit:
+        raise HTTPException(403, "backtest_execution_limit_not_authorized")
+    market_day = backtest_market_date()
+    used = db.scalar(select(func.count(BacktestRequestUsageORM.id)).where(
+        BacktestRequestUsageORM.owner_email == access["email"],
+        BacktestRequestUsageORM.market_date == market_day,
+    )) or 0
+    if used >= daily_limit:
+        raise HTTPException(429, detail={"backtest_daily_limit": daily_limit, "used_today": used})
+
+    usage = BacktestRequestUsageORM(
+        owner_email=access["email"], market_date=market_day,
+        asset_count=len(tickers), strategy_count=len(strategies), status="running",
+    )
+    db.add(usage)
+    db.commit()
+    usage_id = usage.id
+    rows, failures = [], []
+    for ticker in tickers:
+        try:
+            values = BacktestService(db).compare(
+                ticker=ticker, asset_type=req.asset_type, strategy_ids=strategies, period=req.period,
+                start=req.start, end=req.end, initial_capital=req.initial_capital,
+                fee_pct=req.fee_pct, slippage_pct=req.slippage_pct,
+                risk_free_rate_pct=req.risk_free_rate_pct,
+                cash_yield_rate_pct=req.cash_yield_rate_pct, apply_cash_yield=req.apply_cash_yield,
+                filters=req.filters.model_dump(exclude_none=True), owner_email=access["email"],
+            )
+            rows.extend(values)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            failures.append({"ticker": ticker, "error": str(exc)[:500]})
+    usage = db.get(BacktestRequestUsageORM, usage_id)
+    if usage is not None:
+        usage.status = "completed" if rows and not failures else "completed_with_errors" if rows else "failed"
+        usage.finished_at = datetime.now(timezone.utc)
+        db.commit()
+    if not rows:
+        raise HTTPException(502, detail={"backtest_matrix_failed": failures})
+    return {
+        "request_id": str(usage_id), "results": rows, "failures": failures,
+        "assets_requested": len(tickers), "strategies_requested": len(strategies),
+        "daily_used": used + 1, "daily_limit": daily_limit,
+    }
 
 
 @app.post("/backtests/basket")

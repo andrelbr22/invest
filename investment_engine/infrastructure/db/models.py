@@ -228,9 +228,26 @@ class UserAccessPolicyORM(Base):
     can_manage_users: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     custom_filter_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     alert_asset_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backtest_asset_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backtest_daily_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class BacktestRequestUsageORM(Base):
+    """One user-initiated analysis request, used for daily authorization limits."""
+    __tablename__ = "backtest_request_usage"
+    __table_args__ = (Index("ix_backtest_request_usage_owner_day", "owner_email", "market_date"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    market_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    asset_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    strategy_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="running")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PortfolioORM(Base):
@@ -395,7 +412,7 @@ class BacktestRunORM(Base):
     scope: Mapped[str] = mapped_column(String(24), nullable=False, default="personal")
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     market_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    engine_version: Mapped[str] = mapped_column(String(24), nullable=False, default="0.16.0")
+    engine_version: Mapped[str] = mapped_column(String(24), nullable=False, default="1.17.0")
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     strategy_name: Mapped[str] = mapped_column(String(160), nullable=False)
     requested_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

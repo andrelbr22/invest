@@ -4,6 +4,7 @@
 .env.production
 .venv
 .venv_backup_*
+.testvenv*
 __pycache__
 *.pyc
 .pytest_cache

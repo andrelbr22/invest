@@ -1,47 +1,38 @@
-# Formação do Investidor • V1.16.0
+# Formação do Investidor • V1.17.0
 
-Plataforma web educacional para análise de ativos, acompanhamento de mercado,
-carteiras, alertas e backtests. A aplicação é executada integralmente na Oracle
-Cloud, com banco PostgreSQL local, autenticação Google OIDC e implantação pelo
-GitHub.
+Plataforma educacional de análise fundamentalista e técnica, carteiras,
+alertas, dados de mercado e backtests. A aplicação é hospedada na Oracle
+Cloud, usa FastAPI, PostgreSQL e uma interface web própria.
 
-## Arquitetura de produção
+## Destaques
 
-- `Caddy`: HTTPS e encaminhamento do domínio.
-- `FastAPI`: interface web, autenticação, API e tarefas em segundo plano.
-- `PostgreSQL`: dados multiusuário, carteiras, permissões, alertas e resultados.
-- `GitHub Actions`: backtests oficiais e entrega segura dos resultados.
-- `Oracle Object Storage`: cópias de segurança externas.
+- painel de mercado com fontes identificadas, cache persistente e atualização em segundo plano;
+- ações, FIIs, ETFs, BDRs e futuros organizados em abas;
+- filtros fundamentalistas e técnicos combináveis;
+- preço justo de Graham, preço-teto de dividendos e porte da empresa;
+- pivôs clássicos PP, S1–S3 e R1–R3, RSI, tendências e volume/média 9;
+- três melhores backtests e sinal atual por ativo;
+- carteiras e permissões isoladas por conta Google;
+- comparação de até três estratégias para até 30 ativos, conforme autorização;
+- limites individuais de ativos e solicitações diárias de backtest;
+- alertas de preço e variação enviados por e-mail;
+- ambiente de teste isolado em `/testefdi/` e promoção manual para produção.
 
-O navegador acessa apenas `https://formacaodoinvestidor.com.br`. Não existe
-segundo servidor de interface, porta auxiliar ou dependência de hospedagem
-externa para a apresentação das páginas.
+## Publicação segura
 
-## Principais módulos
+O GitHub atualiza automaticamente apenas o ambiente de teste:
 
-- Painel de Mercado em abas, com Selic/Focus, renda fixa, bolsas, commodities,
-  Treasuries, spread, T-Bonds, cripto, câmbio, curva ANBIMA, agenda e manchetes.
-- Mercado e Análises com abas para Ações, FIIs, ETFs, BDRs e Futuros.
-- Carteira com posições, notícias e alertas.
-- Backtests com histórico decrescente, execução, estudos e rodadas oficiais.
-- Administração de permissões por usuário.
+`https://formacaodoinvestidor.com.br/testefdi/`
 
-## Subida local para desenvolvimento
+Depois da validação do proprietário, a versão testada é promovida
+manualmente para:
 
-1. Instale Python 3.12 e as dependências de `requirements.txt`.
-2. Configure as variáveis de `.env.example`.
-3. Execute as migrações com `python -m alembic upgrade head`.
-4. Inicie com:
+`https://formacaodoinvestidor.com.br/`
 
-```powershell
-python -m uvicorn investment_engine.api.app:app --host 127.0.0.1 --port 8000
-```
+As credenciais, o banco e os backups permanecem somente no servidor. Consulte
+`INSTRUCOES_ORACLE_V1170.md` para a primeira migração.
 
-5. Abra `http://127.0.0.1:8000`.
+## Segurança e escopo
 
-## Produção
-
-Siga [INSTRUCOES_ORACLE_V1160.md](INSTRUCOES_ORACLE_V1160.md). O arquivo real
-`deployment/secrets/app_secrets.toml` nunca deve ser enviado ao GitHub.
-
-Ferramenta educacional; não constitui recomendação de investimento.
+O projeto não constitui recomendação de investimento. Resultados de filtros,
+notícias, cotações e backtests devem ser verificados antes de qualquer decisão.

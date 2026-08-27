@@ -1,0 +1,12 @@
+[Unit]
+Description=Atualiza somente o ambiente de teste do Formação do Investidor
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/invest
+ExecStart=/home/ubuntu/invest/deployment/update-staging-from-github.sh
+TimeoutStartSec=900
+

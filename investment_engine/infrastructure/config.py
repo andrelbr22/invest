@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import tomllib
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -34,6 +35,14 @@ def _load_application_secrets() -> None:
         value = auth.get(source)
         if value:
             os.environ.setdefault(destination, str(value))
+    database_override = os.getenv("DATABASE_NAME_OVERRIDE", "").strip()
+    if database_override and database_override.replace("_", "").isalnum():
+        for variable in ("DATABASE_URL", "DATABASE_ADMIN_URL"):
+            current = os.getenv(variable, "").strip()
+            if not current:
+                continue
+            parsed = urlsplit(current)
+            os.environ[variable] = urlunsplit((parsed.scheme, parsed.netloc, f"/{database_override}", parsed.query, parsed.fragment))
 
 
 _load_application_secrets()

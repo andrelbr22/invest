@@ -1,5 +1,7 @@
 "use strict";
 
+const BASE_PATH = location.pathname === "/testefdi" || location.pathname.startsWith("/testefdi/") ? "/testefdi" : "";
+
 const state = {
   session: null,
   view: "dashboard",
@@ -8,6 +10,9 @@ const state = {
   marketEnvelope: null,
   analysisRows: [],
   analysisPreset: "default",
+  analysisLimit: 50,
+  curveYears: 10,
+  visibleColumns: JSON.parse(localStorage.getItem("fdi-visible-columns") || "{}"),
   portfolios: [],
   portfolioId: null,
   requestControllers: new Map(),
@@ -33,17 +38,24 @@ function toast(message, type = "") {
 }
 
 async function api(path, options = {}) {
-  const key = options.requestKey;
+  const requestOptions = {...options};
+  const key = requestOptions.requestKey;
+  let controller = null;
   if (key) {
     state.requestControllers.get(key)?.abort();
-    const controller = new AbortController();
+    controller = new AbortController();
     state.requestControllers.set(key, controller);
-    options.signal = controller.signal;
-    delete options.requestKey;
+    requestOptions.signal = controller.signal;
+    delete requestOptions.requestKey;
   }
-  const request = { credentials: "same-origin", ...options };
-  request.headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  const response = await fetch(path, request);
+  const request = { credentials: "same-origin", ...requestOptions };
+  request.headers = { "Content-Type": "application/json", ...(requestOptions.headers || {}) };
+  let response;
+  try {
+    response = await fetch(`${BASE_PATH}${path}`, request);
+  } finally {
+    if (key && state.requestControllers.get(key) === controller) state.requestControllers.delete(key);
+  }
   if (response.status === 401) {
     showLogin();
     throw new Error("Sua sessão expirou. Entre novamente.");
@@ -207,7 +219,8 @@ function renderDashboardTab() {
 function renderCurve(curve) {
   const points = curve.points || [];
   if (!points.length) return errorState("A fonte oficial ainda não retornou os pontos da curva.", "market");
-  const usable = points.filter(p => !nullable(p.nominal_rate) || !nullable(p.real_rate));
+  const usable = points.filter(p => (!state.curveYears || Number(p.years) <= state.curveYears) && (!nullable(p.nominal_rate) || !nullable(p.real_rate)));
+  if (!usable.length) return errorState("Não há vértices disponíveis para esse período.", "market");
   const width = 900, height = 250, pad = 18;
   const maxX = Math.max(...usable.map(p => Number(p.years) || 0), 1);
   const values = usable.flatMap(p => [p.nominal_rate,p.real_rate]).filter(v => !nullable(v)).map(Number);
@@ -216,7 +229,9 @@ function renderCurve(curve) {
   const y = value => height - pad - ((Number(value) - minY) / Math.max(maxY-minY,.1)) * (height-pad*2);
   const path = key => usable.filter(p=>!nullable(p[key])).map((p,i)=>`${i?"L":"M"}${x(p).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
   const svg = `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Curva de juros"><path d="${path("nominal_rate")}" fill="none" stroke="#0b5d4b" stroke-width="3"/><path d="${path("real_rate")}" fill="none" stroke="#c79b3b" stroke-width="3"/>${usable.filter((_,i)=>i%Math.ceil(usable.length/10)===0).map(p=>`<text x="${x(p)}" y="${height}" font-size="11" text-anchor="middle" fill="#67756f">${number(p.years,1)}a</text>`).join("")}</svg>`;
-  return sectionCard("Curva de juros brasileira", `<div class="chart">${svg}</div><div class="chart-legend"><span><i class="legend-dot" style="background:#0b5d4b"></i>Prefixada nominal</span><span><i class="legend-dot" style="background:#c79b3b"></i>Juro real IPCA</span><span>Referência: ${dateOnly(curve.as_of)}</span></div>`, "Estrutura a termo até o maior prazo disponível", {url:curve.url,label:curve.source});
+  const periods = [[1,"1 ano"],[2,"2 anos"],[5,"5 anos"],[10,"10 anos"],[20,"20 anos"],[30,"30 anos"],[0,"Máximo"]];
+  const controls = `<div class="chart-periods" role="group" aria-label="Período da curva">${periods.map(([years,label])=>`<button class="button ${state.curveYears===years?"primary":"secondary"}" data-curve-years="${years}">${label}</button>`).join("")}</div>`;
+  return sectionCard("Curva de juros brasileira", `${controls}<div class="chart">${svg}</div><div class="chart-legend"><span><i class="legend-dot" style="background:#0b5d4b"></i>Prefixada nominal</span><span><i class="legend-dot" style="background:#c79b3b"></i>Juro real IPCA</span><span>Referência: ${dateOnly(curve.as_of)}</span></div>`, "Escolha o horizonte; a curva oficial da ANBIMA permanece disponível até o maior prazo publicado", {url:curve.url,label:curve.source});
 }
 
 async function loadMarket(force = false) {
@@ -272,16 +287,56 @@ function renderHeadlines(payload) {
 
 const filterDefinitions = {
   fundamental: [
-    ["pe","P/L"],["pbv","P/VP"],["dividend_yield_pct","Dividend yield (%)"],["roe_pct","ROE (%)"],
-    ["roic_pct","ROIC (%)"],["ebit_margin_pct","Margem EBIT (%)"],["net_margin_pct","Margem líquida (%)"],["current_ratio","Liquidez corrente"],
-    ["net_debt_to_ebitda","Dívida líq./EBITDA"],["daily_liquidity","Liquidez diária"],["ffo_yield_pct","FFO yield (%)"],["vacancy_pct","Vacância (%)"],
+    ["price","Preço"],["pe","P/L"],["pbv","P/VP"],["dividend_yield_pct","Dividend yield (%)"],
+    ["ev_ebitda","EV/EBITDA"],["ebit_margin_pct","Margem EBIT (%)"],["net_margin_pct","Margem líquida (%)"],
+    ["current_ratio","Liquidez corrente"],["roe_pct","ROE (%)"],["roic_pct","ROIC (%)"],
+    ["gross_debt_to_equity","Dívida bruta/patrimônio"],["net_debt_to_ebitda","Dívida líquida/EBITDA"],
+    ["revenue_cagr_5y_pct","CAGR receita 5a (%)"],["earnings_cagr_5y_pct","CAGR lucro 5a (%)"],
+    ["daily_liquidity","Liquidez diária"],["ffo_yield_pct","FFO yield (%)"],["cap_rate_pct","Cap rate (%)"],
+    ["vacancy_pct","Vacância física (%)"],["financial_vacancy_pct","Vacância financeira (%)"],["ltv_pct","LTV (%)"],
   ],
-  technical: [["rsi14","RSI 14"]],
+  scores: [["quality_score","Qualidade"],["value_score","Valor"],["growth_score","Crescimento"],["technical_score","Técnica"],["risk_score","Risco"],["liquidity_score","Liquidez"],["alb_score","Nota ALB"],["data_quality_score","Qualidade dos dados"]],
 };
 
+function numericRange(key, label, kind="filter") {
+  const attr = kind === "score" ? "data-score-field" : kind === "technical" ? "data-technical-field" : "data-filter-field";
+  return `<div class="field" ${attr}="${key}"><label>${esc(label)}</label><div class="range-pair"><input type="number" step="any" data-bound="min" placeholder="Mín."><input type="number" step="any" data-bound="max" placeholder="Máx."></div></div>`;
+}
+
 function renderFilterInputs() {
-  $("#fundamental-filters").innerHTML = filterDefinitions.fundamental.map(([key,label]) => `<div class="field" data-filter-field="${key}"><label>${esc(label)}</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input type="number" step="any" data-bound="min" placeholder="Mín."><input type="number" step="any" data-bound="max" placeholder="Máx."></div></div>`).join("");
-  $("#technical-filters").innerHTML = `${filterDefinitions.technical.map(([key,label]) => `<div class="field" data-technical-field="${key}"><label>${esc(label)}</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input type="number" step="any" data-bound="min" placeholder="Mín."><input type="number" step="any" data-bound="max" placeholder="Máx."></div></div>`).join("")}<div class="field"><label>Tendência diária</label><select id="trend-daily"><option value="any">Qualquer</option><option value="up">Alta</option><option value="down">Baixa</option></select></div><div class="field"><label>Tendência semanal</label><select id="trend-weekly"><option value="any">Qualquer</option><option value="up">Alta</option><option value="down">Baixa</option></select></div><button id="apply-advanced-filters" class="button primary" style="align-self:end">Aplicar ajustes</button>`;
+  $("#fundamental-filters").innerHTML = `
+    <div class="field"><label>Máximo de ativos: <strong id="analysis-limit-label">${state.analysisLimit}</strong></label><input id="analysis-limit" type="range" min="5" max="100" step="5" value="${state.analysisLimit}"></div>
+    <div class="field stock-only-filter"><label>Participação no IBOV</label><select id="ibov-membership"><option value="any">Qualquer</option><option value="inside">Somente no IBOV</option><option value="outside">Fora do IBOV</option></select></div>
+    <div class="field stock-only-filter"><label>Porte da empresa</label><select id="company-sizes" multiple size="3"><option value="blue_chip">Blue Chip</option><option value="mid_cap">Middle Cap</option><option value="small_cap">Small Cap</option></select></div>
+    <div class="field stock-only-filter"><label>Preços-teto</label><label class="check"><input id="below-graham" type="checkbox"> Abaixo de Graham</label><label class="check"><input id="below-barsi" type="checkbox"> Abaixo do preço-teto de dividendos (6%)</label></div>
+    <details class="filter-subgroup" open><summary>Indicadores fundamentalistas</summary><div class="filter-grid">${filterDefinitions.fundamental.map(([key,label])=>numericRange(key,label)).join("")}</div></details>
+    <details class="filter-subgroup"><summary>Notas e qualidade</summary><div class="filter-grid">${filterDefinitions.scores.map(([key,label])=>numericRange(key,label,"score")).join("")}</div></details>`;
+  $("#technical-filters").innerHTML = `
+    ${numericRange("rsi14","RSI 14","technical")}
+    <div class="field"><label>Tendência diária</label><select id="trend-daily"><option value="any">Qualquer</option><option value="up">Alta</option><option value="down">Baixa</option></select></div>
+    <div class="field"><label>Tendência semanal</label><select id="trend-weekly"><option value="any">Qualquer</option><option value="up">Alta</option><option value="down">Baixa</option></select></div>
+    <div class="field"><label>Tendência mensal</label><select id="trend-monthly"><option value="any">Qualquer</option><option value="up">Alta</option><option value="down">Baixa</option></select></div>
+    <div class="field"><label>Período dos pivôs</label><select id="pivot-timeframe"><option value="daily">Diário</option><option value="weekly">Semanal</option><option value="monthly">Mensal</option></select></div>
+    <div class="field"><label>Zona entre pivôs</label><select id="pivot-zone"><option value="any">Qualquer</option><option value="below_s3">Abaixo de S3</option><option value="s3_s2">S3–S2</option><option value="s2_s1">S2–S1</option><option value="s1_pp">S1–Pivô</option><option value="pp_r1">Pivô–R1</option><option value="r1_r2">R1–R2</option><option value="r2_r3">R2–R3</option><option value="above_r3">Acima de R3</option></select></div>
+    <div class="field"><label>Próximo de</label><select id="near-pivot"><option value="none">Sem filtro</option><option value="s3">Suporte 3</option><option value="s2">Suporte 2</option><option value="s1">Suporte 1</option><option value="pp">Pivô</option><option value="r1">Resistência 1</option><option value="r2">Resistência 2</option><option value="r3">Resistência 3</option></select></div>
+    <div class="field"><label>Tolerância ao pivô (%)</label><input id="pivot-tolerance" type="number" min="0" max="20" step="0.1" value="0.5"></div>
+    <div class="field"><label>Volume acima da média de 9</label><label class="check"><input id="volume-daily-ma9" type="checkbox"> Diário</label><label class="check"><input id="volume-monthly-ma9" type="checkbox"> Mensal</label></div>
+    <button id="apply-advanced-filters" class="button primary wide-action">Aplicar ajustes</button>`;
+  updateFilterAvailability();
+}
+
+function updateFilterAvailability() {
+  $$(".stock-only-filter").forEach(node=>node.classList.toggle("hidden",analysisType()!=="stock"));
+}
+
+function resetAdvancedFilters() {
+  $$('[data-filter-field] input,[data-score-field] input,[data-technical-field] input').forEach(input=>input.value="");
+  ["trend-daily","trend-weekly","trend-monthly"].forEach(id=>{if($(`#${id}`))$(`#${id}`).value="any";});
+  if($("#pivot-zone")) $("#pivot-zone").value="any";
+  if($("#near-pivot")) $("#near-pivot").value="none";
+  ["below-graham","below-barsi","volume-daily-ma9","volume-monthly-ma9"].forEach(id=>{if($(`#${id}`))$(`#${id}`).checked=false;});
+  if($("#ibov-membership")) $("#ibov-membership").value="any";
+  if($("#company-sizes")) [...$("#company-sizes").options].forEach(option=>option.selected=false);
 }
 
 function analysisType() {
@@ -294,32 +349,80 @@ async function loadAnalysis() {
   const type = analysisType();
   try {
     let rows;
-    if (type === "stock") rows = await api(`/screen/db/stocks/${state.analysisPreset}?limit=50`, {requestKey:"analysis"});
-    else if (type === "fii") rows = await api(`/screen/db/fiis/${state.analysisPreset}?limit=50`, {requestKey:"analysis"});
+    if (type === "stock") rows = await api(`/screen/db/stocks/${state.analysisPreset}?limit=${state.analysisLimit}`, {requestKey:"analysis"});
+    else if (type === "fii") rows = await api(`/screen/db/fiis/${state.analysisPreset}?limit=${state.analysisLimit}`, {requestKey:"analysis"});
     else {
       const all = await api("/screen/db/universe/other_b3?limit=1200", {requestKey:"analysis"});
       rows = all.filter(item => item.asset_type === type);
     }
     if (type === "stock") rows.sort((a,b)=>(Number(b.graham_upside_pct)||-Infinity)-(Number(a.graham_upside_pct)||-Infinity));
     else rows.sort((a,b)=>String(a.ticker).localeCompare(String(b.ticker)));
+    rows = await enrichBacktestLeaders(rows);
     state.analysisRows = rows;
     renderAnalysisRows(rows);
-  } catch (error) { root.innerHTML = errorState(error, "analysis"); }
+  } catch (error) { if (error.name !== "AbortError") root.innerHTML = errorState(error, "analysis"); }
+}
+
+async function enrichBacktestLeaders(rows) {
+  if (!state.session?.access?.can_view_backtests || !rows?.length) return rows || [];
+  const tickers=rows.slice(0,100).map(row=>row.ticker).filter(Boolean).join(",");
+  try {
+    const payload=await api(`/backtests/leaderboard?per_asset=3&tickers=${encodeURIComponent(tickers)}`,{requestKey:"analysis-backtests"});
+    return rows.map(row=>{
+      const leaders=payload.items?.[row.ticker]||[];
+      return {...row,backtest_leaders:leaders,best_signal:leaders[0]?.current_signal,best_strategy:leaders[0]?.strategy_name};
+    });
+  } catch(error) {
+    if(error.name!=="AbortError") toast("Os sinais dos backtests serão exibidos assim que o catálogo estiver disponível.");
+    return rows;
+  }
+}
+
+function signalLabel(value) {
+  return ({buy:"Comprar",sell:"Vender",neutral:"Neutro",compra:"Comprar",venda:"Vender"})[String(value||"").toLowerCase()]||"—";
+}
+
+function analysisColumns(type) {
+  const common=[
+    {id:"ticker",label:"Ativo",always:true,render:r=>`<span class="ticker-cell">${esc(r.ticker)}</span><br><small>${esc(r.name||"")}</small>`},
+    {id:"price",label:"Preço",render:r=>money(r.price)},
+    {id:"best_signal",label:"Melhor backtest",render:r=>r.backtest_leaders?.length?`<span class="pill signal-${esc(r.best_signal||"neutral")}">${signalLabel(r.best_signal)}</span><br><small>${esc(r.best_strategy||"")}</small>`:"—"},
+  ];
+  if(type==="stock") return [common[0],
+    {id:"sector",label:"Setor",render:r=>esc(r.sector_label||r.classification||"—")},
+    {id:"company_size",label:"Porte",render:r=>esc(r.company_size_label||"—")},
+    {id:"in_ibov",label:"IBOV",render:r=>nullable(r.in_ibov)?"—":r.in_ibov?"Sim":"Não"},common[1],
+    {id:"pe",label:"P/L",render:r=>number(r.pe)},{id:"pbv",label:"P/VP",render:r=>number(r.pbv)},
+    {id:"dy",label:"DY",render:r=>pct(r.dy??r.dividend_yield_pct)},{id:"roe",label:"ROE",render:r=>pct(r.roe??r.roe_pct)},
+    {id:"graham",label:"Graham",render:r=>money(r.graham_number)},{id:"graham_upside",label:"Potencial Graham",render:r=>`<span class="${variationClass(r.graham_upside_pct)}">${pct(r.graham_upside_pct,true)}</span>`},
+    {id:"barsi",label:"Preço-teto dividendos",render:r=>money(r.barsi_ceiling_price)},{id:"barsi_upside",label:"Potencial preço-teto",render:r=>pct(r.barsi_upside_pct,true)},
+    {id:"alb",label:"Nota ALB",render:r=>number(r.alb_score,1)},
+    {id:"trend_daily",label:"Tendência alta",render:r=>r.trend_daily==="up"?"Sim":r.trend_daily==="down"?"Não":"—"},
+    {id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},
+    ...["s3","s2","s1","pp","r1","r2","r3"].map(id=>({id,label:id==="pp"?"Pivô":id.toUpperCase(),render:r=>money(r[id])})),
+    {id:"volume_daily",label:"Volume/Média 9 diário",render:r=>nullable(r.volume_daily_ratio)?"—":`${number(Number(r.volume_daily_ratio)*100,0)}%`},
+    {id:"volume_monthly",label:"Volume/Média 9 mensal",render:r=>nullable(r.volume_monthly_ratio)?"—":`${number(Number(r.volume_monthly_ratio)*100,0)}%`},
+    common[2],
+  ];
+  if(type==="fii") return [common[0],{id:"segment",label:"Segmento",render:r=>esc(r.segment_label||r.classification||"—")},common[1],{id:"pbv",label:"P/VP",render:r=>number(r.pbv)},{id:"dy",label:"DY",render:r=>pct(r.dy??r.dividend_yield_pct)},{id:"ffo",label:"FFO yield",render:r=>pct(r.ffo_yield??r.ffo_yield_pct)},{id:"vacancy",label:"Vacância",render:r=>pct(r.vacancy??r.vacancy_pct)},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},common[2]];
+  return [common[0],{id:"category",label:"Categoria",render:r=>esc(r.asset_type_label||r.classification||"—")},common[1],{id:"signal",label:"Sinal",render:r=>esc(r.signal_tv||"—")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},{id:"technical",label:"Nota técnica",render:r=>number(r.technical_score,1)},common[2]];
+}
+
+function visibleAnalysisColumns(type, columns) {
+  const defaults={stock:["ticker","sector","price","pe","pbv","dy","roe","graham_upside","barsi","best_signal"],fii:["ticker","segment","price","pbv","dy","ffo","vacancy","best_signal"]};
+  const saved=state.visibleColumns[type];
+  const active=new Set(Array.isArray(saved)?saved:(defaults[type]||columns.map(column=>column.id)));
+  return columns.filter(column=>column.always||active.has(column.id));
 }
 
 function renderAnalysisRows(rows) {
   $("#analysis-count").textContent = `${rows.length} ativo${rows.length===1?"":"s"}`;
   if (!rows.length) { $("#analysis-table").innerHTML='<div class="empty-state"><strong>Nenhum ativo passou pelos filtros</strong>Abra os ajustes para ampliar ou alterar os critérios.</div>'; return; }
   const type = analysisType();
-  let columns;
-  if (type === "stock") columns = [
-    ["Ativo",r=>`<span class="ticker-cell">${esc(r.ticker)}</span><br><small>${esc(r.name||"")}</small>`],
-    ["Setor",r=>esc(r.sector_label||r.classification||"—")],["Preço",r=>money(r.price)],["P/L",r=>number(r.pe)],["P/VP",r=>number(r.pbv)],
-    ["DY",r=>pct(r.dy)],["ROE",r=>pct(r.roe)],["Graham",r=>money(r.graham_number)],["Potencial Graham",r=>`<span class="${variationClass(r.graham_upside_pct)}">${pct(r.graham_upside_pct,true)}</span>`],["Nota ALB",r=>number(r.alb_score,1)],
-  ];
-  else if (type === "fii") columns = [["Ativo",r=>`<span class="ticker-cell">${esc(r.ticker)}</span><br><small>${esc(r.name||"")}</small>`],["Segmento",r=>esc(r.segment_label||r.classification||"—")],["Preço",r=>money(r.price)],["P/VP",r=>number(r.pbv)],["DY",r=>pct(r.dy)],["FFO yield",r=>pct(r.ffo_yield)],["Vacância",r=>pct(r.vacancy)],["Nota ALB",r=>number(r.alb_score,1)]];
-  else columns = [["Ativo",r=>`<span class="ticker-cell">${esc(r.ticker)}</span><br><small>${esc(r.name||"")}</small>`],["Categoria",r=>esc(r.asset_type_label||r.classification||"—")],["Preço",r=>money(r.price)],["Sinal",r=>esc(r.signal_tv||"—")],["RSI 14",r=>number(r.rsi14_screen)],["Nota técnica",r=>number(r.technical_score,1)]];
-  $("#analysis-table").innerHTML = `<div class="table-scroll"><table><thead><tr>${columns.map(c=>`<th>${esc(c[0])}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr data-ticker="${esc(r.ticker)}">${columns.map(c=>`<td>${c[1](r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  const allColumns=analysisColumns(type), columns=visibleAnalysisColumns(type,allColumns);
+  const active=new Set(columns.map(column=>column.id));
+  const picker=`<details class="column-picker"><summary>Colunas visíveis</summary><div>${allColumns.filter(column=>!column.always).map(column=>`<label class="check"><input type="checkbox" data-column-id="${column.id}" ${active.has(column.id)?"checked":""}> ${esc(column.label)}</label>`).join("")}</div></details>`;
+  $("#analysis-table").innerHTML = `<div class="table-toolbar">${picker}<span>Clique em um ativo para abrir todos os dados.</span></div><div class="table-scroll"><table><thead><tr>${columns.map(c=>`<th>${esc(c.label)}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr data-ticker="${esc(r.ticker)}">${columns.map(c=>`<td>${c.render(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
 async function applyAdvancedFilters() {
@@ -328,16 +431,26 @@ async function applyAdvancedFilters() {
     const min=group.querySelector('[data-bound="min"]').value, max=group.querySelector('[data-bound="max"]').value;
     if (min!=="" || max!=="") fundamental_filters[group.dataset.filterField] = {min:min===""?null:Number(min),max:max===""?null:Number(max)};
   });
+  const score_filters={};
+  $$('[data-score-field]').forEach(group=>{
+    const min=group.querySelector('[data-bound="min"]').value,max=group.querySelector('[data-bound="max"]').value;
+    if(min!==""||max!=="")score_filters[group.dataset.scoreField]={min:min===""?null:Number(min),max:max===""?null:Number(max)};
+  });
   const rsiGroup = $("[data-technical-field='rsi14']");
   const rsiMin=rsiGroup?.querySelector('[data-bound="min"]').value, rsiMax=rsiGroup?.querySelector('[data-bound="max"]').value;
-  const technical_filters={daily_trend:$("#trend-daily").value,weekly_trend:$("#trend-weekly").value,monthly_trend:"any",pivot_zone:"any",near_pivot_level:"none",pivot_tolerance_pct:.5};
+  const technical_filters={daily_trend:$("#trend-daily").value,weekly_trend:$("#trend-weekly").value,monthly_trend:$("#trend-monthly").value,pivot_zone:$("#pivot-zone").value,near_pivot_level:$("#near-pivot").value,pivot_tolerance_pct:Number($("#pivot-tolerance").value||.5),volume_daily_above_ma9:$("#volume-daily-ma9").checked,volume_monthly_above_ma9:$("#volume-monthly-ma9").checked};
   if (rsiMin!=="" || rsiMax!=="") technical_filters.rsi14={min:rsiMin===""?null:Number(rsiMin),max:rsiMax===""?null:Number(rsiMax)};
   const asset_type = ["stock","fii"].includes(analysisType()) ? analysisType() : "other_b3";
+  state.analysisLimit=Number($("#analysis-limit").value||50);
+  const company_sizes=$("#company-sizes")?[...$("#company-sizes").selectedOptions].map(option=>option.value):[];
+  const ibov_membership=$("#ibov-membership")?.value||"any";
+  const valuation_flags={below_graham:Boolean($("#below-graham")?.checked),below_barsi_6pct:Boolean($("#below-barsi")?.checked)};
   $("#analysis-table").innerHTML=loadingCards(6);
   try {
-    const rows=await api("/screen/advanced",{method:"POST",body:JSON.stringify({asset_type,fundamental_filters,score_filters:{},valuation_flags:{},technical_filters,trend_period:21,pivot_timeframe:"daily",include_technical_columns:true,limit:100})});
-    state.analysisRows=rows; renderAnalysisRows(rows); toast("Filtros aplicados.","success");
-  } catch(error) { $("#analysis-table").innerHTML=errorState(error,"analysis"); }
+    const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify({asset_type,fundamental_filters,score_filters,valuation_flags,technical_filters,trend_period:21,pivot_timeframe:$("#pivot-timeframe").value,include_technical_columns:true,limit:state.analysisLimit,company_sizes,ibov_membership})});
+    const rows=await enrichBacktestLeaders(payload.rows||payload);
+    state.analysisRows=rows; renderAnalysisRows(rows); toast(`${rows.length} ativo(s) após os ajustes.`,"success");
+  } catch(error) { if(error.name!=="AbortError") $("#analysis-table").innerHTML=errorState(error,"analysis"); }
 }
 
 async function openAsset(ticker) {
@@ -345,8 +458,28 @@ async function openAsset(ticker) {
   content.innerHTML=loadingCards(4); dialog.showModal();
   try {
     const data=await api(`/assets/${encodeURIComponent(ticker)}`);
-    const a=data.asset||{}, f=data.fundamentals||{}, t=data.technical||{};
-    content.innerHTML=`<p class="eyebrow">${esc(a.asset_type||"Ativo")}</p><h2 class="asset-title">${esc(a.ticker)} • ${esc(a.name||"")}</h2><p class="asset-subtitle">${esc(a.sector_label||a.classification||"")}</p><div class="metric-grid">${metricCard("Preço",money(f.price??t.close))}${metricCard("P/L",number(f.pe))}${metricCard("P/VP",number(f.pbv))}${metricCard("Dividend yield",pct(f.dividend_yield_pct))}${metricCard("ROE",pct(f.roe_pct))}${metricCard("RSI 14",number(t.rsi14))}${metricCard("Retorno 12 meses",pct(t.return_12m_pct,true))}${metricCard("Liquidez diária",money(f.daily_liquidity??t.daily_liquidity))}</div>`;
+    const a=data.asset||{}, f=data.fundamentals||{}, t=data.technical||{}, d=data.derived||{}, tech=data.technical_analysis||{}, scores=data.scores||{}, leaders=data.backtests||[];
+    const fundamentals=[
+      ["P/L",f.pe],["P/VP",f.pbv],["EV/EBITDA",f.ev_ebitda],["Dividend yield (%)",f.dividend_yield_pct],
+      ["ROE (%)",f.roe_pct],["ROIC (%)",f.roic_pct],["Margem EBIT (%)",f.ebit_margin_pct],["Margem líquida (%)",f.net_margin_pct],
+      ["Liquidez corrente",f.current_ratio],["Dívida bruta/patrimônio",f.gross_debt_to_equity],["Dívida líq./EBITDA",f.net_debt_to_ebitda],
+      ["CAGR receita 5a (%)",f.revenue_cagr_5y_pct],["CAGR lucro 5a (%)",f.earnings_cagr_5y_pct],["Liquidez diária",f.daily_liquidity??t.daily_liquidity],
+    ].filter(([,value])=>!nullable(value));
+    const pivotRows=["s3","s2","s1","pp","r1","r2","r3"].map(key=>({label:key==="pp"?"Pivô central":key.startsWith("s")?`Suporte ${key.slice(1)}`:`Resistência ${key.slice(1)}`,value:tech[key]}));
+    const leaderTable=leaders.length?marketTable(leaders,[
+      {label:"Estratégia",render:r=>`<strong>${esc(r.strategy_name||r.strategy_id)}</strong>`},
+      {label:"Sinal atual",render:r=>`<span class="pill signal-${esc(r.current_signal||"neutral")}">${signalLabel(r.current_signal)}</span>`},
+      {label:"Pontuação",render:r=>number(r.ranking_score,1)},
+      {label:"Retorno",render:r=>pct(r.metrics?.total_return_pct,true),className:r=>variationClass(r.metrics?.total_return_pct)},
+    ]):'<div class="empty-state compact"><strong>Sem catálogo oficial para este ativo</strong>Os três melhores resultados aparecerão após a rodada oficial.</div>';
+    content.innerHTML=`<div class="asset-dialog-header"><p class="eyebrow">${esc(a.asset_type_label||a.asset_type||"Ativo")}</p><h2 class="asset-title">${esc(a.ticker)} • ${esc(a.name||"")}</h2><p class="asset-subtitle">${esc(a.sector_label||a.classification||"")} ${a.company_size_label?`• ${esc(a.company_size_label)}`:""}</p></div>
+      <div class="metric-grid asset-summary">${metricCard("Preço",money(f.price??t.close))}${metricCard("Potencial Graham",pct(d.graham_upside_pct,true),`Preço justo ${money(d.graham_number)}`)}${metricCard("Preço-teto dividendos",money(d.barsi_ceiling_price),`Potencial ${pct(d.barsi_upside_pct,true)}`)}${metricCard("Sinal do melhor backtest",signalLabel(leaders[0]?.current_signal),leaders[0]?.strategy_name||"")}</div>
+      <div class="asset-detail-grid">
+        ${sectionCard("Indicadores fundamentalistas",fundamentals.length?`<div class="detail-list">${fundamentals.map(([label,value])=>`<div><span>${esc(label)}</span><strong>${number(value,2)}</strong></div>`).join("")}</div>`:'<div class="empty-state compact">Sem dados fundamentalistas recentes.</div>')}
+        ${sectionCard("Análise técnica",`<div class="metric-grid mini">${metricCard("RSI 14",number(tech.rsi14??t.rsi14))}${metricCard("Tendência diária",tech.trend_daily==="up"?"Alta":tech.trend_daily==="down"?"Baixa":"—")}${metricCard("Volume diário / média 9",nullable(tech.volume_daily_ratio)?"—":pct(Number(tech.volume_daily_ratio)*100))}${metricCard("Volume mensal / média 9",nullable(tech.volume_monthly_ratio)?"—":pct(Number(tech.volume_monthly_ratio)*100))}</div><div class="detail-list pivot-list">${pivotRows.map(row=>`<div><span>${esc(row.label)}</span><strong>${money(row.value)}</strong></div>`).join("")}</div><small class="formula-note">Pivôs calculados pela máxima, mínima e fechamento do último período concluído.</small>`)}
+        ${sectionCard("Notas do ativo",`<div class="detail-list">${Object.entries({"Qualidade":scores.quality_score,"Valor":scores.value_score,"Crescimento":scores.growth_score,"Técnica":scores.technical_score,"Risco":scores.risk_score,"Liquidez":scores.liquidity_score,"ALB":scores.alb_score,"Qualidade dos dados":scores.data_quality_score}).map(([label,value])=>`<div><span>${esc(label)}</span><strong>${number(value,1)}</strong></div>`).join("")}</div>`)}
+        ${sectionCard("3 melhores backtests e sinal atual",leaderTable,"Ordenados pela consistência dos resultados oficiais")}
+      </div>`;
   } catch(error) { content.innerHTML=errorState(error); }
 }
 
@@ -408,19 +541,36 @@ async function loadBacktests() {
       root.innerHTML=sectionCard("Rodadas oficiais",marketTable(rows,[{label:"Criado em",render:r=>dateTime(r.created_at)},{label:"Identificador",render:r=>esc(r.id)},{label:"Ativos",render:r=>number((r.requested_tickers||r.tickers||[]).length,0)},{label:"Progresso",render:r=>`${number(r.completed_assets||0,0)} / ${number(r.total_assets||(r.requested_tickers||[]).length,0)}`},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":""}">${esc(r.status)}</span>`}]));
     } else {
       const catalog=await api("/backtests/strategies");
-      root.innerHTML=sectionCard("Executar backtest",`<form id="backtest-form" class="filter-grid"><div class="field"><label>Ativo</label><input name="ticker" required placeholder="PETR4"></div><div class="field"><label>Estratégia</label><select name="strategy_id">${(catalog.strategies||[]).map(s=>`<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("")}</select></div><div class="field"><label>Período</label><select name="period">${Object.entries(catalog.periods||{}).map(([id,label])=>`<option value="${esc(id)}" ${id==="5y"?"selected":""}>${esc(label)}</option>`).join("")}</select></div><button class="button primary" type="submit" style="align-self:end">Executar</button></form><div id="backtest-result" style="margin-top:16px"></div>`,"O resultado é salvo no histórico desta conta");
+      const access=state.session.access;
+      root.innerHTML=sectionCard("Comparar estratégias",`<form id="backtest-form" class="filter-grid backtest-form">
+        <div class="field wide-action"><label>Ativos — separe por vírgula ou espaço</label><textarea name="tickers" required rows="3" placeholder="PETR4, VALE3, BBAS3"></textarea><small>Limite autorizado por análise: ${number(access.backtest_asset_limit||0,0)} ativo(s).</small></div>
+        <div class="field"><label>Estratégias (até 3)</label><select name="strategy_ids" multiple size="6" required>${(catalog.strategies||[]).map(s=>`<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("")}</select></div>
+        <div class="field"><label>Tipo de ativo</label><select name="asset_type"><option value="stock">Ações</option><option value="fii">FIIs</option><option value="etf">ETFs</option><option value="bdr">BDRs</option></select></div>
+        <div class="field"><label>Período</label><select name="period">${Object.entries(catalog.periods||{}).map(([id,label])=>`<option value="${esc(id)}" ${id==="5y"?"selected":""}>${esc(label)}</option>`).join("")}</select></div>
+        <button class="button primary wide-action" type="submit">Executar e comparar</button>
+      </form><div id="backtest-result" style="margin-top:16px"></div>`,`Cada envio conta como uma análise diária. Limite desta conta: ${access.backtest_daily_limit||0} por dia; os resultados ficam salvos no histórico.`);
     }
   } catch(error) { root.innerHTML=errorState(error,"backtests"); }
 }
 
 async function runBacktest(form) {
   const result=$("#backtest-result"); result.innerHTML=loadingCards(4);
-  const values=Object.fromEntries(new FormData(form));
+  const formData=new FormData(form), values=Object.fromEntries(formData);
+  const tickers=String(values.tickers||"").toUpperCase().split(/[\s,;]+/).map(value=>value.trim()).filter(Boolean);
+  const strategy_ids=[...form.querySelector('[name="strategy_ids"]').selectedOptions].map(option=>option.value);
+  if(!tickers.length||!strategy_ids.length){result.innerHTML=errorState("Informe ao menos um ativo e uma estratégia.");return;}
   try {
-    const data=await api("/backtests/run",{method:"POST",body:JSON.stringify({ticker:values.ticker.trim().toUpperCase(),asset_type:"stock",strategy_id:values.strategy_id,period:values.period,initial_capital:10000,fee_pct:.03,slippage_pct:.05,risk_free_rate_pct:0,params:{},filters:{},persist:true})});
-    const metrics=data.metrics||{};
-    result.innerHTML=`<div class="metric-grid">${metricCard("Retorno",pct(metrics.total_return_pct??data.return_pct,true))}${metricCard("CAGR",pct(metrics.cagr_pct??metrics.cagr,true))}${metricCard("Sharpe",number(metrics.sharpe_ratio??metrics.sharpe))}${metricCard("Drawdown máximo",pct(metrics.max_drawdown_pct??metrics.max_drawdown,true))}</div>`;
-    toast("Backtest concluído e salvo.","success");
+    const data=await api("/backtests/matrix",{method:"POST",body:JSON.stringify({tickers,strategy_ids,asset_type:values.asset_type,period:values.period,initial_capital:10000,fee_pct:.03,slippage_pct:.05,risk_free_rate_pct:0,filters:{}})});
+    const rows=data.results||[];
+    result.innerHTML=sectionCard("Resultado comparativo",marketTable(rows,[
+      {label:"Ativo",render:r=>`<strong>${esc(r.ticker||r.requested_ticker)}</strong>`},
+      {label:"Estratégia",render:r=>esc(r.strategy_name||r.strategy_id)},
+      {label:"Retorno",render:r=>pct(r.total_return_pct,true),className:r=>variationClass(r.total_return_pct)},
+      {label:"CAGR",render:r=>pct(r.cagr_pct??r.cagr,true),className:r=>variationClass(r.cagr_pct??r.cagr)},
+      {label:"Sharpe",render:r=>number(r.sharpe_ratio??r.sharpe)},
+      {label:"Drawdown",render:r=>pct(r.max_drawdown_pct??r.max_drawdown,true)},
+    ]),`${data.assets_requested} ativo(s), ${data.strategies_requested} estratégia(s) • uso diário ${data.daily_used}/${data.daily_limit}`)+(data.failures?.length?`<div class="notice" style="margin-top:12px">${data.failures.length} ativo(s) não puderam ser processados nesta rodada.</div>`:"");
+    toast("Comparação concluída e salva no histórico.","success");
   } catch(error) { result.innerHTML=errorState(error); }
 }
 
@@ -429,12 +579,29 @@ async function loadAdmin() {
   try {
     if(state.tabs.admin==="users") {
       const users=await api("/access/users");
-      root.innerHTML=sectionCard("Usuários e permissões",marketTable(users,[{label:"Usuário",render:r=>`<strong>${esc(r.display_name||r.email)}</strong><br><small>${esc(r.email)}</small>`},{label:"Perfil",render:r=>esc(r.role)},{label:"Status",render:r=>`<span class="pill">${esc(r.status)}</span>`},{label:"Carteira",render:r=>r.can_view_portfolio?"Sim":"Não"},{label:"Backtests",render:r=>r.can_run_backtests?"Executa":r.can_view_backtests?"Consulta":"Não"},{label:"Alertas",render:r=>number(r.alert_asset_limit||0,0)}]));
+      const body=`<div class="table-scroll"><table><thead><tr><th>Usuário</th><th>Status</th><th>Executa backtests</th><th>Ativos por análise</th><th>Análises por dia</th><th>Alertas</th><th></th></tr></thead><tbody>${users.map(user=>`<tr data-user-row="${esc(user.email)}"><td><strong>${esc(user.display_name||user.email)}</strong><br><small>${esc(user.email)}</small></td><td>${user.is_owner?'<span class="pill">Permanente</span>':`<select data-user-field="status"><option value="pending" ${user.status==="pending"?"selected":""}>Pendente</option><option value="approved" ${user.status==="approved"?"selected":""}>Aprovado</option><option value="blocked" ${user.status==="blocked"?"selected":""}>Bloqueado</option></select>`}</td><td>${user.is_owner?"Sim":`<label class="check"><input type="checkbox" data-user-field="can_run_backtests" ${user.can_run_backtests?"checked":""}> Permitir</label>`}</td><td>${user.is_owner?"30":`<select data-user-field="backtest_asset_limit">${[0,1,3,5,10,20,30].map(value=>`<option value="${value}" ${Number(user.backtest_asset_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${user.is_owner?"30":`<select data-user-field="backtest_daily_limit">${[0,1,5,10,20,30].map(value=>`<option value="${value}" ${Number(user.backtest_daily_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${number(user.alert_asset_limit||0,0)}</td><td>${user.is_owner?"":`<button class="button secondary" data-save-user="${esc(user.email)}">Salvar</button>`}</td></tr>`).join("")}</tbody></table></div>`;
+      root.innerHTML=sectionCard("Usuários e permissões",body,"Os limites de backtest podem ser 1, 3, 5, 10, 20 ou 30 ativos e 1, 5, 10, 20 ou 30 análises por dia.");
     } else {
       const [health,db]=await Promise.all([api("/health"),api("/health/db")]);
       root.innerHTML=`<div class="metric-grid">${metricCard("Aplicação",health.status==="ok"?"Operacional":"Atenção",`Versão ${health.version}`)}${metricCard("Banco de dados",db.status==="ok"?"Conectado":"Indisponível",db.database||"")}${metricCard("Hospedagem","Oracle Cloud","Produção")}${metricCard("Domínio","HTTPS ativo","Conexão segura")}</div>`;
     }
   } catch(error) { root.innerHTML=errorState(error); }
+}
+
+async function saveUserAccess(email) {
+  const row=$(`[data-user-row="${CSS.escape(email)}"]`);
+  if(!row)return;
+  const value=name=>row.querySelector(`[data-user-field="${name}"]`);
+  const canRun=Boolean(value("can_run_backtests")?.checked);
+  const payload={
+    status:value("status")?.value,
+    can_run_backtests:canRun,
+    can_view_backtests:canRun,
+    backtest_asset_limit:canRun?Number(value("backtest_asset_limit")?.value||1):0,
+    backtest_daily_limit:canRun?Number(value("backtest_daily_limit")?.value||1):0,
+  };
+  try{await api(`/access/users/${encodeURIComponent(email)}`,{method:"PUT",body:JSON.stringify(payload)});toast("Permissões atualizadas.","success");loadAdmin();}
+  catch(error){toast(error.message,"error");}
 }
 
 function loadCurrentView() {
@@ -470,9 +637,9 @@ function bindEvents() {
   $("#primary-nav").addEventListener("click", event=>{ const button=event.target.closest("[data-view]"); if(button) setView(button.dataset.view); });
   $("#collapse-sidebar").addEventListener("click",()=>document.body.classList.toggle("sidebar-collapsed"));
   $("#mobile-menu").addEventListener("click",()=>document.body.classList.toggle("mobile-nav-open"));
-  $$(".tabs").forEach(tabs=>tabs.addEventListener("click",event=>{const button=event.target.closest(".tab");if(button)activateTab(tabs.dataset.tabs,button.dataset.tab);}));
+  $$(".tabs").forEach(tabs=>tabs.addEventListener("click",event=>{const button=event.target.closest(".tab");if(button){activateTab(tabs.dataset.tabs,button.dataset.tab);if(tabs.dataset.tabs==="analysis")updateFilterAvailability();}}));
   $("#refresh-market").addEventListener("click",()=>loadMarket(true));
-  $("#logout-button").addEventListener("click",async()=>{try{await api("/logout",{method:"POST"});location.href="/";}catch(error){toast(error.message,"error");}});
+  $("#logout-button").addEventListener("click",async()=>{try{await api("/logout",{method:"POST"});location.href=BASE_PATH||"/";}catch(error){toast(error.message,"error");}});
   $("#global-search").addEventListener("input",event=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>runSearch(event.target.value),220);});
   document.addEventListener("keydown",event=>{if(event.key==="/"&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName)){event.preventDefault();$("#global-search").focus();}});
   document.addEventListener("click",event=>{
@@ -480,20 +647,33 @@ function bindEvents() {
     const ticker=event.target.closest("tr[data-ticker]")?.dataset.ticker;if(ticker)openAsset(ticker);
     const retry=event.target.closest("[data-retry]")?.dataset.retry;if(retry){if(retry==="market")loadMarket(true);else loadCurrentView();}
     const linked=event.target.closest("[data-view-link]");if(linked)setView(linked.dataset.viewLink,linked.dataset.tabLink||null);
+    const curve=event.target.closest("[data-curve-years]");if(curve){state.curveYears=Number(curve.dataset.curveYears);renderDashboardTab();}
+    const saveUser=event.target.closest("[data-save-user]");if(saveUser)saveUserAccess(saveUser.dataset.saveUser);
     if(!event.target.closest(".global-search-wrap"))$("#search-results").classList.add("hidden");
   });
   $("#close-asset-dialog").addEventListener("click",()=>$("#asset-dialog").close());
   $("#asset-dialog").addEventListener("click",event=>{if(event.target===$("#asset-dialog"))$("#asset-dialog").close();});
   $$(".preset-button").forEach(button=>button.addEventListener("click",()=>{
     const map={padrao:"default",cnpi:"cnpi",alb:"alb"}; if(!map[button.dataset.preset]){toast("Seus filtros personalizados ficam vinculados à sua conta.");return;}
-    state.analysisPreset=map[button.dataset.preset]; $$(".preset-button").forEach(b=>b.classList.toggle("active",b===button)); loadAnalysis();
+    state.analysisPreset=map[button.dataset.preset]; resetAdvancedFilters(); $$(".preset-button").forEach(b=>b.classList.toggle("active",b===button)); loadAnalysis();
   }));
   $("#apply-advanced-filters").addEventListener("click",applyAdvancedFilters);
-  document.addEventListener("change",event=>{if(event.target.id==="portfolio-selector"){state.portfolioId=event.target.value;renderPortfolioTab();}});
+  document.addEventListener("change",event=>{
+    if(event.target.id==="portfolio-selector"){state.portfolioId=event.target.value;renderPortfolioTab();}
+    if(event.target.id==="analysis-limit"){state.analysisLimit=Number(event.target.value);$("#analysis-limit-label").textContent=state.analysisLimit;}
+    if(event.target.matches("[data-column-id]")){
+      const type=analysisType(),columns=analysisColumns(type).filter(column=>!column.always);
+      state.visibleColumns[type]=columns.filter(column=>$(`[data-column-id="${column.id}"]`)?.checked).map(column=>column.id);
+      localStorage.setItem("fdi-visible-columns",JSON.stringify(state.visibleColumns));renderAnalysisRows(state.analysisRows);
+    }
+  });
   document.addEventListener("submit",event=>{if(event.target.id==="backtest-form"){event.preventDefault();runBacktest(event.target);}});
 }
 
 async function initialize() {
+  const login=$("#login-view a[href='/login']");
+  if(login) login.href=BASE_PATH?`/login?next=${encodeURIComponent(BASE_PATH+"/")}`:"/login";
+  if(BASE_PATH){document.body.classList.add("staging-mode");document.body.insertAdjacentHTML("afterbegin",'<div class="staging-banner">AMBIENTE DE TESTE • nenhuma alteração será publicada na página oficial sem aprovação</div>');}
   renderFilterInputs(); bindEvents();
   try {
     const session=await api("/session/me");

@@ -8,7 +8,20 @@ formacaodoinvestidor.com.br, www.formacaodoinvestidor.com.br {
     request_body {
         max_size 8MB
     }
-    reverse_proxy app:8000
+
+    redir /testefdi /testefdi/ 308
+    handle_path /testefdi/* {
+        reverse_proxy staging:8000
+    }
+    @backtestCallbacks {
+        path /automation/backtests/*
+    }
+    handle @backtestCallbacks {
+        reverse_proxy app:8000
+    }
+    handle {
+        reverse_proxy app:8000
+    }
 
     header {
         X-Content-Type-Options nosniff

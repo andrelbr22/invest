@@ -342,7 +342,7 @@ class MarketDashboardService:
                       proxy_label: str | None = None) -> dict:
         last_error = None
         fallback_proxies = {
-            "XFIX11": "ETF XFIX11 como aproximação do IFIX",
+            "XFIX11": "ETF XFIX11, referência líquida do segmento imobiliário (acompanha o IFIX L)",
             "EXSA.DE": "ETF iShares STOXX Europe 600 (EXSA)",
         }
         for symbol in symbols:

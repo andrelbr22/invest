@@ -35,8 +35,7 @@ services:
       start_period: 30s
 
   app:
-    build:
-      context: .
+    image: formacao-do-investidor-production:current
     restart: unless-stopped
     command: ["/app/deployment/start-api.sh"]
     environment:
@@ -49,6 +48,39 @@ services:
       API_DOCS_ENABLED: "false"
       ALERT_MONITOR_ENABLED: "true"
       ALERT_MONITOR_POLL_SECONDS: "60"
+    volumes:
+      - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
+    expose:
+      - "8000"
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+  staging:
+    build:
+      context: .
+    image: formacao-do-investidor-staging:candidate
+    restart: unless-stopped
+    command: ["/app/deployment/start-api.sh"]
+    environment:
+      APP_ENVIRONMENT: staging
+      APP_AUTH_REQUIRED: "true"
+      APP_SECRETS_FILE: /app/secrets/app_secrets.toml
+      ALLOWED_HOSTS: formacaodoinvestidor.com.br,www.formacaodoinvestidor.com.br,staging,localhost,127.0.0.1
+      CANONICAL_URL: https://formacaodoinvestidor.com.br/testefdi/
+      SECURE_COOKIES: "true"
+      API_DOCS_ENABLED: "false"
+      ALERT_MONITOR_ENABLED: "false"
+      DATABASE_NAME_OVERRIDE: investment_engine_staging
     volumes:
       - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
     expose:

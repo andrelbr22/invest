@@ -41,6 +41,8 @@ def full_owner_policy(email: str, display_name: str | None = None) -> dict:
         **{field: True for field in PERMISSION_FIELDS},
         "custom_filter_limit": 3,
         "alert_asset_limit": 10,
+        "backtest_asset_limit": 30,
+        "backtest_daily_limit": 30,
         "is_owner": True,
     }
 
@@ -57,6 +59,8 @@ def policy_dict(row: UserAccessPolicyORM, *, is_owner: bool = False) -> dict:
         **{field: False if blocked else bool(getattr(row, field)) for field in PERMISSION_FIELDS},
         "custom_filter_limit": 0 if blocked else max(0, min(3, int(row.custom_filter_limit or 0))),
         "alert_asset_limit": 0 if blocked else int(row.alert_asset_limit or 0),
+        "backtest_asset_limit": 0 if blocked else int(row.backtest_asset_limit or 0),
+        "backtest_daily_limit": 0 if blocked else int(row.backtest_daily_limit or 0),
         "is_owner": False,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -93,6 +97,8 @@ class AccessPolicyRepository:
                 setattr(row, field, True)
             row.custom_filter_limit = 3
             row.alert_asset_limit = 10
+            row.backtest_asset_limit = 30
+            row.backtest_daily_limit = 30
         self.session.flush()
         return row
 
@@ -103,12 +109,19 @@ class AccessPolicyRepository:
         row = self.get(email)
         if row is None:
             return None
-        for field in ("display_name", "role", "status", "custom_filter_limit", "alert_asset_limit", *PERMISSION_FIELDS):
+        for field in (
+            "display_name", "role", "status", "custom_filter_limit", "alert_asset_limit",
+            "backtest_asset_limit", "backtest_daily_limit", *PERMISSION_FIELDS,
+        ):
             if field in changes and changes[field] is not None:
                 if field == "custom_filter_limit":
                     value = max(0, min(3, int(changes[field])))
                 elif field == "alert_asset_limit":
                     value = int(changes[field]) if int(changes[field]) in {0, 1, 3, 5, 10} else 0
+                elif field == "backtest_asset_limit":
+                    value = int(changes[field]) if int(changes[field]) in {0, 1, 3, 5, 10, 20, 30} else 0
+                elif field == "backtest_daily_limit":
+                    value = int(changes[field]) if int(changes[field]) in {0, 1, 5, 10, 20, 30} else 0
                 else:
                     value = changes[field]
                 setattr(row, field, value)

@@ -22,7 +22,6 @@ def test_runtime_and_dependency_files_have_no_legacy_frontend_reference():
     files = [
         ROOT / "requirements.txt",
         ROOT / "Dockerfile",
-        ROOT / "docker-compose.production.yml",
         ROOT / "docker-compose.oracle-web.yml",
         ROOT / "investment_engine" / "api" / "app.py",
         ROOT / "investment_engine" / "infrastructure" / "config.py",

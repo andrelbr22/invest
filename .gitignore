@@ -2,6 +2,7 @@
 .env.production
 .venv/
 .venv_backup_*/
+.testvenv*/
 __pycache__/
 *.py[cod]
 .pytest_cache/

@@ -1,0 +1,13 @@
+[Unit]
+Description=Consulta atualizações do ambiente de teste a cada dez minutos
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60
+Persistent=true
+Unit=investment-github-update.service
+
+[Install]
+WantedBy=timers.target
+
