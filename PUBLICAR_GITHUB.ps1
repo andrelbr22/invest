@@ -126,7 +126,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Publica Formação do Investidor V1.20.0 no ambiente de teste"
+    & $gitPath commit -m "Publica Formação do Investidor V1.20.2 no ambiente de teste"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
@@ -143,4 +143,4 @@ try {
 Write-Host ""
 Write-Host "PUBLICACAO CONCLUIDA." -ForegroundColor Green
 Write-Host "A versao foi enviada ao ambiente de teste. A producao depende de aprovacao manual."
-Write-Host "Na primeira migração, conclua os passos do arquivo INSTRUCOES_ORACLE_V1200.md."
+Write-Host "Depois da atualização automática, valide a V1.20.2 no endereço /testefdi antes de promover."

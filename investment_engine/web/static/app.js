@@ -8,6 +8,10 @@ const state = {
   tabs: { dashboard: "overview", analysis: "stocks", portfolio: "positions", backtests: "history", admin: "users" },
   market: null,
   marketEnvelope: null,
+  comparison: null,
+  comparisonLoading: false,
+  comparisonYears: 5,
+  comparisonSelected: ["CDI","IBOV","IFIX","POUPANCA","USD_BRL","IPCA"],
   analysisRows: [],
   analysisPreset: "default",
   analysisLimit: 50,
@@ -136,12 +140,12 @@ function marketMetric(data, label) {
 function renderMarketSummary() {
   const data = state.market || {};
   const ibov = marketMetric(data, "IBOV");
-  const sp = marketMetric(data, "S&P 500");
+  const ipca = (data.inflation || []).find(item => item.label === "IPCA");
   const dolar = (data.fx || []).find(item => item.label === "Dólar / Real");
   const selic = data.selic || {};
   $("#market-summary").innerHTML = [
     metricCard("IBOV", ibov ? `${number(ibov.current, 0)} pts` : "—", "Brasil", ibov?.variations?.["1d"]),
-    metricCard("S&P 500", sp ? `${number(sp.current, 0)} pts` : "—", "Estados Unidos", sp?.variations?.["1d"]),
+    metricCard("IPCA • 12 meses", pct(ipca?.value_12m), `Referência ${dateOnly(ipca?.as_of)} • IBGE`),
     metricCard("Dólar / Real", dolar ? money(dolar.current) : "—", "Câmbio", dolar?.variations?.["1d"]),
     metricCard("Selic atual", pct(selic.current), "Meta anual • Banco Central"),
   ].join("");
@@ -202,14 +206,17 @@ function renderDashboardTab() {
       {label:"Em real",render:r=>`${money(r.value_brl,"BRL")}${r.brl_derived_from_fx ? '<br><small>Convertido pelo câmbio atual</small>':""}`},
       ...[["1d","1 dia"],["1w","1 semana"],["1m","1 mês"],["1y","1 ano"]].map(([key,label])=>({label,render:r=>pct(r.variations?.[key],true),className:r=>variationClass(r.variations?.[key])})),
     ]);
-    root.innerHTML = `<div class="panel-grid">${sectionCard("Criptoativos", crypto)}${sectionCard("Câmbio", marketTable(data.fx, marketColumns))}</div>`;
+    root.innerHTML = `<div class="panel-grid">${sectionCard("Criptoativos", crypto)}${sectionCard("Resumo de câmbio", marketTable(data.fx, marketColumns), "Cotações orientadas conforme o nome do par")}</div>`;
   } else if (tab === "curve") {
     root.innerHTML = renderCurve(data.curve || {});
+  } else if (tab === "comparison") {
+    if (state.comparison) renderComparison(); else loadComparison();
   } else if (tab === "calendar") {
     const rows = (data.calendar || []).map(item => ({...item, important:item.highlight === "super_wednesday"}));
     root.innerHTML = sectionCard("Próximas datas importantes", marketTable(rows, [
       {label:"Data",render:r=>`<strong>${dateOnly(r.date)}</strong>`},{label:"Evento",render:r=>`${esc(r.event)}${r.important?'<br><span class="pill warning">SUPER QUARTA</span>':""}`},
       {label:"Categoria",render:r=>esc(r.category)},{label:"Horário",render:r=>esc(r.time || "—")},{label:"Observação",render:r=>esc(r.observation || "—")},
+      {label:"Fonte",render:r=>r.url?`<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.source||"Consultar")}</a>`:esc(r.source||"—")},
     ]));
   } else if (tab === "headlines") {
     loadHeadlines();
@@ -228,10 +235,65 @@ function renderCurve(curve) {
   const x = p => pad + (Number(p.years) / maxX) * (width - pad * 2);
   const y = value => height - pad - ((Number(value) - minY) / Math.max(maxY-minY,.1)) * (height-pad*2);
   const path = key => usable.filter(p=>!nullable(p[key])).map((p,i)=>`${i?"L":"M"}${x(p).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
-  const svg = `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Curva de juros"><path d="${path("nominal_rate")}" fill="none" stroke="#0b5d4b" stroke-width="3"/><path d="${path("real_rate")}" fill="none" stroke="#c79b3b" stroke-width="3"/>${usable.filter((_,i)=>i%Math.ceil(usable.length/10)===0).map(p=>`<text x="${x(p)}" y="${height}" font-size="11" text-anchor="middle" fill="#67756f">${number(p.years,1)}a</text>`).join("")}</svg>`;
+  const svg = `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Curva de juros"><path d="${path("nominal_rate")}" fill="none" stroke="#0b5d4b" stroke-width="3"/><path d="${path("real_rate")}" fill="none" stroke="#c79b3b" stroke-width="3"/>${usable.filter(p=>!nullable(p.nominal_rate)).map(p=>`<circle cx="${x(p)}" cy="${y(p.nominal_rate)}" r="3" fill="#0b5d4b"><title>${esc(p.contract||`${number(p.years,2)} anos`)} • ${pct(p.nominal_rate)}</title></circle>`).join("")}${usable.filter((_,i)=>i%Math.max(1,Math.ceil(usable.length/10))===0).map(p=>`<text x="${x(p)}" y="${height}" font-size="11" text-anchor="middle" fill="#67756f">${number(p.years,1)}a</text>`).join("")}</svg>`;
   const periods = [[1,"1 ano"],[2,"2 anos"],[5,"5 anos"],[10,"10 anos"],[20,"20 anos"],[30,"30 anos"],[0,"Máximo"]];
   const controls = `<div class="chart-periods" role="group" aria-label="Período da curva">${periods.map(([years,label])=>`<button class="button ${state.curveYears===years?"primary":"secondary"}" data-curve-years="${years}">${label}</button>`).join("")}</div>`;
-  return sectionCard("Curva de juros brasileira", `${controls}<div class="chart">${svg}</div><div class="chart-legend"><span><i class="legend-dot" style="background:#0b5d4b"></i>Prefixada nominal</span><span><i class="legend-dot" style="background:#c79b3b"></i>Juro real IPCA</span><span>Referência: ${dateOnly(curve.as_of)}</span></div>`, "Escolha o horizonte; a curva oficial da ANBIMA permanece disponível até o maior prazo publicado", {url:curve.url,label:curve.source});
+  const legend = curve.curve_type === "di_pre" ? "Taxa de ajuste DI1 • efetiva anual, base 252 dias úteis" : "Taxa prefixada nominal • ETTJ ANBIMA";
+  return sectionCard(curve.title || "Curva de juros brasileira", `${controls}<div class="chart">${svg}</div><div class="chart-legend"><span><i class="legend-dot" style="background:#0b5d4b"></i>${esc(legend)}</span>${usable.some(p=>!nullable(p.real_rate))?'<span><i class="legend-dot" style="background:#c79b3b"></i>Juro real IPCA</span>':""}<span>Referência: ${dateOnly(curve.as_of)}</span></div><div class="notice info">${esc(curve.methodology || "Os pontos são exibidos somente até o maior prazo publicado pela fonte.")}</div>`, "Escolha o horizonte da curva; nenhum vértice é extrapolado", {url:curve.url,label:curve.source});
+}
+
+const comparisonColors = ["#0b5d4b","#c79b3b","#2775b6","#8c5aa6","#d0614c","#3d9a78","#9b7d31","#5267a5","#c24f86","#69766f","#df8437","#3999a3","#7c655c"];
+
+function visibleComparisonSeries() {
+  const cutoff = new Date();
+  cutoff.setUTCFullYear(cutoff.getUTCFullYear() - Math.floor(state.comparisonYears));
+  if (state.comparisonYears === .5) cutoff.setUTCMonth(cutoff.getUTCMonth() - 6);
+  return (state.comparison?.series || []).filter(item=>state.comparisonSelected.includes(item.code)).map(item=>{
+    const points=(item.points||[]).filter(point=>new Date(`${point.date}T12:00:00Z`)>=cutoff);
+    if(!points.length)return {...item,points:[]};
+    const base=Number(points[0].value)||100;
+    return {...item,points:points.map(point=>({...point,value:Number(point.value)/base*100}))};
+  });
+}
+
+function renderComparison() {
+  if(state.tabs.dashboard!=="comparison")return;
+  const root=$("#dashboard-tab-content"), payload=state.comparison||{}, all=payload.series||[];
+  if(!all.length){root.innerHTML=errorState("As séries históricas ainda estão sendo preparadas.");return;}
+  const periods=[[.5,"6 meses"],[1,"1 ano"],[2,"2 anos"],[3,"3 anos"],[5,"5 anos"],[10,"10 anos"],[15,"15 anos"],[20,"20 anos"]];
+  const selectors=`<div class="comparison-controls"><div class="chart-periods">${periods.map(([years,label])=>`<button class="button ${state.comparisonYears===years?"primary":"secondary"}" data-comparison-years="${years}">${label}</button>`).join("")}<button class="button secondary" data-comparison-refresh="true">Atualizar séries</button></div><div class="series-picker">${all.map((item,index)=>`<label class="check"><input type="checkbox" data-comparison-series="${esc(item.code)}" ${state.comparisonSelected.includes(item.code)?"checked":""} ${item.points?.length?"":"disabled"}><i class="legend-dot" style="background:${comparisonColors[index%comparisonColors.length]}"></i>${esc(item.label)}${item.proxy?" (proxy)":""}</label>`).join("")}</div></div>`;
+  const selected=visibleComparisonSeries().filter(item=>item.points.length);
+  if(!selected.length){root.innerHTML=sectionCard("Comparador histórico",selectors+'<div class="empty-state"><strong>Selecione ao menos uma série disponível</strong>Os dados ausentes não impedem o uso das demais séries.</div>');return;}
+  const width=1000,height=330,padX=48,padY=25;
+  const timestamps=selected.flatMap(item=>item.points.map(point=>new Date(`${point.date}T12:00:00Z`).getTime()));
+  const values=selected.flatMap(item=>item.points.map(point=>Number(point.value))).filter(Number.isFinite);
+  const minX=Math.min(...timestamps),maxX=Math.max(...timestamps),minY=Math.min(...values),maxY=Math.max(...values);
+  const x=value=>padX+((value-minX)/Math.max(maxX-minX,1))*(width-padX*2);
+  const y=value=>height-padY-((value-minY)/Math.max(maxY-minY,.1))*(height-padY*2);
+  const paths=selected.map(item=>{
+    const originalIndex=all.findIndex(row=>row.code===item.code),color=comparisonColors[originalIndex%comparisonColors.length];
+    const d=item.points.map((point,index)=>`${index?"L":"M"}${x(new Date(`${point.date}T12:00:00Z`).getTime()).toFixed(1)},${y(Number(point.value)).toFixed(1)}`).join(" ");
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2.6"/>`;
+  }).join("");
+  const grid=[0,.25,.5,.75,1].map(position=>{const value=maxY-(maxY-minY)*position,yy=padY+(height-padY*2)*position;return `<line x1="${padX}" x2="${width-padX}" y1="${yy}" y2="${yy}" stroke="#dfe6e2" stroke-dasharray="5 5"/><text x="${padX-7}" y="${yy+4}" text-anchor="end" font-size="11" fill="#67756f">${number(value,0)}</text>`;}).join("");
+  const svg=`<svg class="chart-svg comparison-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Comparação histórica rebaseada em 100">${grid}${paths}</svg>`;
+  const legend=selected.map(item=>{const originalIndex=all.findIndex(row=>row.code===item.code),points=item.points,last=points[points.length-1],result=Number(last.value)-100;return `<span><i class="legend-dot" style="background:${comparisonColors[originalIndex%comparisonColors.length]}"></i>${esc(item.label)} <strong class="${variationClass(result)}">${pct(result,true)}</strong></span>`;}).join("");
+  const unavailable=all.filter(item=>!item.points?.length).map(item=>item.label);
+  root.innerHTML=sectionCard("Comparador histórico",`${selectors}<div class="chart">${svg}</div><div class="chart-legend">${legend}</div>${unavailable.length?`<div class="notice">Sem dados nesta atualização: ${esc(unavailable.join(", "))}.</div>`:""}<div class="notice info">${esc(payload.note||"Base 100 no início do período selecionado.")}</div>`,`Desempenho acumulado • base R$ 100 • ${state.comparisonYears===.5?"6 meses":`${state.comparisonYears} ano(s)`}`);
+}
+
+async function loadComparison(force=false,attempt=0) {
+  if(state.comparisonLoading&&attempt===0)return;
+  state.comparisonLoading=true;
+  const root=$("#dashboard-tab-content");
+  if(!state.comparison)root.innerHTML=`${loadingCards(6)}<div class="notice info" style="margin-top:14px">Preparando as séries históricas em segundo plano. Você pode continuar usando os outros painéis.</div>`;
+  try{
+    let payload=await api(force?"/market-dashboard/comparison/refresh":"/market-dashboard/comparison",{method:force?"POST":"GET",requestKey:"comparison"});
+    if(payload.data?.series?.length){state.comparison=payload.data;renderComparison();state.comparisonLoading=false;return;}
+    if((payload.refreshing||payload.scheduled)&&attempt<40){state.comparisonLoading=false;setTimeout(()=>loadComparison(false,attempt+1),3000);return;}
+    root.innerHTML=errorState(payload.error||"As fontes históricas não responderam nesta atualização.");
+  }catch(error){if(error.name!=="AbortError")root.innerHTML=errorState(error);}
+  state.comparisonLoading=false;
 }
 
 async function loadMarket(force = false) {
@@ -674,6 +736,8 @@ function bindEvents() {
     const retry=event.target.closest("[data-retry]")?.dataset.retry;if(retry){if(retry==="market")loadMarket(true);else loadCurrentView();}
     const linked=event.target.closest("[data-view-link]");if(linked)setView(linked.dataset.viewLink,linked.dataset.tabLink||null);
     const curve=event.target.closest("[data-curve-years]");if(curve){state.curveYears=Number(curve.dataset.curveYears);renderDashboardTab();}
+    const comparisonPeriod=event.target.closest("[data-comparison-years]");if(comparisonPeriod){state.comparisonYears=Number(comparisonPeriod.dataset.comparisonYears);renderComparison();}
+    const comparisonRefresh=event.target.closest("[data-comparison-refresh]");if(comparisonRefresh){state.comparison=null;loadComparison(true);}
     const saveUser=event.target.closest("[data-save-user]");if(saveUser)saveUserAccess(saveUser.dataset.saveUser);
     const marketSync=event.target.closest("[data-market-sync]");if(marketSync)syncMarketCatalog(marketSync.dataset.marketSync,marketSync.dataset.technicals==="true");
     if(!event.target.closest(".global-search-wrap"))$("#search-results").classList.add("hidden");
@@ -688,6 +752,10 @@ function bindEvents() {
   document.addEventListener("change",event=>{
     if(event.target.id==="portfolio-selector"){state.portfolioId=event.target.value;renderPortfolioTab();}
     if(event.target.id==="analysis-limit"){state.analysisLimit=Number(event.target.value);$("#analysis-limit-label").textContent=state.analysisLimit;}
+    if(event.target.matches("[data-comparison-series]")){
+      state.comparisonSelected=$$("[data-comparison-series]:checked").map(input=>input.dataset.comparisonSeries);
+      renderComparison();
+    }
     if(event.target.matches("[data-column-id]")){
       const type=analysisType(),columns=analysisColumns(type).filter(column=>!column.always);
       state.visibleColumns[type]=columns.filter(column=>$(`[data-column-id="${column.id}"]`)?.checked).map(column=>column.id);

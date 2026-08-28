@@ -1,10 +1,18 @@
-# Formação do Investidor • V1.20.0
+# Formação do Investidor • V1.20.2
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`.
 
 ## Fundação V1.20
 
-A V1.20.0 preserva todas as funções da V1.17.4 e acrescenta a base para atualizações sem bloquear o usuário:
+A V1.20.2 preserva todas as funções da V1.17.4, a base assíncrona da V1.20.0 e acrescenta melhorias visíveis no Painel de Mercado:
+
+- IPCA em 12 meses no resumo inicial;
+- cinco pares de câmbio corretamente orientados;
+- curva de juros futuros DI x Pré com fonte B3 e contingência ANBIMA identificada;
+- comparador histórico em base 100, carregado apenas quando solicitado;
+- agenda com eleições brasileiras e americanas.
+
+A fundação para atualizações sem bloquear o usuário continua disponível:
 
 - fila persistente PostgreSQL com idempotência, lease, heartbeat e novas tentativas;
 - worker separado, ativado por profile e com concorrência inicial unitária;

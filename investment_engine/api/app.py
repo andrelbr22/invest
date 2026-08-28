@@ -112,10 +112,12 @@ _MARKET_NEWS = MarketNewsService()
 _NEWS_QUEUE_LOCK = threading.Lock()
 _MARKET_DASHBOARD = MarketDashboardService()
 _MARKET_DASHBOARD_OWNER = "market-dashboard@system.local"
-_MARKET_DASHBOARD_CACHE_KEY = "main-v5"
+_MARKET_DASHBOARD_CACHE_KEY = "main-v6"
 _MARKET_DASHBOARD_LOCK = threading.Lock()
 _HEADLINES_LOCK = threading.Lock()
 _HEADLINES_CACHE: dict = {"data": {}, "expires_at": 0.0, "refreshing": False, "error": None}
+_COMPARISON_LOCK = threading.Lock()
+_COMPARISON_CACHE: dict = {"data": {}, "expires_at": 0.0, "refreshing": False, "error": None}
 def _portfolio_news_assets(db: Session, portfolio_id) -> list[dict]:
     assets = []
     for position, asset in PortfolioRepository(db).positions(portfolio_id):
@@ -225,6 +227,25 @@ def _refresh_economy_headlines() -> None:
     finally:
         with _HEADLINES_LOCK:
             _HEADLINES_CACHE["refreshing"] = False
+
+
+def _refresh_historical_comparison() -> None:
+    """Refresh the long series lazily so the initial dashboard stays responsive."""
+    with _COMPARISON_LOCK:
+        _COMPARISON_CACHE["refreshing"] = True
+        _COMPARISON_CACHE["error"] = None
+    try:
+        result = _MARKET_DASHBOARD.historical_comparison(years=20)
+        with _COMPARISON_LOCK:
+            _COMPARISON_CACHE["data"] = result
+            _COMPARISON_CACHE["expires_at"] = monotonic() + 24 * 60 * 60
+    except Exception as exc:
+        with _COMPARISON_LOCK:
+            _COMPARISON_CACHE["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+            _COMPARISON_CACHE["expires_at"] = monotonic() + 300
+    finally:
+        with _COMPARISON_LOCK:
+            _COMPARISON_CACHE["refreshing"] = False
 
 
 @app.middleware("http")
@@ -1982,6 +2003,42 @@ def refresh_market_dashboard_headlines(
             _HEADLINES_CACHE["refreshing"] = True
     if should_run:
         background_tasks.add_task(_refresh_economy_headlines)
+    return {"scheduled": should_run, "refreshing": True}
+
+
+@app.get("/market-dashboard/comparison")
+def market_dashboard_comparison(
+    background_tasks: BackgroundTasks,
+    _access=Depends(require_permission("can_view_market")),
+):
+    now = monotonic()
+    with _COMPARISON_LOCK:
+        should_run = now >= float(_COMPARISON_CACHE.get("expires_at") or 0) and not _COMPARISON_CACHE.get("refreshing")
+        if should_run:
+            _COMPARISON_CACHE["refreshing"] = True
+        payload = {
+            "data": dict(_COMPARISON_CACHE.get("data") or {}),
+            "refreshing": bool(_COMPARISON_CACHE.get("refreshing")),
+            "error": _COMPARISON_CACHE.get("error"),
+            "ttl_seconds": 24 * 60 * 60,
+        }
+    if should_run:
+        background_tasks.add_task(_refresh_historical_comparison)
+    payload["scheduled"] = should_run
+    return payload
+
+
+@app.post("/market-dashboard/comparison/refresh")
+def refresh_market_dashboard_comparison(
+    background_tasks: BackgroundTasks,
+    _access=Depends(require_permission("can_view_market")),
+):
+    with _COMPARISON_LOCK:
+        should_run = not _COMPARISON_CACHE.get("refreshing")
+        if should_run:
+            _COMPARISON_CACHE["refreshing"] = True
+    if should_run:
+        background_tasks.add_task(_refresh_historical_comparison)
     return {"scheduled": should_run, "refreshing": True}
 
 

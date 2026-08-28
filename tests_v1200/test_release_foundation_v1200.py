@@ -10,10 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_and_health_are_v1200():
-    assert __version__ == "1.20.0"
+    assert __version__.startswith("1.20.")
     response = TestClient(app, base_url="http://localhost").get("/health")
     assert response.status_code == 200
-    assert response.json()["version"] == "1.20.0"
+    assert response.json()["version"] == __version__
     assert response.headers.get("X-Request-ID")
 
 

@@ -37,6 +37,16 @@ FRED_RATES_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS2,DGS5,D
 TREASURY_RATES_URL = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml"
 AGENCIA_BRASIL_ECONOMY_RSS = "https://agenciabrasil.ebc.com.br/rss/economia/feed.xml"
 ADVFN_MARKET_NEWS_URL = "https://br.advfn.com/noticias/empresas"
+B3_BDI_WORKDAY_URL = "https://arquivos.b3.com.br/bdi/table/workday"
+B3_BDI_TABLE_URL = "https://arquivos.b3.com.br/bdi/table/ConsolidatedTradesDerivatives"
+TSE_ELECTION_CALENDAR_URL = (
+    "https://www.tse.jus.br/comunicacao/noticias/2026/Marco/"
+    "eleicoes-2026-confira-as-principais-datas-do-calendario-eleitoral"
+)
+FEC_ELECTION_CALENDAR_URL = (
+    "https://www.fec.gov/introduction-campaign-finance/"
+    "election-results-and-voting-information/"
+)
 
 
 def _plain(value: object) -> str:
@@ -213,6 +223,31 @@ class MarketDashboardService:
                 out.append((observed, value))
         return sorted(out)
 
+    def _sgs_between(self, series: int, start: date, end: date) -> list[tuple[date, float]]:
+        """Read long SGS histories in chunks accepted by the public BCB API."""
+        rows: dict[date, float] = {}
+        cursor = start
+        # Daily CDI and savings histories are much denser than monthly price
+        # indices. Smaller chunks avoid gateway resets without changing data.
+        chunk_days = 700 if series in {12, 25} else 3500
+        while cursor <= end:
+            chunk_end = min(cursor + timedelta(days=chunk_days), end)
+            payload = self.http.get(
+                BCB_SGS_URL.format(series=series),
+                params={
+                    "formato": "json",
+                    "dataInicial": cursor.strftime("%d/%m/%Y"),
+                    "dataFinal": chunk_end.strftime("%d/%m/%Y"),
+                },
+            ).json()
+            for row in payload or []:
+                observed = _date_from_sgs(row.get("data"))
+                value = parse_number(row.get("valor"))
+                if observed and value is not None:
+                    rows[observed] = value
+            cursor = chunk_end + timedelta(days=1)
+        return sorted(rows.items())
+
     def selic(self) -> dict:
         errors = []
         try:
@@ -292,6 +327,9 @@ class MarketDashboardService:
             (433, "IPCA", "IBGE via Banco Central • SGS 433"),
             (188, "INPC", "IBGE via Banco Central • SGS 188"),
             (189, "IGP-M", "FGV via Banco Central • SGS 189"),
+            (190, "IGP-DI", "FGV via Banco Central • SGS 190"),
+            (193, "IPC-Fipe", "Fipe via Banco Central • SGS 193"),
+            (192, "INCC", "FGV via Banco Central • SGS 192"),
         ]
         out = []
         for series, label, source in specifications:
@@ -475,10 +513,40 @@ class MarketDashboardService:
         return out
 
     def fx(self) -> list[dict]:
-        return [
-            self._yahoo_metric("Dólar / Real", ["BRL=X"], unit="R$", currency="BRL"),
-            self._yahoo_metric("Euro / Dólar", ["EURUSD=X"], unit="USD", currency="USD"),
-        ]
+        specifications = (
+            ("Dólar / Real", ["BRL=X"], "R$ / USD", 1.0),
+            ("Euro / Real", ["EURBRL=X"], "R$ / EUR", 1.0),
+            ("Libra / Real", ["GBPBRL=X"], "R$ / GBP", 1.0),
+            ("Iene / Real", ["JPYBRL=X"], "R$ / 100 JPY", 100.0),
+        )
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            metrics = list(executor.map(
+                lambda spec: self._yahoo_metric(spec[0], spec[1], unit=spec[2], currency="BRL"),
+                specifications,
+            ))
+            eur_usd = executor.submit(
+                self._yahoo_metric, "Euro / Dólar", ["EURUSD=X"], unit="USD / EUR", currency="USD",
+            ).result()
+        for metric, spec in zip(metrics, specifications):
+            multiplier = spec[3]
+            if multiplier != 1 and metric.get("current") is not None:
+                metric["current"] = float(metric["current"]) * multiplier
+                metric["display_multiplier"] = multiplier
+        # Yahoo's EURUSD is USD per EUR. The requested quotation is EUR per USD,
+        # therefore both the level and every return must be inverted.
+        if eur_usd.get("current"):
+            eur_usd["current"] = 1.0 / float(eur_usd["current"])
+            eur_usd["label"] = "Dólar / Euro"
+            eur_usd["ticker"] = "EURUSD=X (invertido)"
+            eur_usd["unit"] = "EUR / USD"
+            eur_usd["currency"] = "EUR"
+            eur_usd["orientation_note"] = "Euros por dólar; calculado pelo inverso de USD por euro."
+            eur_usd["variations"] = {
+                key: ((1.0 / (1.0 + float(value) / 100.0)) - 1.0) * 100.0
+                if value is not None else None
+                for key, value in (eur_usd.get("variations") or {}).items()
+            }
+        return [metrics[0], eur_usd, metrics[1], metrics[2], metrics[3]]
 
     def _treasury_yields(self) -> tuple[dict, str, str, str]:
         """Fetch the latest official U.S. Treasury par-yield observation."""
@@ -583,7 +651,86 @@ class MarketDashboardService:
             columns.append(_plain(column))
         return columns
 
+    @staticmethod
+    def _di_expiry(symbol: str) -> date | None:
+        match = re.fullmatch(r"DI1([FGHJKMNQUVXZ])(\d{2})", str(symbol or "").upper())
+        if not match:
+            return None
+        months = {code: month for month, code in enumerate("FGHJKMNQUVXZ", start=1)}
+        expiry = date(2000 + int(match.group(2)), months[match.group(1)], 1)
+        holidays = {day for day, _name in b3_holidays(expiry.year)}
+        while expiry.weekday() >= 5 or expiry in holidays:
+            expiry += timedelta(days=1)
+        return expiry
+
+    @staticmethod
+    def _business_days(start: date, end: date) -> int:
+        if end <= start:
+            return 0
+        holidays = {
+            day
+            for year in range(start.year, end.year + 1)
+            for day, _name in b3_holidays(year)
+        }
+        cursor, total = start + timedelta(days=1), 0
+        while cursor <= end:
+            if cursor.weekday() < 5 and cursor not in holidays:
+                total += 1
+            cursor += timedelta(days=1)
+        return total
+
+    def _b3_di_curve(self) -> dict:
+        workday_text = str(self.http.get(B3_BDI_WORKDAY_URL).json() or "")
+        observed = datetime.fromisoformat(workday_text.replace("Z", "+00:00")).date()
+        observed_text = observed.isoformat()
+        base = f"{B3_BDI_TABLE_URL}/{observed_text}/{observed_text}"
+        first = self.http.post(f"{base}/1/1000", json={}).json().get("table") or {}
+        page_count = max(1, int(first.get("pageCount") or 1))
+        pages = {1: first}
+        # DI1 contracts are sorted near the end of the official consolidated
+        # derivatives table. Reading the last two pages protects boundary moves.
+        for page in sorted({max(1, page_count - 1), page_count} - {1}):
+            pages[page] = self.http.post(f"{base}/{page}/1000", json={}).json().get("table") or {}
+        points = []
+        for table in pages.values():
+            columns = [str(item.get("name") or "") for item in table.get("columns") or []]
+            positions = {name: index for index, name in enumerate(columns)}
+            for row in table.get("values") or []:
+                symbol = str(row[positions.get("TckrSymb", 1)] or "")
+                if not symbol.startswith("DI1"):
+                    continue
+                expiry = self._di_expiry(symbol)
+                days = self._business_days(observed, expiry) if expiry else 0
+                rate_index = positions.get("AdjstdQtTax")
+                rate = parse_number(row[rate_index]) if rate_index is not None else None
+                if expiry is None or days <= 0 or rate is None:
+                    continue
+                points.append({
+                    "business_days": days,
+                    "years": round(days / 252.0, 3),
+                    "nominal_rate": rate,
+                    "di_rate": rate,
+                    "contract": symbol,
+                    "expiry": expiry.isoformat(),
+                    "origin": "b3_di1",
+                    "observed": True,
+                })
+        unique = {point["contract"]: point for point in points}
+        return {
+            "as_of": observed_text,
+            "points": sorted(unique.values(), key=lambda item: item["business_days"]),
+            "source": "B3 • Ajustes de referência dos contratos futuros DI1",
+            "url": "https://www.b3.com.br/pt_br/produtos-e-servicos/negociacao/juros/"
+                   "futuro-de-taxa-media-de-depositos-interfinanceiros-de-um-dia.htm",
+        }
+
     def interest_curve(self) -> dict:
+        b3_error = None
+        try:
+            b3_curve = self._b3_di_curve()
+        except Exception as exc:
+            b3_curve = {"points": []}
+            b3_error = f"{type(exc).__name__}: {str(exc)[:140]}"
         response = self.http.get(ANBIMA_CURVE_URL)
         # The page declares ISO-8859-1 in an XML preamble. Passing an already
         # decoded Unicode string with that declaration to lxml raises a
@@ -617,11 +764,145 @@ class MarketDashboardService:
                     points.append(point)
             if points:
                 break
-        unique = {point["business_days"]: point for point in points}
+        official_di = b3_curve.get("points") or []
         return {
-            "as_of": as_of, "points": [unique[key] for key in sorted(unique)],
-            "source": "ANBIMA • Estrutura a Termo das Taxas de Juros",
-            "url": ANBIMA_CURVE_URL,
+            "as_of": b3_curve.get("as_of") or as_of,
+            "points": official_di or points,
+            "di_points": official_di,
+            "ettj_points": points,
+            "curve_type": "di_pre" if official_di else "anbima_ettj_fallback",
+            "title": "Curva de Juros Futuros — DI x Pré" if official_di else "Curva Prefixada — ETTJ ANBIMA",
+            "source": b3_curve.get("source") if official_di else "ANBIMA • Estrutura a Termo das Taxas de Juros",
+            "url": b3_curve.get("url") if official_di else ANBIMA_CURVE_URL,
+            "complement_source": "ANBIMA • ETTJ Prefixada e IPCA",
+            "complement_url": ANBIMA_CURVE_URL,
+            "methodology": (
+                "Taxas de ajuste dos contratos DI1 da B3, expressas como taxa efetiva anual "
+                "em base de 252 dias úteis. A ETTJ ANBIMA permanece disponível como complemento."
+                if official_di else
+                "A B3 não respondeu nesta atualização; exibimos a ETTJ oficial da ANBIMA, "
+                "identificada como fonte alternativa e sem extrapolar vértices."
+            ),
+            "errors": [b3_error] if b3_error else [],
+        }
+
+    @staticmethod
+    def _monthly_price_points(bars: list[dict]) -> list[dict]:
+        monthly: dict[tuple[int, int], tuple[date, float]] = {}
+        for bar in sorted(bars or [], key=lambda item: item.get("timestamp") or datetime.min.replace(tzinfo=timezone.utc)):
+            stamp = bar.get("timestamp")
+            value = _bar_value(bar)
+            if not isinstance(stamp, datetime) or value is None or value <= 0:
+                continue
+            monthly[(stamp.year, stamp.month)] = (stamp.date(), value)
+        values = list(monthly.values())
+        if not values:
+            return []
+        base = values[0][1]
+        return [{"date": day.isoformat(), "value": round(value / base * 100.0, 6)} for day, value in values]
+
+    @staticmethod
+    def _monthly_rate_points(rows: list[tuple[date, float]], *, first_only: bool = False) -> list[dict]:
+        monthly: dict[tuple[int, int], list[tuple[date, float]]] = {}
+        for observed, value in rows:
+            monthly.setdefault((observed.year, observed.month), []).append((observed, value))
+        index, points = 100.0, []
+        for key in sorted(monthly):
+            observations = sorted(monthly[key])
+            if first_only:
+                monthly_return = observations[0][1]
+            else:
+                factor = 1.0
+                for _day, value in observations:
+                    factor *= 1.0 + value / 100.0
+                monthly_return = (factor - 1.0) * 100.0
+            index *= 1.0 + monthly_return / 100.0
+            points.append({"date": observations[-1][0].isoformat(), "value": round(index, 6)})
+        return points
+
+    def historical_comparison(self, years: int = 20) -> dict:
+        """Monthly, rebased market/economic histories for a responsive comparison chart."""
+        years = max(1, min(int(years), 20))
+        end = self.now.date()
+        start = end - timedelta(days=round(365.25 * years) + 40)
+        price_specs = [
+            ("IBOV", "Ibovespa", ["^BVSP"], False, None),
+            ("IFIX", "IFIX", ["^IFIX", "IFIX.SA", "XFIX11"], False, None),
+            ("USD_BRL", "Dólar / Real", ["BRL=X"], False, None),
+            ("SP500", "S&P 500", ["^GSPC"], False, None),
+            ("OURO", "Ouro", ["GC=F"], False, None),
+        ]
+        rate_specs = [
+            ("CDI", "CDI", 12, False, "Banco Central • SGS 12"),
+            ("POUPANCA", "Poupança", 25, True, "Banco Central • SGS 25"),
+            ("IPCA", "IPCA", 433, False, "IBGE via Banco Central • SGS 433"),
+            ("INPC", "INPC", 188, False, "IBGE via Banco Central • SGS 188"),
+            ("IGPM", "IGP-M", 189, False, "FGV via Banco Central • SGS 189"),
+            ("IGPDI", "IGP-DI", 190, False, "FGV via Banco Central • SGS 190"),
+            ("IPCFIPE", "IPC-Fipe", 193, False, "Fipe via Banco Central • SGS 193"),
+            ("INCC", "INCC", 192, False, "FGV via Banco Central • SGS 192"),
+        ]
+
+        def price_history(spec):
+            code, label, symbols, proxy, note = spec
+            last_error = None
+            for symbol in symbols:
+                try:
+                    bars = self.prices.fetch(
+                        symbol,
+                        start=datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc),
+                        end=self.now,
+                    )
+                    points = self._monthly_price_points(bars)
+                    if len(points) >= 6:
+                        actual_proxy = proxy or symbol == "XFIX11"
+                        return {
+                            "code": code, "label": label, "points": points,
+                            "source": "Yahoo Finance", "url": f"https://finance.yahoo.com/quote/{YahooPriceProvider.symbol(symbol)}",
+                            "proxy": actual_proxy,
+                            "note": note or ("ETF XFIX11 usado somente quando o índice IFIX não responde." if actual_proxy else None),
+                        }
+                except Exception as exc:
+                    last_error = f"{type(exc).__name__}: {str(exc)[:100]}"
+            return {"code": code, "label": label, "points": [], "source": "Yahoo Finance", "error": last_error or "history_unavailable"}
+
+        def rate_history(spec):
+            code, label, series, first_only, source = spec
+            try:
+                rows = self._sgs_between(series, start, end)
+                return {
+                    "code": code, "label": label,
+                    "points": self._monthly_rate_points(rows, first_only=first_only),
+                    "source": source,
+                    "url": f"https://www3.bcb.gov.br/sgspub/consultarvalores/consultarValoresSeries.do?method=consultarSeries&series={series}",
+                    "methodology": (
+                        "Rentabilidade do período de 30 dias da primeira observação de cada mês."
+                        if first_only else "Variações percentuais acumuladas por capitalização composta."
+                    ),
+                }
+            except Exception as exc:
+                return {"code": code, "label": label, "points": [], "source": source, "error": f"{type(exc).__name__}: {str(exc)[:100]}"}
+
+        order = [spec[0] for spec in price_specs + rate_specs]
+        series = []
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(price_history, spec) for spec in price_specs]
+            for future in as_completed(futures):
+                series.append(future.result())
+        # The public BCB gateway is deliberately queried with low concurrency;
+        # high fan-out causes resets and was one source of incomplete panels.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(rate_history, spec) for spec in rate_specs]
+            for future in as_completed(futures):
+                series.append(future.result())
+        series.sort(key=lambda item: order.index(item["code"]))
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "base": 100,
+            "max_years": years,
+            "periods": [0.5, 1, 2, 3, 5, 10, 15, 20],
+            "series": series,
+            "note": "Cada linha é rebaseada em R$ 100 no primeiro ponto visível do período escolhido.",
         }
 
     def economy_headlines(self, limit: int = 5) -> dict:
@@ -860,6 +1141,33 @@ class MarketDashboardService:
                 "category": "Feriado EUA", "event": name, "date": day.isoformat(), "time": None,
                 "region": "Estados Unidos", "source": "NYSE", "url": "https://www.nyse.com/trade/hours-calendars",
             })
+        election_events = [
+            {
+                "category": "Eleições", "event": "Eleições gerais brasileiras • 1º turno",
+                "date": "2026-10-04", "time": None, "region": "Brasil",
+                "source": "Tribunal Superior Eleitoral", "url": TSE_ELECTION_CALENDAR_URL,
+                "observation": "Presidente, governadores, senadores e deputados.",
+            },
+            {
+                "category": "Eleições", "event": "Eleições gerais brasileiras • eventual 2º turno",
+                "date": "2026-10-25", "time": None, "region": "Brasil",
+                "source": "Tribunal Superior Eleitoral", "url": TSE_ELECTION_CALENDAR_URL,
+                "observation": "Realizado onde houver segundo turno.",
+            },
+            {
+                "category": "Eleições", "event": "Eleições federais de meio de mandato",
+                "date": "2026-11-03", "time": None, "region": "Estados Unidos",
+                "source": "Federal Election Commission", "url": FEC_ELECTION_CALENDAR_URL,
+                "observation": "Data da eleição geral federal dos EUA.",
+            },
+            {
+                "category": "Eleições", "event": "Eleições gerais federais dos EUA",
+                "date": "2028-11-07", "time": None, "region": "Estados Unidos",
+                "source": "Federal Election Commission", "url": FEC_ELECTION_CALENDAR_URL,
+                "observation": "Eleição presidencial e eleições federais.",
+            },
+        ]
+        events.extend(item for item in election_events if item["date"] >= today.isoformat())
         return sorted(self._annotate_super_wednesday(events), key=lambda item: (item["date"], item["category"]))
 
     def build(self) -> dict:
