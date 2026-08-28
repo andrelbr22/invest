@@ -13,7 +13,7 @@ RUN python -m pip install --upgrade pip && \
     useradd --create-home --uid 10001 investment
 
 COPY --chown=investment:investment . /app
-RUN chmod +x /app/deployment/start-api.sh
+RUN chmod +x /app/deployment/start-api.sh /app/deployment/start-worker.sh
 USER investment
 
 EXPOSE 8000

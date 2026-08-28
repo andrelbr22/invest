@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
 
@@ -412,7 +412,7 @@ class BacktestRunORM(Base):
     scope: Mapped[str] = mapped_column(String(24), nullable=False, default="personal")
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     market_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    engine_version: Mapped[str] = mapped_column(String(24), nullable=False, default="1.17.4")
+    engine_version: Mapped[str] = mapped_column(String(24), nullable=False, default="1.20.0")
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     strategy_name: Mapped[str] = mapped_column(String(160), nullable=False)
     requested_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -501,3 +501,134 @@ class BacktestTradeORM(Base):
     exit_reason: Mapped[str | None] = mapped_column(String(64))
 
     run: Mapped[BacktestRunORM] = relationship(back_populates="trades")
+
+
+class BackgroundJobORM(Base):
+    """Persistent, retryable work item executed outside interactive requests."""
+
+    __tablename__ = "background_jobs"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_background_jobs_idempotency"),
+        Index("ix_background_jobs_ready", "status", "run_after", "priority", "created_at"),
+        Index("ix_background_jobs_lease", "status", "heartbeat_at"),
+        Index(
+            "uq_background_jobs_active_deduplication",
+            "deduplication_key",
+            unique=True,
+            postgresql_where=text("deduplication_key IS NOT NULL AND status IN ('queued', 'running')"),
+            sqlite_where=text("deduplication_key IS NOT NULL AND status IN ('queued', 'running')"),
+        ),
+        Index("ix_background_jobs_requester", "requested_by", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    job_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued", index=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    result_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    requested_by: Mapped[str | None] = mapped_column(String(320), index=True)
+    deduplication_key: Mapped[str | None] = mapped_column(String(160), index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(160))
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    locked_by: Mapped[str | None] = mapped_column(String(160))
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    progress_current: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    message: Mapped[str | None] = mapped_column(String(500))
+    last_error_code: Mapped[str | None] = mapped_column(String(120))
+    last_error_message: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
+    )
+
+
+class SharedSnapshotORM(Base):
+    """Last known valid shared payload, suitable for stale-while-revalidate reads."""
+
+    __tablename__ = "shared_snapshots"
+    __table_args__ = (
+        UniqueConstraint("snapshot_key", name="uq_shared_snapshots_key"),
+        Index("ix_shared_snapshots_kind_asof", "snapshot_kind", "as_of"),
+        Index("ix_shared_snapshots_expiry", "valid_until"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    snapshot_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    snapshot_kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="valid")
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    source: Mapped[str | None] = mapped_column(String(120))
+    source_url: Mapped[str | None] = mapped_column(String(500))
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    payload_hash: Mapped[str | None] = mapped_column(String(64))
+    last_error_code: Mapped[str | None] = mapped_column(String(120))
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
+    )
+
+
+class EconomicSeriesORM(Base):
+    """Catalog entry describing one economic or market time series."""
+
+    __tablename__ = "economic_series"
+    __table_args__ = (UniqueConstraint("code", name="uq_economic_series_code"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(String(80), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    unit: Mapped[str] = mapped_column(String(40), nullable=False)
+    frequency: Mapped[str] = mapped_column(String(24), nullable=False)
+    source: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(500))
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="America/Sao_Paulo")
+    accumulation_method: Mapped[str] = mapped_column(String(40), nullable=False, default="level")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
+    )
+
+    points: Mapped[list["EconomicSeriesPointORM"]] = relationship(
+        back_populates="series", cascade="all, delete-orphan",
+    )
+
+
+class EconomicSeriesPointORM(Base):
+    """One validated observation, preserving publication time to prevent look-ahead."""
+
+    __tablename__ = "economic_series_points"
+    __table_args__ = (
+        UniqueConstraint(
+            "series_id", "observed_at", "reference_period",
+            name="uq_economic_series_point_reference",
+        ),
+        Index("ix_economic_series_points_observed", "series_id", "observed_at"),
+        Index("ix_economic_series_points_published", "series_id", "published_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    series_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("economic_series.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reference_period: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    value: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_payload_hash: Mapped[str | None] = mapped_column(String(64))
+    quality_status: Mapped[str] = mapped_column(String(24), nullable=False, default="valid")
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    series: Mapped[EconomicSeriesORM] = relationship(back_populates="points")

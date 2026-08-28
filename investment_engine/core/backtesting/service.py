@@ -24,7 +24,7 @@ PERIOD_LABELS = {
     "20y": "20 anos",
 }
 
-ENGINE_VERSION = "1.17.4"
+ENGINE_VERSION = "1.20.0"
 
 def _minus_months(dt: datetime, months: int) -> datetime:
     total = dt.year * 12 + (dt.month - 1) - months

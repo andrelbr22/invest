@@ -5,9 +5,11 @@ from decimal import Decimal
 from datetime import datetime, timezone
 from secrets import compare_digest, token_urlsafe
 from pathlib import Path
+import logging
+import re
 import threading
 from time import monotonic
-from uuid import UUID
+from uuid import UUID, uuid4
 from typing import Literal
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
@@ -33,6 +35,7 @@ from ..core.repositories.backtests import BacktestRepository, backtest_market_da
 from ..core.repositories.access import AccessPolicyRepository, PERMISSION_FIELDS, full_owner_policy, policy_dict
 from ..core.repositories.news_cache import NewsCacheRepository, news_cache_dict, news_market_date
 from ..core.repositories.alerts import AlertRepository, alert_dict, event_dict
+from ..core.repositories.background_jobs import BackgroundJobRepository, background_job_dict
 from ..core.portfolio.service import build_portfolio_snapshot, classification_for, localize_classification
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
 from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
@@ -53,9 +56,11 @@ from ..data.providers.b3_indices import B3IndexProvider
 from ..data.providers.news import MarketNewsService
 from ..data.providers.market_dashboard import MarketDashboardService
 from ..infrastructure.config import settings
+from .. import __version__
 
 
 _ALERT_MONITOR = AlertMonitor()
+_REQUEST_LOGGER = logging.getLogger("investment_engine.http")
 
 
 @asynccontextmanager
@@ -70,7 +75,7 @@ async def _application_lifespan(_application: FastAPI):
 
 app = FastAPI(
     title="Formação do Investidor",
-    version="1.17.4",
+    version=__version__,
     lifespan=_application_lifespan,
     docs_url="/docs" if settings.api_docs_enabled else None,
     redoc_url="/redoc" if settings.api_docs_enabled else None,
@@ -224,7 +229,20 @@ def _refresh_economy_headlines() -> None:
 
 @app.middleware("http")
 async def security_headers(request, call_next):
-    response = await call_next(request)
+    supplied_request_id = str(request.headers.get("X-Request-ID") or "").strip()
+    request_id = supplied_request_id if re.fullmatch(r"[A-Za-z0-9_.:-]{8,80}", supplied_request_id) else str(uuid4())
+    request.state.request_id = request_id
+    started = monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        _REQUEST_LOGGER.exception(
+            "http_request_failed request_id=%s method=%s path=%s",
+            request_id, request.method, request.url.path,
+        )
+        raise
+    duration_ms = round((monotonic() - started) * 1000, 2)
+    response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -235,9 +253,13 @@ async def security_headers(request, call_next):
     )
     private_path = request.url.path.startswith((
         "/session", "/search", "/alerts", "/portfolios", "/backtests",
-        "/access", "/insights", "/automation", "/market-dashboard",
+        "/access", "/insights", "/automation", "/market-dashboard", "/admin/jobs",
     ))
     response.headers["Cache-Control"] = "no-store" if private_path else "no-cache"
+    _REQUEST_LOGGER.info(
+        "http_request request_id=%s method=%s path=%s status=%s duration_ms=%s",
+        request_id, request.method, request.url.path, response.status_code, duration_ms,
+    )
     return response
 
 
@@ -737,7 +759,7 @@ def session_me(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "1.17.4", "environment": settings.app_environment}
+    return {"status": "ok", "version": __version__, "environment": settings.app_environment}
 
 
 @app.get("/health/db")
@@ -745,8 +767,67 @@ def health_db(db: Session = Depends(get_db)):
     try:
         db.execute(text("SELECT 1"))
         return {"status": "ok", "database": "reachable"}
-    except Exception as exc:
-        raise HTTPException(503, detail={"database": "unreachable", "error": str(exc)})
+    except Exception:
+        raise HTTPException(503, detail={"database": "unreachable"})
+
+
+@app.get("/ready")
+def readiness(db: Session = Depends(get_db)):
+    """Report whether this process can safely receive application traffic."""
+    try:
+        db.execute(text("SELECT 1"))
+        revision = db.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).scalar_one_or_none()
+    except Exception:
+        raise HTTPException(503, detail={"status": "not_ready", "database": "unreachable"})
+    if not revision:
+        raise HTTPException(503, detail={"status": "not_ready", "migration": "unknown"})
+    return {
+        "status": "ready",
+        "version": __version__,
+        "environment": settings.app_environment,
+        "database": "reachable",
+        "migration": revision,
+    }
+
+
+@app.get("/admin/jobs")
+def list_background_jobs(
+    limit: int = Query(default=50, ge=1, le=200),
+    _access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    return [background_job_dict(row) for row in BackgroundJobRepository(db).list_recent(limit)]
+
+
+@app.get("/admin/jobs/{job_id}")
+def get_background_job(
+    job_id: UUID,
+    _access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    row = BackgroundJobRepository(db).get(job_id)
+    if row is None:
+        raise HTTPException(404, "background_job_not_found")
+    return background_job_dict(row, include_payload=True)
+
+
+@app.post("/admin/jobs/{job_id}/retry")
+def retry_background_job(
+    job_id: UUID,
+    access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    repository = BackgroundJobRepository(db)
+    row = repository.get(job_id)
+    if row is None:
+        raise HTTPException(404, "background_job_not_found")
+    try:
+        repository.retry(row, requested_by=access["email"])
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+    return background_job_dict(row)
 
 
 @app.get("/debug/db-counts")

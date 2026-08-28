@@ -68,7 +68,7 @@ if ($ValidateOnly) {
 
 Write-Host ""
 Write-Host "SEGURANCA DA PRIMEIRA MIGRACAO" -ForegroundColor Yellow
-Write-Host "Antes da V1.17.0, o timer antigo da Oracle precisa estar parado para que a raiz oficial nao seja alterada."
+Write-Host "Confirme que o fluxo antigo de atualização direta da produção permanece parado."
 $stagingConfirmation = Read-Host "Se o timer investment-github-update.timer ja foi parado na Oracle, digite SIM"
 if ($stagingConfirmation.Trim().ToUpperInvariant() -ne "SIM") {
     Stop-Publication "pare o timer antigo na Oracle e execute a publicacao novamente."
@@ -126,7 +126,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Publica Formação do Investidor V1.17.0 no ambiente de teste"
+    & $gitPath commit -m "Publica Formação do Investidor V1.20.0 no ambiente de teste"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
@@ -143,4 +143,4 @@ try {
 Write-Host ""
 Write-Host "PUBLICACAO CONCLUIDA." -ForegroundColor Green
 Write-Host "A versao foi enviada ao ambiente de teste. A producao depende de aprovacao manual."
-Write-Host "Na primeira migracao, conclua os passos do arquivo INSTRUCOES_ORACLE_V1170.md."
+Write-Host "Na primeira migração, conclua os passos do arquivo INSTRUCOES_ORACLE_V1200.md."

@@ -53,6 +53,11 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://investment:investment@localhost:5432/investment"
     database_echo: bool = False
+    database_pool_size: int = 5
+    database_max_overflow: int = 2
+    database_pool_timeout_seconds: int = 30
+    database_pool_recycle_seconds: int = 1800
+    database_statement_timeout_ms: int = 12000
     app_environment: str = "development"
     api_docs_enabled: bool = True
     allowed_hosts: str = "localhost,127.0.0.1,testserver,api"
@@ -85,6 +90,9 @@ class Settings(BaseSettings):
     canonical_url: str = "https://formacaodoinvestidor.com.br"
     secure_cookies: bool = True
     economy_headlines_ttl_seconds: int = 3600
+    background_worker_poll_seconds: float = 2.0
+    background_job_lease_timeout_seconds: int = 300
+    log_level: str = "INFO"
 
     @property
     def allowed_hosts_list(self) -> list[str]:

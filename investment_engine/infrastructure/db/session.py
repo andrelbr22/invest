@@ -17,7 +17,15 @@ def make_engine(database_url: str | None = None, *, echo: bool | None = None):
     # small number of clients. Keep the reusable application pool bounded.
     # Non-PostgreSQL URLs used by isolated tests retain SQLAlchemy defaults.
     if str(url).startswith(("postgresql://", "postgresql+psycopg://")):
-        options.update(pool_size=5, max_overflow=3, pool_timeout=30, pool_recycle=1800)
+        options.update(
+            pool_size=max(1, min(20, int(settings.database_pool_size))),
+            max_overflow=max(0, min(20, int(settings.database_max_overflow))),
+            pool_timeout=max(1, int(settings.database_pool_timeout_seconds)),
+            pool_recycle=max(60, int(settings.database_pool_recycle_seconds)),
+            connect_args={
+                "options": f"-c statement_timeout={max(1000, int(settings.database_statement_timeout_ms))}",
+            },
+        )
     return create_engine(url, **options)
 
 

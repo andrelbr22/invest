@@ -98,6 +98,25 @@ services:
       retries: 10
       start_period: 180s
 
+  worker:
+    image: formacao-do-investidor-production:current
+    profiles: ["worker"]
+    restart: unless-stopped
+    command: ["/app/deployment/start-worker.sh"]
+    environment:
+      APP_ENVIRONMENT: production
+      APP_SECRETS_FILE: /app/secrets/app_secrets.toml
+      BACKGROUND_WORKER_POLL_SECONDS: "2"
+      ALERT_MONITOR_ENABLED: "false"
+    volumes:
+      - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 260m
+
   proxy:
     image: caddy:2-alpine
     restart: unless-stopped

@@ -1,4 +1,24 @@
-# Formação do Investidor • V1.17.4
+# Formação do Investidor • V1.20.0
+
+O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`.
+
+## Fundação V1.20
+
+A V1.20.0 preserva todas as funções da V1.17.4 e acrescenta a base para atualizações sem bloquear o usuário:
+
+- fila persistente PostgreSQL com idempotência, lease, heartbeat e novas tentativas;
+- worker separado, ativado por profile e com concorrência inicial unitária;
+- snapshots compartilhados que preservam o último resultado válido;
+- catálogo e observações de séries econômicas com horário de publicação;
+- endpoint `/ready`, request ID e logs de duração;
+- pool PostgreSQL limitado e `statement_timeout` configurável;
+- descoberta corrigida de todos os diretórios de testes versionados.
+
+O worker é opcional nesta primeira etapa e não altera o fluxo atual de produção até a homologação:
+
+```text
+docker compose -f docker-compose.oracle-web.yml --profile worker up -d worker
+```
 
 Plataforma educacional de análise fundamentalista e técnica, carteiras,
 alertas, dados de mercado e backtests. A aplicação é hospedada na Oracle
