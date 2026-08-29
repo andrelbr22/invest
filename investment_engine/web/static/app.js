@@ -11,6 +11,9 @@ const state = {
   comparison: null,
   comparisonLoading: false,
   comparisonYears: 5,
+  comparisonCustom: false,
+  comparisonCustomFrom: "",
+  comparisonCustomTo: "",
   comparisonSelected: ["CDI","IBOV","IFIX"],
   analysisRows: [],
   analysisPreset: "default",
@@ -252,12 +255,67 @@ function renderCurve(curve) {
 
 const comparisonColors = ["#0b5d4b","#c79b3b","#2775b6","#8c5aa6","#d0614c","#3d9a78","#9b7d31","#5267a5","#c24f86","#69766f","#df8437","#3999a3","#7c655c","#22577a","#9a031e","#386641","#7b2cbf","#bc6c25","#0077b6","#6a994e","#ef476f","#118ab2","#8338ec","#fb8500","#495057","#2a9d8f"];
 
+function comparisonDateBounds() {
+  const timestamps=(state.comparison?.series||[]).flatMap(item=>(item.points||[]).map(point=>new Date(`${point.date}T12:00:00Z`).getTime())).filter(Number.isFinite);
+  if(!timestamps.length)return null;
+  return {min:new Date(Math.min(...timestamps)),max:new Date(Math.max(...timestamps))};
+}
+
+function isoDay(value) { return value instanceof Date&&!Number.isNaN(value.getTime())?value.toISOString().slice(0,10):""; }
+
+function ensureComparisonCustomDates() {
+  const bounds=comparisonDateBounds();
+  if(!bounds)return;
+  if(!state.comparisonCustomTo)state.comparisonCustomTo=isoDay(bounds.max);
+  if(!state.comparisonCustomFrom){
+    const start=new Date(bounds.max);
+    start.setUTCFullYear(start.getUTCFullYear()-Math.max(1,Number(state.comparisonYears)||5));
+    state.comparisonCustomFrom=isoDay(start<bounds.min?bounds.min:start);
+  }
+}
+
+function comparisonWindow() {
+  const bounds=comparisonDateBounds();
+  if(!bounds)return null;
+  if(state.comparisonCustom){
+    const start=new Date(`${state.comparisonCustomFrom}T00:00:00Z`),end=new Date(`${state.comparisonCustomTo}T23:59:59Z`);
+    if(!state.comparisonCustomFrom||!state.comparisonCustomTo||Number.isNaN(start.getTime())||Number.isNaN(end.getTime())||start>end)return {...bounds,error:"A data inicial deve ser anterior ou igual à data final."};
+    if(state.comparisonCustomFrom<isoDay(bounds.min)||state.comparisonCustomTo>isoDay(bounds.max))return {...bounds,error:`Escolha datas entre ${dateOnly(isoDay(bounds.min))} e ${dateOnly(isoDay(bounds.max))}.`};
+    return {min:start,max:end};
+  }
+  const end=new Date(bounds.max),start=new Date(bounds.max);
+  if(state.comparisonYears===.5)start.setUTCMonth(start.getUTCMonth()-6);
+  else start.setUTCFullYear(start.getUTCFullYear()-Math.floor(state.comparisonYears));
+  return {min:start,max:end};
+}
+
+function comparisonTimeTicks(minX,maxX) {
+  const day=86400000,spanYears=(maxX-minX)/(365.25*day),ticks=[];
+  if(spanYears<=5.1){
+    const stepMonths=spanYears<=1.1?1:spanYears<=3.1?3:6;
+    const start=new Date(minX),cursor=new Date(Date.UTC(start.getUTCFullYear(),start.getUTCMonth(),1));
+    while(cursor.getTime()<minX)cursor.setUTCMonth(cursor.getUTCMonth()+stepMonths);
+    while(cursor.getTime()<=maxX){
+      const label=cursor.toLocaleDateString("pt-BR",{month:"short",year:"2-digit",timeZone:"UTC"}).replace(".","");
+      ticks.push({value:cursor.getTime(),label});cursor.setUTCMonth(cursor.getUTCMonth()+stepMonths);
+    }
+  }else{
+    const stepYears=spanYears>15?2:1,start=new Date(minX),cursor=new Date(Date.UTC(start.getUTCFullYear()+1,0,1));
+    while(cursor.getTime()<=maxX){ticks.push({value:cursor.getTime(),label:String(cursor.getUTCFullYear())});cursor.setUTCFullYear(cursor.getUTCFullYear()+stepYears);}
+  }
+  if(!ticks.length){
+    const start=new Date(minX),end=new Date(maxX),format=value=>value.toLocaleDateString("pt-BR",{month:"short",year:"2-digit",timeZone:"UTC"}).replace(".","");
+    ticks.push({value:minX,label:format(start)});
+    if(maxX-minX>7*day)ticks.push({value:maxX,label:format(end)});
+  }
+  return ticks;
+}
+
 function visibleComparisonSeries() {
-  const cutoff = new Date();
-  cutoff.setUTCFullYear(cutoff.getUTCFullYear() - Math.floor(state.comparisonYears));
-  if (state.comparisonYears === .5) cutoff.setUTCMonth(cutoff.getUTCMonth() - 6);
+  const window=comparisonWindow();
+  if(!window||window.error)return [];
   return (state.comparison?.series || []).filter(item=>state.comparisonSelected.includes(item.code)).map(item=>{
-    const points=(item.points||[]).filter(point=>new Date(`${point.date}T12:00:00Z`)>=cutoff);
+    const points=(item.points||[]).filter(point=>{const observed=new Date(`${point.date}T12:00:00Z`);return observed>=window.min&&observed<=window.max;});
     if(!points.length)return {...item,points:[]};
     const base=Number(points[0].value)||100;
     return {...item,points:points.map(point=>({...point,value:Number(point.value)/base*100}))};
@@ -269,25 +327,32 @@ function renderComparison() {
   const root=$("#dashboard-tab-content"), payload=state.comparison||{}, all=payload.series||[];
   if(!all.length){root.innerHTML=errorState("As séries históricas ainda estão sendo preparadas.");return;}
   const periods=[[.5,"6 meses"],[1,"1 ano"],[2,"2 anos"],[3,"3 anos"],[5,"5 anos"],[10,"10 anos"],[15,"15 anos"],[20,"20 anos"]];
-  const selectors=`<div class="comparison-controls"><div class="chart-periods">${periods.map(([years,label])=>`<button class="button ${state.comparisonYears===years?"primary":"secondary"}" data-comparison-years="${years}">${label}</button>`).join("")}<button class="button secondary" data-comparison-refresh="true">Atualizar séries</button></div><div class="series-picker" role="group" aria-label="Indicadores para comparação">${all.map((item,index)=>`<label class="check" title="${esc(item.note||item.source||item.label)}"><input type="checkbox" data-comparison-series="${esc(item.code)}" ${state.comparisonSelected.includes(item.code)?"checked":""} ${item.points?.length?"":"disabled"}><i class="legend-dot" style="background:${comparisonColors[index%comparisonColors.length]}"></i><span>${esc(item.label)}${item.proxy?" <small>proxy</small>":""}</span></label>`).join("")}</div></div>`;
+  if(state.comparisonCustom)ensureComparisonCustomDates();
+  const bounds=comparisonDateBounds(),minDate=bounds?isoDay(bounds.min):"",maxDate=bounds?isoDay(bounds.max):"";
+  const customDates=state.comparisonCustom?`<div class="comparison-date-range"><div class="field"><label for="comparison-from">De</label><input id="comparison-from" type="date" data-comparison-date="from" value="${esc(state.comparisonCustomFrom)}" min="${minDate}" max="${maxDate}"></div><div class="field"><label for="comparison-to">Até</label><input id="comparison-to" type="date" data-comparison-date="to" value="${esc(state.comparisonCustomTo)}" min="${minDate}" max="${maxDate}"></div></div>`:"";
+  const selectors=`<div class="comparison-controls"><div class="chart-periods">${periods.map(([years,label])=>`<button class="button ${!state.comparisonCustom&&state.comparisonYears===years?"primary":"secondary"}" data-comparison-years="${years}">${label}</button>`).join("")}<button class="button ${state.comparisonCustom?"primary":"secondary"}" data-comparison-custom="true">Personalizar</button></div>${customDates}<div class="comparison-refresh-row"><button class="button secondary" data-comparison-refresh="true">Atualizar séries</button></div><div class="series-picker" role="group" aria-label="Indicadores para comparação">${all.map((item,index)=>`<label class="check" title="${esc(item.note||item.source||item.label)}"><input type="checkbox" data-comparison-series="${esc(item.code)}" ${state.comparisonSelected.includes(item.code)?"checked":""} ${item.points?.length?"":"disabled"}><i class="legend-dot" style="background:${comparisonColors[index%comparisonColors.length]}"></i><span>${esc(item.label)}${item.proxy?" <small>proxy</small>":""}</span></label>`).join("")}</div></div>`;
+  const selectedWindow=comparisonWindow();
+  if(selectedWindow?.error){root.innerHTML=sectionCard("Comparador histórico",selectors+`<div class="notice danger">${esc(selectedWindow.error)}</div>`);return;}
   const selected=visibleComparisonSeries().filter(item=>item.points.length);
   if(!selected.length){root.innerHTML=sectionCard("Comparador histórico",selectors+'<div class="empty-state"><strong>Selecione ao menos uma série disponível</strong>Os dados ausentes não impedem o uso das demais séries.</div>');return;}
-  const width=1000,height=330,padX=48,padY=25;
+  const width=1000,height=360,padX=48,padTop=25,padBottom=42,plotBottom=height-padBottom;
   const timestamps=selected.flatMap(item=>item.points.map(point=>new Date(`${point.date}T12:00:00Z`).getTime()));
   const values=selected.flatMap(item=>item.points.map(point=>Number(point.value))).filter(Number.isFinite);
   const minX=Math.min(...timestamps),maxX=Math.max(...timestamps),minY=Math.min(...values),maxY=Math.max(...values);
   const x=value=>padX+((value-minX)/Math.max(maxX-minX,1))*(width-padX*2);
-  const y=value=>height-padY-((value-minY)/Math.max(maxY-minY,.1))*(height-padY*2);
+  const y=value=>plotBottom-((value-minY)/Math.max(maxY-minY,.1))*(plotBottom-padTop);
   const paths=selected.map(item=>{
     const originalIndex=all.findIndex(row=>row.code===item.code),color=comparisonColors[originalIndex%comparisonColors.length];
     const d=item.points.map((point,index)=>`${index?"L":"M"}${x(new Date(`${point.date}T12:00:00Z`).getTime()).toFixed(1)},${y(Number(point.value)).toFixed(1)}`).join(" ");
     return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2.6"/>`;
   }).join("");
-  const grid=[0,.25,.5,.75,1].map(position=>{const value=maxY-(maxY-minY)*position,yy=padY+(height-padY*2)*position;return `<line x1="${padX}" x2="${width-padX}" y1="${yy}" y2="${yy}" stroke="#dfe6e2" stroke-dasharray="5 5"/><text x="${padX-7}" y="${yy+4}" text-anchor="end" font-size="11" fill="#67756f">${number(value,0)}</text>`;}).join("");
-  const svg=`<svg class="chart-svg comparison-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Comparação histórica rebaseada em 100">${grid}${paths}</svg>`;
+  const grid=[0,.25,.5,.75,1].map(position=>{const value=maxY-(maxY-minY)*position,yy=padTop+(plotBottom-padTop)*position;return `<line x1="${padX}" x2="${width-padX}" y1="${yy}" y2="${yy}" stroke="#dfe6e2" stroke-dasharray="5 5"/><text x="${padX-7}" y="${yy+4}" text-anchor="end" font-size="11" fill="#67756f">${number(value,0)}</text>`;}).join("");
+  const timeline=comparisonTimeTicks(minX,maxX).map(tick=>`<line x1="${x(tick.value)}" x2="${x(tick.value)}" y1="${padTop}" y2="${plotBottom}" stroke="#edf1ef"/><text x="${x(tick.value)}" y="${height-10}" text-anchor="middle" font-size="11" fill="#67756f">${esc(tick.label)}</text>`).join("");
+  const svg=`<svg class="chart-svg comparison-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Comparação histórica rebaseada em 100">${grid}${timeline}<line x1="${padX}" x2="${width-padX}" y1="${plotBottom}" y2="${plotBottom}" stroke="#bfcac5"/>${paths}</svg>`;
   const legend=selected.map(item=>{const originalIndex=all.findIndex(row=>row.code===item.code),points=item.points,last=points[points.length-1],result=Number(last.value)-100;return `<span><i class="legend-dot" style="background:${comparisonColors[originalIndex%comparisonColors.length]}"></i>${esc(item.label)} <strong class="${variationClass(result)}">${pct(result,true)}</strong></span>`;}).join("");
   const unavailable=all.filter(item=>!item.points?.length).map(item=>item.label);
-  root.innerHTML=sectionCard("Comparador histórico",`${selectors}<div class="chart">${svg}</div><div class="chart-legend">${legend}</div>${unavailable.length?`<div class="notice">Sem dados nesta atualização: ${esc(unavailable.join(", "))}.</div>`:""}<div class="notice info">${esc(payload.note||"Base 100 no início do período selecionado.")}</div>`,`Desempenho acumulado • base R$ 100 • ${state.comparisonYears===.5?"6 meses":`${state.comparisonYears} ano(s)`}`);
+  const periodLabel=state.comparisonCustom?`de ${dateOnly(state.comparisonCustomFrom)} até ${dateOnly(state.comparisonCustomTo)}`:state.comparisonYears===.5?"6 meses":`${state.comparisonYears} ano(s)`;
+  root.innerHTML=sectionCard("Comparador histórico",`${selectors}<div class="chart comparison-chart-wrap">${svg}</div><div class="chart-legend">${legend}</div>${unavailable.length?`<div class="notice">Sem dados nesta atualização: ${esc(unavailable.join(", "))}.</div>`:""}<div class="notice info">${esc(payload.note||"Base 100 no início do período selecionado.")}</div>`,`Desempenho acumulado • base R$ 100 • ${periodLabel}`);
 }
 
 async function loadComparison(force=false,attempt=0) {
@@ -1046,7 +1111,8 @@ function bindEvents() {
     const retry=event.target.closest("[data-retry]")?.dataset.retry;if(retry){if(retry==="market")loadMarket(true);else loadCurrentView();}
     const linked=event.target.closest("[data-view-link]");if(linked)setView(linked.dataset.viewLink,linked.dataset.tabLink||null);
     const curve=event.target.closest("[data-curve-years]");if(curve){state.curveYears=Number(curve.dataset.curveYears);renderDashboardTab();}
-    const comparisonPeriod=event.target.closest("[data-comparison-years]");if(comparisonPeriod){state.comparisonYears=Number(comparisonPeriod.dataset.comparisonYears);renderComparison();}
+    const comparisonPeriod=event.target.closest("[data-comparison-years]");if(comparisonPeriod){state.comparisonYears=Number(comparisonPeriod.dataset.comparisonYears);state.comparisonCustom=false;renderComparison();}
+    const comparisonCustom=event.target.closest("[data-comparison-custom]");if(comparisonCustom){state.comparisonCustom=true;ensureComparisonCustomDates();renderComparison();}
     const comparisonRefresh=event.target.closest("[data-comparison-refresh]");if(comparisonRefresh){state.comparison=null;loadComparison(true);}
     const saveUser=event.target.closest("[data-save-user]");if(saveUser)saveUserAccess(saveUser.dataset.saveUser);
     const marketSync=event.target.closest("[data-market-sync]");if(marketSync)syncMarketCatalog(marketSync.dataset.marketSync,marketSync.dataset.technicals==="true");
@@ -1067,6 +1133,11 @@ function bindEvents() {
     if(event.target.id==="analysis-limit"){state.analysisLimit=Number(event.target.value);$("#analysis-limit-label").textContent=state.analysisLimit;}
     if(event.target.matches("[data-comparison-series]")){
       state.comparisonSelected=$$("[data-comparison-series]:checked").map(input=>input.dataset.comparisonSeries);
+      renderComparison();
+    }
+    if(event.target.matches("[data-comparison-date]")){
+      if(event.target.dataset.comparisonDate==="from")state.comparisonCustomFrom=event.target.value;
+      else state.comparisonCustomTo=event.target.value;
       renderComparison();
     }
     if(event.target.matches("[data-column-id]")){

@@ -27,4 +27,13 @@
 4. Troque o período entre 1 ano e 20 anos e confirme que o gráfico continua responsivo.
 5. Execute os testes versionados antes de aprovar a produção.
 
+## Validação adicional da R6
+
+1. No Comparador histórico, confira meses e anos no eixo para 6 meses, 1 ano e 5 anos.
+2. Confira somente anos para 10, 15 e 20 anos.
+3. Clique em `Personalizar`, escolha datas válidas em `De` e `Até` e confirme o novo recorte.
+4. Inverta temporariamente as datas e confirme a mensagem de orientação, sem quebra do painel.
+5. Volte a um período rápido e confirme que o modo personalizado é encerrado.
+6. Confirme que `Atualizar séries` continua atualizando as fontes em segundo plano.
+
 Esta revisão cria somente a tabela de controle das partes entregues. Ela não altera nem exclui resultados existentes. Não altere o banco de produção manualmente.

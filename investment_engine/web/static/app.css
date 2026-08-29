@@ -213,6 +213,8 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
 .comparison-controls { display: grid; gap: 13px; margin-bottom: 5px; }
 .comparison-controls .chart-periods { padding: 0; }
+.comparison-date-range { display: grid; grid-template-columns: repeat(2,minmax(180px,240px)); gap: 10px; align-items: end; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--brand-soft); }
+.comparison-refresh-row { display: flex; justify-content: flex-end; }
 .series-picker { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #f7f9f8; }
 .series-picker .check { min-width: 0; min-height: 45px; padding: 10px 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: .76rem; transition: background .15s ease; }
 .series-picker .check:nth-child(4n) { border-right: 0; }
@@ -223,7 +225,8 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .series-picker input:disabled { cursor: not-allowed; }
 .series-picker .check:has(input:disabled) { cursor: not-allowed; opacity: .55; }
 .series-picker input:disabled + .legend-dot { opacity: .35; }
-.comparison-chart { min-width: 720px; }
+.comparison-chart { min-width: 720px; height: 330px; }
+.comparison-chart-wrap { overflow-x: auto; }
 
 .headline-list { display: grid; gap: 4px; }
 .headline { display: grid; grid-template-columns: 42px 1fr auto; gap: 12px; align-items: center; padding: 13px 3px; color: var(--ink); text-decoration: none; border-bottom: 1px solid #edf1ef; }
@@ -322,6 +325,7 @@ body.staging-mode .login-view { padding-top: 60px; }
   .series-picker .check:nth-child(3n) { border-right: 1px solid var(--line); }
   .series-picker .check:nth-child(2n) { border-right: 0; }
   .study-configuration > summary { align-items: flex-start; flex-direction: column; }
+  .comparison-date-range { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .custom-filter-controls small { grid-column: auto; }
   .filter-grid { grid-template-columns: 1fr 1fr; }
   .login-card { padding: 36px 24px; }
@@ -335,4 +339,5 @@ body.staging-mode .login-view { padding-top: 60px; }
   .detail-list, .column-picker[open] > div { grid-template-columns: 1fr; }
   .series-picker { grid-template-columns: 1fr; }
   .series-picker .check:nth-child(n) { border-right: 0; }
+  .comparison-date-range { grid-template-columns: 1fr; }
 }

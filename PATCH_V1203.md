@@ -23,3 +23,7 @@ A R4 altera somente o Painel de Mercado, seus estilos, o catálogo do Comparador
 ## Revisão R5
 
 A R5 corrige a coleta dos indicadores econômicos do Comparador histórico. As séries oficiais do Banco Central passam a ser consultadas em sequência, por uma conexão isolada e com validação do formato da resposta. Uma página HTML temporária recebida com HTTP 200 é repetida automaticamente e não fica mais armazenada como atualização vazia. Nenhuma série oficial foi substituída.
+
+## Revisão R6
+
+A R6 melhora somente a navegação temporal do Comparador histórico. O eixo horizontal passa a mostrar mês e ano em janelas de até cinco anos e somente anos em janelas maiores. A opção `Personalizar` permite escolher datas inicial e final dentro dos 20 anos já carregados, sem nova consulta ao servidor a cada alteração. Os períodos rápidos e o botão `Atualizar séries` permanecem disponíveis.
