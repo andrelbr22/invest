@@ -230,6 +230,22 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .asset-dialog::backdrop { background: rgba(6,30,24,.45); backdrop-filter: blur(3px); }
 .dialog-close { position: absolute; right: 12px; top: 12px; z-index: 2; background: #f1f5f3; }
 .asset-dialog-content { padding: 28px; }
+.table-link { appearance: none; border: 0; padding: 0; background: transparent; color: var(--brand); font: inherit; font-weight: 800; text-align: left; cursor: pointer; }
+.table-link:hover { text-decoration: underline; }
+.block-hint { display: block; margin-top: 3px; color: var(--muted); }
+.study-configurations { display: grid; gap: 12px; margin-top: 16px; }
+.study-configuration { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); overflow: hidden; }
+.study-configuration > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 18px; cursor: pointer; font-weight: 800; }
+.study-configuration > summary small { color: var(--muted); font-weight: 600; }
+.study-configuration-body { padding: 0 18px 18px; border-top: 1px solid var(--line); }
+.study-configuration-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; margin: 16px 0; }
+.study-configuration-grid article { padding: 14px; border-radius: 12px; background: var(--brand-soft); }
+.study-configuration-grid h4 { margin: 0 0 10px; }
+.configuration-pairs { display: grid; gap: 7px; margin: 0; }
+.configuration-pairs div { display: grid; grid-template-columns: minmax(120px,.8fr) minmax(0,1.2fr); gap: 10px; }
+.configuration-pairs dt { color: var(--muted); }
+.configuration-pairs dd { margin: 0; overflow-wrap: anywhere; font-weight: 700; }
+.configuration-text { margin: 0; color: var(--muted); line-height: 1.6; }
 .asset-dialog-header { position: sticky; top: 0; z-index: 1; margin: -28px -28px 18px; padding: 25px 65px 16px 28px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.96); backdrop-filter: blur(10px); }
 .asset-dialog-header .asset-subtitle { margin-bottom: 0; }
 .asset-summary { margin-bottom: 16px; }
@@ -275,7 +291,8 @@ body.staging-mode .login-view { padding-top: 60px; }
   .main-content { padding: 22px 14px 48px; }
   .page-heading { display: block; }
   .heading-actions { margin-top: 13px; }
-  .metric-grid, .loading-grid, .panel-grid, .panel-grid.three, .filter-columns, .asset-detail-grid, .backtest-form, .guide-grid, .score-profile-grid, .custom-filter-controls { grid-template-columns: 1fr; }
+  .metric-grid, .loading-grid, .panel-grid, .panel-grid.three, .filter-columns, .asset-detail-grid, .backtest-form, .guide-grid, .score-profile-grid, .custom-filter-controls, .study-configuration-grid { grid-template-columns: 1fr; }
+  .study-configuration > summary { align-items: flex-start; flex-direction: column; }
   .custom-filter-controls small { grid-column: auto; }
   .filter-grid { grid-template-columns: 1fr 1fr; }
   .login-card { padding: 36px 24px; }

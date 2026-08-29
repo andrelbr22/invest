@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ...infrastructure.db.models import AssetORM, BacktestRunORM, BacktestTradeORM
@@ -284,37 +284,97 @@ class BacktestRepository:
             stmt.order_by(BacktestRunORM.created_at.desc(), BacktestRunORM.id.desc()).limit(limit)
         ).all())
 
-    def strategy_study_runs(self, *, limit: int = 50000):
-        """Return the newest official run for every configuration identity."""
-        stmt = (
-            select(BacktestRunORM, AssetORM)
-            .join(AssetORM, AssetORM.id == BacktestRunORM.asset_id)
-            .where(BacktestRunORM.scope == "official", BacktestRunORM.status == "valid")
-            .order_by(BacktestRunORM.created_at.desc(), BacktestRunORM.id.desc())
-            .limit(max(1, min(100000, int(limit))))
-        )
-        newest_by_configuration = {}
-        for run, asset in self.session.execute(stmt):
-            newest_by_configuration.setdefault((run.asset_id, run.config_hash), (run, asset))
-        return list(newest_by_configuration.values())
+    @staticmethod
+    def _latest_official_rows(
+        *columns,
+        strategy_id: str | None = None,
+        eligible_for_study: bool = False,
+    ):
+        """Build a compact newest-per-configuration query.
 
-    def strategy_configuration_runs(self, strategy_id: str, *, limit: int = 100000):
-        """Newest official result for each asset/configuration of one strategy."""
-        stmt = (
-            select(BacktestRunORM, AssetORM)
-            .join(AssetORM, AssetORM.id == BacktestRunORM.asset_id)
-            .where(
-                BacktestRunORM.scope == "official",
-                BacktestRunORM.status == "valid",
-                BacktestRunORM.strategy_id == str(strategy_id).strip(),
+        Selecting the ORM previously transferred equity curves and full result
+        payloads for tens of thousands of runs. The study only needs a small
+        projection, so a window in the database performs the deduplication before
+        those rows reach the web process.
+        """
+        conditions = [
+            BacktestRunORM.scope == "official",
+            BacktestRunORM.status == "valid",
+        ]
+        if eligible_for_study:
+            conditions.extend([
+                BacktestRunORM.sample_status.in_(("adequate", "limited")),
+                BacktestRunORM.ranking_score.is_not(None),
+            ])
+        if strategy_id is not None:
+            conditions.append(BacktestRunORM.strategy_id == str(strategy_id).strip())
+        return (
+            select(
+                BacktestRunORM.asset_id.label("asset_id"),
+                *columns,
+                func.row_number().over(
+                    partition_by=(BacktestRunORM.asset_id, BacktestRunORM.config_hash),
+                    order_by=(BacktestRunORM.created_at.desc(), BacktestRunORM.id.desc()),
+                ).label("configuration_order"),
             )
-            .order_by(BacktestRunORM.created_at.desc(), BacktestRunORM.id.desc())
+            .where(*conditions)
+            .subquery()
+        )
+
+    def strategy_study_records(self, *, limit: int = 50000) -> list[dict]:
+        latest = self._latest_official_rows(
+            BacktestRunORM.strategy_id.label("strategy_id"),
+            BacktestRunORM.strategy_name.label("strategy_name"),
+            BacktestRunORM.ranking_score.label("ranking_score"),
+            BacktestRunORM.sample_status.label("sample_status"),
+            BacktestRunORM.metrics_json.label("metrics"),
+            eligible_for_study=True,
+        )
+        stmt = (
+            select(
+                AssetORM.ticker.label("ticker"), latest.c.strategy_id,
+                latest.c.strategy_name, latest.c.ranking_score,
+                latest.c.sample_status, latest.c.metrics,
+            )
+            .join(AssetORM, AssetORM.id == latest.c.asset_id)
+            .where(latest.c.configuration_order == 1)
             .limit(max(1, min(100000, int(limit))))
         )
-        newest_by_configuration = {}
-        for run, asset in self.session.execute(stmt):
-            newest_by_configuration.setdefault((run.asset_id, run.config_hash), (run, asset))
-        return list(newest_by_configuration.values())
+        return [dict(row._mapping) for row in self.session.execute(stmt)]
+
+    def strategy_configuration_records(self, strategy_id: str, *, limit: int = 100000) -> list[dict]:
+        latest = self._latest_official_rows(
+            BacktestRunORM.strategy_id.label("strategy_id"),
+            BacktestRunORM.strategy_name.label("strategy_name"),
+            BacktestRunORM.ranking_score.label("ranking_score"),
+            BacktestRunORM.sample_status.label("sample_status"),
+            BacktestRunORM.current_signal.label("current_signal"),
+            BacktestRunORM.metrics_json.label("metrics"),
+            BacktestRunORM.parameters_json.label("parameters"),
+            BacktestRunORM.initial_capital.label("initial_capital"),
+            BacktestRunORM.fee_pct.label("fee_pct"),
+            BacktestRunORM.slippage_pct.label("slippage_pct"),
+            BacktestRunORM.risk_free_rate_pct.label("risk_free_rate_pct"),
+            BacktestRunORM.requested_start.label("requested_start"),
+            BacktestRunORM.requested_end.label("requested_end"),
+            BacktestRunORM.created_at.label("created_at"),
+            strategy_id=strategy_id,
+        )
+        stmt = (
+            select(
+                AssetORM.ticker.label("ticker"), latest.c.strategy_id,
+                latest.c.strategy_name, latest.c.ranking_score,
+                latest.c.sample_status, latest.c.current_signal,
+                latest.c.metrics, latest.c.parameters, latest.c.initial_capital,
+                latest.c.fee_pct, latest.c.slippage_pct,
+                latest.c.risk_free_rate_pct, latest.c.requested_start,
+                latest.c.requested_end, latest.c.created_at,
+            )
+            .join(AssetORM, AssetORM.id == latest.c.asset_id)
+            .where(latest.c.configuration_order == 1)
+            .limit(max(1, min(100000, int(limit))))
+        )
+        return [dict(row._mapping) for row in self.session.execute(stmt)]
 
     def get_run(self, run_id, *, owner_email: str, is_owner: bool = False):
         stmt = select(BacktestRunORM).where(BacktestRunORM.id == run_id)

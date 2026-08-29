@@ -763,6 +763,31 @@ async function renderAlerts(root) {
   $("#notification-count").classList.toggle("hidden",!active.length);
 }
 
+function readableConfigurationKey(key) {
+  const labels={fast_window:"Média rápida",slow_window:"Média lenta",window:"Período",lower:"Limite inferior",upper:"Limite superior",initial_capital:"Capital inicial",fee_pct:"Taxa",slippage_pct:"Slippage",risk_free_rate_pct:"Taxa livre de risco",fundamental_filters:"Filtros fundamentalistas",technical_filters:"Filtros técnicos"};
+  return labels[key]||String(key||"").replaceAll("_"," ").replace(/^./,letter=>letter.toUpperCase());
+}
+
+function configurationPairs(values) {
+  if(values!==null&&values!==undefined&&typeof values!=="object")return `<p class="configuration-text">${esc(String(values))}</p>`;
+  const entries=Object.entries(values||{});
+  if(!entries.length)return '<span class="muted">Nenhuma configuração adicional.</span>';
+  return `<dl class="configuration-pairs">${entries.map(([key,value])=>`<div><dt>${esc(readableConfigurationKey(key))}</dt><dd>${esc(typeof value==="object"?JSON.stringify(value):String(value))}</dd></div>`).join("")}</dl>`;
+}
+
+async function openStudyStrategy(strategyId) {
+  const dialog=$("#asset-dialog"),content=$("#asset-dialog-content");
+  content.innerHTML=loadingCards(5);dialog.showModal();
+  try {
+    const data=await api(`/backtests/study/${encodeURIComponent(strategyId)}/configurations`);
+    const configurations=data.items||[];
+    content.innerHTML=`<div class="asset-dialog-header"><p class="eyebrow">Estudo de backtests</p><h2 class="asset-title">${esc(data.strategy_name||strategyId)}</h2><p class="asset-subtitle">Todas as configurações oficiais utilizadas nesta estratégia.</p></div>
+      <div class="metric-grid">${metricCard("Configurações",number(data.configuration_count||0,0))}${metricCard("Execuções",number(data.run_count||0,0))}${metricCard("Estratégia",esc(strategyId))}</div>
+      ${sectionCard("Regras da estratégia",configurationPairs(data.strategy_rules))}
+      <div class="study-configurations">${configurations.length?configurations.map(item=>`<details class="study-configuration"><summary><span>Configuração ${number(item.configuration_number,0)}</span><small>${number(item.assets_tested,0)} ativo(s) • nota média ${number(item.mean_ranking_score,1)}</small></summary><div class="study-configuration-body"><div class="study-configuration-grid"><article><h4>Parâmetros da estratégia</h4>${configurationPairs(item.strategy_parameters)}</article><article><h4>Filtros</h4>${configurationPairs(item.filters)}</article><article><h4>Premissas financeiras</h4>${configurationPairs({...item.financial,...item.assumptions})}</article><article><h4>Métricas médias</h4>${configurationPairs(item.mean_metrics)}</article></div><p><strong>Ativos testados:</strong> ${esc((item.tickers||[]).join(", ")||"—")}</p><p><strong>Sinais atuais:</strong> ${esc(Object.entries(item.signal_counts||{}).map(([key,value])=>`${signalLabel(key)}: ${value}`).join(" • ")||"—")}</p></div></details>`).join(""):'<div class="empty-state"><strong>Nenhuma configuração elegível</strong>As configurações aparecerão depois da próxima rodada oficial válida.</div>'}</div>`;
+  } catch(error) {content.innerHTML=errorState(error);}
+}
+
 async function loadBacktests() {
   const root=$("#backtests-tab-content"),tab=state.tabs.backtests; root.innerHTML=loadingCards(6);
   try {
@@ -772,7 +797,7 @@ async function loadBacktests() {
       root.innerHTML=sectionCard("Últimos 100 backtests",marketTable(rows,[{label:"Data e hora",render:r=>dateTime(r.created_at)},{label:"Ativo",render:r=>`<span class="ticker-cell">${esc(r.ticker||"—")}</span>`},{label:"Estratégia",render:r=>esc(r.strategy_name||r.strategy_id||"—")},{label:"Retorno",render:r=>pct(r.metrics?.total_return_pct??r.return_pct,true),className:r=>variationClass(r.metrics?.total_return_pct??r.return_pct)},{label:"Status",render:r=>`<span class="pill">${esc(r.status||"—")}</span>`}]));
     } else if(tab==="study") {
       const data=await api("/backtests/study?limit=5"); const rows=data.items||data.ranking||[];
-      root.innerHTML=sectionCard("Estratégias mais consistentes",marketTable(rows,[{label:"Posição",render:(r)=>`<strong>${esc(r.position||r.rank||"—")}</strong>`},{label:"Estratégia",render:r=>esc(r.strategy_name||r.name||r.strategy_id)},{label:"Pontuação",render:r=>number(r.score??r.points,1)},{label:"Presença no top 3",render:r=>number(r.top_three_count??r.top3_count,0)}]),"Ranking ponderado por posição, recorrência e qualidade da amostra");
+      root.innerHTML=sectionCard("Estratégias mais consistentes",marketTable(rows,[{label:"Posição",render:(r)=>`<strong>${esc(r.position||r.rank||"—")}</strong>`},{label:"Estratégia",render:r=>`<button class="table-link" data-study-strategy="${esc(r.strategy_id)}">${esc(r.strategy_name||r.name||r.strategy_id)}</button><small class="block-hint">Abrir configurações</small>`},{label:"Pontuação",render:r=>number(r.study_score??r.score??r.points,1)},{label:"Presença no top 3",render:r=>number(r.top_three_count??r.top3_count,0)},{label:"1º lugares",render:r=>number(r.first_places,0)},{label:"Cobertura",render:r=>pct(r.coverage_pct)}]),"Ranking ponderado por recorrência no top 3, posição, qualidade e cobertura. Clique na estratégia para ver todas as variáveis.");
     } else if(tab==="official") {
       const rows=await api("/backtests/batch/jobs?limit=30");
       root.innerHTML=sectionCard("Rodadas oficiais",marketTable(rows,[{label:"Criado em",render:r=>dateTime(r.created_at)},{label:"Identificador",render:r=>esc(r.id)},{label:"Ativos",render:r=>number((r.requested_tickers||r.tickers||[]).length,0)},{label:"Progresso",render:r=>`${number(r.completed_assets||0,0)} / ${number(r.total_assets||(r.requested_tickers||[]).length,0)}`},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":""}">${esc(r.status)}</span>`}]));
@@ -917,6 +942,7 @@ function bindEvents() {
     const marketSync=event.target.closest("[data-market-sync]");if(marketSync)syncMarketCatalog(marketSync.dataset.marketSync,marketSync.dataset.technicals==="true");
     const preset=event.target.closest("[data-preset-id]");if(preset)selectSystemPreset(preset.dataset.presetId);
     const customPreset=event.target.closest("[data-custom-filter-id]");if(customPreset)selectCustomFilter(customPreset.dataset.customFilterId);
+    const studyStrategy=event.target.closest("[data-study-strategy]");if(studyStrategy)openStudyStrategy(studyStrategy.dataset.studyStrategy);
     if(!event.target.closest(".global-search-wrap"))$("#search-results").classList.add("hidden");
   });
   $("#close-asset-dialog").addEventListener("click",()=>$("#asset-dialog").close());

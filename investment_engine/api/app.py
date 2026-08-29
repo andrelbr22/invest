@@ -2557,16 +2557,7 @@ def backtest_strategy_study(
     _access=Depends(require_permission("can_view_backtest_studies")),
     db: Session = Depends(get_db),
 ):
-    records = []
-    for run, asset in BacktestRepository(db).strategy_study_runs():
-        records.append({
-            "ticker": asset.ticker,
-            "strategy_id": run.strategy_id,
-            "strategy_name": run.strategy_name,
-            "ranking_score": _num(run.ranking_score),
-            "sample_status": run.sample_status,
-            "metrics": run.metrics_json or {},
-        })
+    records = BacktestRepository(db).strategy_study_records()
     result = build_strategy_study(records, top_limit=limit)
     result["generated_at"] = datetime.now(timezone.utc)
     return result
@@ -2581,25 +2572,25 @@ def backtest_strategy_configurations(
     if strategy_id not in STRATEGIES:
         raise HTTPException(404, "strategy_not_found")
     records = []
-    for run, asset in BacktestRepository(db).strategy_configuration_runs(strategy_id):
+    for run in BacktestRepository(db).strategy_configuration_records(strategy_id):
         records.append({
-            "ticker": asset.ticker,
-            "strategy_id": run.strategy_id,
-            "strategy_name": run.strategy_name,
-            "ranking_score": _num(run.ranking_score),
-            "sample_status": run.sample_status,
-            "current_signal": run.current_signal,
-            "metrics": run.metrics_json or {},
-            "parameters": run.parameters_json or {},
+            "ticker": run["ticker"],
+            "strategy_id": run["strategy_id"],
+            "strategy_name": run["strategy_name"],
+            "ranking_score": _num(run["ranking_score"]),
+            "sample_status": run["sample_status"],
+            "current_signal": run["current_signal"],
+            "metrics": run["metrics"] or {},
+            "parameters": run["parameters"] or {},
             "assumptions": {
-                "initial_capital": _num(run.initial_capital),
-                "fee_pct": _num(run.fee_pct),
-                "slippage_pct": _num(run.slippage_pct),
-                "risk_free_rate_pct": _num(run.risk_free_rate_pct),
+                "initial_capital": _num(run["initial_capital"]),
+                "fee_pct": _num(run["fee_pct"]),
+                "slippage_pct": _num(run["slippage_pct"]),
+                "risk_free_rate_pct": _num(run["risk_free_rate_pct"]),
             },
-            "requested_start": run.requested_start,
-            "requested_end": run.requested_end,
-            "created_at": run.created_at,
+            "requested_start": run["requested_start"],
+            "requested_end": run["requested_end"],
+            "created_at": run["created_at"],
         })
     result = build_strategy_configuration_catalog(records, strategy_id=strategy_id)
     result["strategy_name"] = STRATEGIES[strategy_id].name

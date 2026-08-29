@@ -404,6 +404,7 @@ class BacktestRunORM(Base):
         Index("ix_backtest_runs_owner_created", "owner_email", "created_at"),
         Index("ix_backtest_runs_daily_cache", "owner_email", "config_hash", "market_date", "scope"),
         Index("ix_backtest_runs_official_rank", "scope", "asset_id", "ranking_score"),
+        Index("ix_backtest_runs_official_study", "scope", "status", "asset_id", "config_hash", "created_at", "id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)

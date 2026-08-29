@@ -11,6 +11,7 @@ A V1.20.3 preserva todas as funções da V1.17.4, a base assíncrona da V1.20.0,
 - guia integrado com conceitos, fórmulas, médias e composição das notas;
 - três melhores estratégias de backtest e sinal atual por ativo;
 - continuidade do painel quando a consulta externa da composição do IBOV estiver temporariamente indisponível.
+- estudo de backtests com consulta enxuta e configurações inspecionáveis, sem carregar curvas completas desnecessariamente.
 
 A fundação para atualizações sem bloquear o usuário continua disponível:
 
