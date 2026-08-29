@@ -19,3 +19,7 @@ O workflow mantém as execuções de sábado direcionadas à produção e encami
 ## Revisão R4
 
 A R4 altera somente o Painel de Mercado, seus estilos, o catálogo do Comparador histórico e os testes. Não cria migração e não altera dados persistidos. IMA-B e IRF-M ficam claramente marcados como proxies de ETFs porque o histórico integral licenciado da ANBIMA não é apresentado como uma série pública direta. As demais fontes e todas as correções das revisões anteriores permanecem preservadas.
+
+## Revisão R5
+
+A R5 corrige a coleta dos indicadores econômicos do Comparador histórico. As séries oficiais do Banco Central passam a ser consultadas em sequência, por uma conexão isolada e com validação do formato da resposta. Uma página HTML temporária recebida com HTTP 200 é repetida automaticamente e não fica mais armazenada como atualização vazia. Nenhuma série oficial foi substituída.

@@ -11,6 +11,8 @@ from datetime import date, datetime, timedelta, timezone
 from io import StringIO
 import math
 import re
+from threading import Lock
+from time import sleep
 import unicodedata
 from xml.etree import ElementTree
 
@@ -255,6 +257,11 @@ class MarketDashboardService:
         # Dashboard sources must fail fast. A stale completed snapshot remains
         # visible while individual providers are retried on the next refresh.
         self.http = http or HttpClient(timeout=8, retries=1)
+        # SGS receives long-running historical requests. Keep it isolated from
+        # the shared session used concurrently by market quotes and serialize
+        # calls because requests.Session is not thread-safe.
+        self.sgs_http = http or HttpClient(timeout=20, retries=3)
+        self._sgs_lock = Lock()
         self.prices = prices or YahooPriceProvider(self.http)
         self.now = now or datetime.now(timezone.utc)
 
@@ -264,13 +271,49 @@ class MarketDashboardService:
         except Exception as exc:  # one unavailable source must not blank the panel
             return default, f"{name}: {type(exc).__name__}: {str(exc)[:180]}"
 
+    def _sgs_payload(self, series: int, start: date, end: date) -> list[dict]:
+        """Fetch one official SGS interval with content validation and retry.
+
+        The public gateway occasionally answers HTTP 200 with a temporary HTML
+        page. Treat that as a failed attempt instead of exposing JSONDecodeError
+        or caching an empty economic series for the rest of the day.
+        """
+        last_error: Exception | None = None
+        params = {
+            "formato": "json",
+            "dataInicial": start.strftime("%d/%m/%Y"),
+            "dataFinal": end.strftime("%d/%m/%Y"),
+        }
+        for attempt in range(3):
+            try:
+                # A single lock protects the dedicated Session even when two
+                # dashboard refresh requests arrive at the same time.
+                with self._sgs_lock:
+                    response = self.sgs_http.get(
+                        BCB_SGS_URL.format(series=series),
+                        params=params,
+                        timeout=20,
+                    )
+                content_type = str((getattr(response, "headers", {}) or {}).get("Content-Type", ""))
+                if content_type and "json" not in content_type.lower():
+                    raise ValueError(f"resposta SGS não JSON ({content_type.split(';', 1)[0]})")
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise ValueError("formato inesperado na resposta SGS")
+                return payload
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    sleep(0.4 * (2 ** attempt))
+        raise RuntimeError(
+            f"BCB SGS {series} indisponível após 3 tentativas: "
+            f"{type(last_error).__name__ if last_error else 'erro desconhecido'}"
+        ) from last_error
+
     def _sgs(self, series: int, days: int = 450) -> list[tuple[date, float]]:
-        start = (self.now.date() - timedelta(days=days)).strftime("%d/%m/%Y")
-        end = self.now.date().strftime("%d/%m/%Y")
-        payload = self.http.get(
-            BCB_SGS_URL.format(series=series),
-            params={"formato": "json", "dataInicial": start, "dataFinal": end},
-        ).json()
+        start = self.now.date() - timedelta(days=days)
+        end = self.now.date()
+        payload = self._sgs_payload(series, start, end)
         out = []
         for row in payload or []:
             observed, value = _date_from_sgs(row.get("data")), parse_number(row.get("valor"))
@@ -287,14 +330,7 @@ class MarketDashboardService:
         chunk_days = 700 if series in {12, 25} else 3500
         while cursor <= end:
             chunk_end = min(cursor + timedelta(days=chunk_days), end)
-            payload = self.http.get(
-                BCB_SGS_URL.format(series=series),
-                params={
-                    "formato": "json",
-                    "dataInicial": cursor.strftime("%d/%m/%Y"),
-                    "dataFinal": chunk_end.strftime("%d/%m/%Y"),
-                },
-            ).json()
+            payload = self._sgs_payload(series, cursor, chunk_end)
             for row in payload or []:
                 observed = _date_from_sgs(row.get("data"))
                 value = parse_number(row.get("valor"))
@@ -929,12 +965,11 @@ class MarketDashboardService:
             futures = [executor.submit(price_history, spec) for spec in price_specs]
             for future in as_completed(futures):
                 series.append(future.result())
-        # The public BCB gateway is deliberately queried with low concurrency;
-        # high fan-out causes resets and was one source of incomplete panels.
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [executor.submit(rate_history, spec) for spec in rate_specs]
-            for future in as_completed(futures):
-                series.append(future.result())
+        # Economic series are intentionally sequential. The public SGS gateway
+        # intermittently returns an HTML page under concurrent access, even
+        # with HTTP 200, which used to leave several indicators without data.
+        for spec in rate_specs:
+            series.append(rate_history(spec))
         series.sort(key=lambda item: order.index(item["code"]))
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),

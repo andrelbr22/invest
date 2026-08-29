@@ -19,4 +19,12 @@
 5. Passe o cursor sobre IMA-B, IRF-M e MSCI Europe e confirme que os proxies estão identificados.
 6. Valide também em tela estreita antes de aprovar a produção.
 
+## Validação adicional da R5
+
+1. Abra `Painel de Mercado > Comparador histórico` no ambiente de teste.
+2. Clique em `Atualizar séries` e aguarde a conclusão em segundo plano.
+3. Confirme dados para CDI, Poupança, IPCA, INPC, IGP-M, IGP-DI, INCC e IPC-Fipe.
+4. Troque o período entre 1 ano e 20 anos e confirme que o gráfico continua responsivo.
+5. Execute os testes versionados antes de aprovar a produção.
+
 Esta revisão cria somente a tabela de controle das partes entregues. Ela não altera nem exclui resultados existentes. Não altere o banco de produção manualmente.
