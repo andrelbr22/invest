@@ -8,8 +8,8 @@ from investment_engine.api.app import app
 from investment_engine.data.providers.market_dashboard import MarketDashboardService
 
 
-def test_release_and_routes_are_v1202():
-    assert __version__ == "1.20.2"
+def test_release_line_and_routes_keep_v1202_capabilities():
+    assert __version__.startswith("1.20.")
     paths = {route.path for route in app.routes}
     assert "/market-dashboard/comparison" in paths
     assert "/market-dashboard/comparison/refresh" in paths

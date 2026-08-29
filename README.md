@@ -1,16 +1,16 @@
-# Formação do Investidor • V1.20.2
+# Formação do Investidor • V1.20.3
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`.
 
 ## Fundação V1.20
 
-A V1.20.2 preserva todas as funções da V1.17.4, a base assíncrona da V1.20.0 e acrescenta melhorias visíveis no Painel de Mercado:
+A V1.20.3 preserva todas as funções da V1.17.4, a base assíncrona da V1.20.0, o Painel de Mercado da V1.20.2 e torna o painel Mercado e Análises explicável e personalizável:
 
-- IPCA em 12 meses no resumo inicial;
-- cinco pares de câmbio corretamente orientados;
-- curva de juros futuros DI x Pré com fonte B3 e contingência ANBIMA identificada;
-- comparador histórico em base 100, carregado apenas quando solicitado;
-- agenda com eleições brasileiras e americanas.
+- critérios completos e restauráveis das análises Padrão, FDI-CNPI e ALB;
+- análises personalizadas que preservam filtros fundamentalistas, técnicos, de universo e de valoração;
+- guia integrado com conceitos, fórmulas, médias e composição das notas;
+- três melhores estratégias de backtest e sinal atual por ativo;
+- continuidade do painel quando a consulta externa da composição do IBOV estiver temporariamente indisponível.
 
 A fundação para atualizações sem bloquear o usuário continua disponível:
 

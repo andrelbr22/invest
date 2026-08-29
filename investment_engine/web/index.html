@@ -95,22 +95,36 @@
             <button class="tab" data-tab="bdrs">BDRs</button>
             <button class="tab" data-tab="futures">Futuros</button>
           </div>
-          <details class="filter-drawer">
-            <summary><span><strong>Filtros e análises</strong><small>Padrão, FDI - CNPI, ALB e personalizados</small></span><span class="summary-action">Abrir ajustes</span></summary>
-            <div class="filter-body">
-              <div class="preset-row">
-                <button class="preset-button active" data-preset="padrao">Padrão</button>
-                <button class="preset-button" data-preset="cnpi">FDI - CNPI</button>
-                <button class="preset-button" data-preset="alb">ALB</button>
-                <button class="preset-button" data-preset="custom">Meus filtros</button>
+          <div class="tabs analysis-mode-tabs" data-tabs="analysisMode">
+            <button class="tab active" data-tab="list">Lista e filtros</button>
+            <button class="tab" data-tab="guide">Guia dos indicadores e notas</button>
+          </div>
+          <div id="analysis-list-workspace">
+            <details class="filter-drawer">
+              <summary><span><strong>Filtros e análises</strong><small id="active-analysis-summary">Padrão • critérios originais do sistema</small></span><span class="summary-action">Abrir ajustes</span></summary>
+              <div class="filter-body">
+                <div class="preset-row" id="analysis-preset-row">
+                  <button class="preset-button active" data-preset-id="default">Padrão</button>
+                  <button class="preset-button" data-preset-id="cnpi">FDI - CNPI</button>
+                  <button class="preset-button" data-preset-id="alb">ALB</button>
+                  <span id="custom-preset-buttons" class="custom-preset-buttons"></span>
+                </div>
+                <div id="analysis-filter-notice" class="notice info analysis-filter-notice"></div>
+                <div class="filter-columns">
+                  <section><h3>Indicadores fundamentalistas</h3><div id="fundamental-filters" class="filter-grid"></div></section>
+                  <section><h3>Indicadores técnicos</h3><div id="technical-filters" class="filter-grid"></div></section>
+                </div>
+                <div id="custom-filter-controls" class="custom-filter-controls hidden">
+                  <div class="field"><label for="custom-filter-name">Nome da análise personalizada</label><input id="custom-filter-name" maxlength="120" placeholder="Ex.: Dividendos e suporte"></div>
+                  <button id="save-custom-filter" class="button primary">Gravar análise personalizada</button>
+                  <button id="delete-custom-filter" class="button danger hidden">Excluir esta análise</button>
+                  <small id="custom-filter-usage"></small>
+                </div>
               </div>
-              <div class="filter-columns">
-                <section><h3>Indicadores fundamentalistas</h3><div id="fundamental-filters" class="filter-grid"></div></section>
-                <section><h3>Indicadores técnicos</h3><div id="technical-filters" class="filter-grid"></div></section>
-              </div>
-            </div>
-          </details>
-          <div id="analysis-table" class="data-card"></div>
+            </details>
+            <div id="analysis-table" class="data-card"></div>
+          </div>
+          <div id="analysis-guide" class="hidden"></div>
         </section>
 
         <section id="view-portfolio" class="view">

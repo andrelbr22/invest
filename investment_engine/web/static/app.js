@@ -5,7 +5,7 @@ const BASE_PATH = location.pathname === "/testefdi" || location.pathname.startsW
 const state = {
   session: null,
   view: "dashboard",
-  tabs: { dashboard: "overview", analysis: "stocks", portfolio: "positions", backtests: "history", admin: "users" },
+  tabs: { dashboard: "overview", analysis: "stocks", analysisMode: "list", portfolio: "positions", backtests: "history", admin: "users" },
   market: null,
   marketEnvelope: null,
   comparison: null,
@@ -14,6 +14,13 @@ const state = {
   comparisonSelected: ["CDI","IBOV","IFIX","POUPANCA","USD_BRL","IPCA"],
   analysisRows: [],
   analysisPreset: "default",
+  analysisCatalog: {},
+  analysisLoadedType: null,
+  analysisCustom: [],
+  analysisCustomCache: {},
+  analysisCustomUsageCache: {},
+  analysisCustomUsage: {used:0,limit:0},
+  currentCustomFilter: null,
   analysisLimit: 50,
   curveYears: 10,
   visibleColumns: JSON.parse(localStorage.getItem("fdi-visible-columns") || "{}"),
@@ -349,46 +356,57 @@ function renderHeadlines(payload) {
 
 const filterDefinitions = {
   fundamental: [
-    ["price","Preço"],["pe","P/L"],["pbv","P/VP"],["dividend_yield_pct","Dividend yield (%)"],
-    ["ev_ebitda","EV/EBITDA"],["ebit_margin_pct","Margem EBIT (%)"],["net_margin_pct","Margem líquida (%)"],
-    ["current_ratio","Liquidez corrente"],["roe_pct","ROE (%)"],["roic_pct","ROIC (%)"],
-    ["gross_debt_to_equity","Dívida bruta/patrimônio"],["net_debt_to_ebitda","Dívida líquida/EBITDA"],
-    ["revenue_cagr_5y_pct","CAGR receita 5a (%)"],["earnings_cagr_5y_pct","CAGR lucro 5a (%)"],
-    ["daily_liquidity","Liquidez diária"],["ffo_yield_pct","FFO yield (%)"],["cap_rate_pct","Cap rate (%)"],
-    ["vacancy_pct","Vacância física (%)"],["financial_vacancy_pct","Vacância financeira (%)"],["ltv_pct","LTV (%)"],
+    ["price","Preço","Cotação mais recente disponível."],["pe","P/L","Preço dividido pelo lucro por ação."],["pbv","P/VP","Preço dividido pelo valor patrimonial por ação."],["dividend_yield_pct","Dividend yield (%)","Proventos dos últimos 12 meses em relação ao preço."],
+    ["ev_ebitda","EV/EBITDA","Valor da firma em relação ao EBITDA."],["ebit_margin_pct","Margem EBIT (%)","EBIT dividido pela receita líquida."],["net_margin_pct","Margem líquida (%)","Lucro líquido dividido pela receita."],
+    ["current_ratio","Liquidez corrente","Ativo circulante dividido pelo passivo circulante."],["roe_pct","ROE (%)","Lucro líquido em relação ao patrimônio líquido."],["roic_pct","ROIC (%)","Retorno operacional sobre o capital investido."],
+    ["gross_debt_to_equity","Dívida bruta/patrimônio","Dívida bruta em relação ao patrimônio."],["net_debt_to_ebitda","Dívida líquida/EBITDA","Anos aproximados de EBITDA para cobrir a dívida líquida."],
+    ["revenue_cagr_5y_pct","CAGR receita 5a (%)","Crescimento anual composto da receita em cinco anos."],["earnings_cagr_5y_pct","CAGR lucro 5a (%)","Crescimento anual composto do lucro em cinco anos."],
+    ["daily_liquidity","Liquidez diária","Volume financeiro médio negociado por dia."],["ffo_yield_pct","FFO yield (%)","Geração operacional do FII em relação ao preço."],["cap_rate_pct","Cap rate (%)","Renda operacional dos imóveis em relação ao valor dos ativos."],
+    ["vacancy_pct","Vacância física (%)","Percentual da área não ocupada."],["financial_vacancy_pct","Vacância financeira (%)","Percentual da receita potencial não recebida."],["ltv_pct","LTV (%)","Dívida do fundo em relação ao valor dos imóveis."],
   ],
-  scores: [["quality_score","Qualidade"],["value_score","Valor"],["growth_score","Crescimento"],["technical_score","Técnica"],["risk_score","Risco"],["liquidity_score","Liquidez"],["alb_score","Nota ALB"],["data_quality_score","Qualidade dos dados"]],
+  scores: [["quality_score","Qualidade","Rentabilidade, margens, dívida e liquidez corrente, com perfil por setor."],["value_score","Valor","Valuation, dividendos e potencial de Graham."],["growth_score","Crescimento","CAGR de receita e lucro em cinco anos."],["technical_score","Técnica","Médias de 20, 50 e 200 períodos, RSI 14, MACD e momentum de 3 meses."],["risk_score","Risco","Volatilidade, drawdown e alavancagem; quanto maior, melhor o controle de risco."],["liquidity_score","Liquidez","Escala da liquidez financeira diária."],["alb_score","Nota ALB","Média ponderada das notas, ajustada ao perfil setorial."],["data_quality_score","Qualidade dos dados","Cobertura, validade e atualidade dos dados usados no cálculo."]],
 };
 
-function numericRange(key, label, kind="filter") {
+function helpMark(text) { return text ? `<button type="button" class="help-mark" title="${esc(text)}" aria-label="${esc(text)}">?</button>` : ""; }
+
+function numericRange(key, label, kind="filter", help="") {
   const attr = kind === "score" ? "data-score-field" : kind === "technical" ? "data-technical-field" : "data-filter-field";
-  return `<div class="field" ${attr}="${key}"><label>${esc(label)}</label><div class="range-pair"><input type="number" step="any" data-bound="min" placeholder="Mín."><input type="number" step="any" data-bound="max" placeholder="Máx."></div></div>`;
+  return `<div class="field" ${attr}="${key}"><label>${esc(label)} ${helpMark(help)}</label><div class="range-pair"><input type="number" step="any" data-bound="min" placeholder="Mín."><input type="number" step="any" data-bound="max" placeholder="Máx."></div></div>`;
 }
 
 function renderFilterInputs() {
   $("#fundamental-filters").innerHTML = `
     <div class="field"><label>Máximo de ativos: <strong id="analysis-limit-label">${state.analysisLimit}</strong></label><input id="analysis-limit" type="range" min="5" max="100" step="5" value="${state.analysisLimit}"></div>
     <div class="field stock-only-filter"><label>Participação no IBOV</label><select id="ibov-membership"><option value="any">Qualquer</option><option value="inside">Somente no IBOV</option><option value="outside">Fora do IBOV</option></select></div>
-    <div class="field stock-only-filter"><label>Porte da empresa</label><select id="company-sizes" multiple size="3"><option value="blue_chip">Blue Chip</option><option value="mid_cap">Middle Cap</option><option value="small_cap">Small Cap</option></select></div>
+    <div class="field stock-only-filter"><label>Porte da empresa</label><select id="company-sizes" multiple size="3"><option value="large">Blue Chip / Large Cap</option><option value="mid">Mid Cap</option><option value="small">Small Cap</option></select></div>
     <div class="field stock-only-filter"><label>Preços-teto</label><label class="check"><input id="below-graham" type="checkbox"> Abaixo de Graham</label><label class="check"><input id="below-barsi" type="checkbox"> Abaixo do preço-teto de dividendos (6%)</label></div>
-    <details class="filter-subgroup" open><summary>Indicadores fundamentalistas</summary><div class="filter-grid">${filterDefinitions.fundamental.map(([key,label])=>numericRange(key,label)).join("")}</div></details>
-    <details class="filter-subgroup"><summary>Notas e qualidade</summary><div class="filter-grid">${filterDefinitions.scores.map(([key,label])=>numericRange(key,label,"score")).join("")}</div></details>`;
+    <details class="filter-subgroup" open><summary>Indicadores fundamentalistas</summary><div class="filter-grid">${filterDefinitions.fundamental.map(([key,label,help])=>numericRange(key,label,"filter",help)).join("")}</div></details>
+    <details class="filter-subgroup"><summary>Notas e qualidade</summary><div class="filter-grid">${filterDefinitions.scores.map(([key,label,help])=>numericRange(key,label,"score",help)).join("")}</div></details>`;
   $("#technical-filters").innerHTML = `
-    ${numericRange("rsi14","RSI 14","technical")}
-    <div class="field"><label>Tendência diária</label><select id="trend-daily"><option value="any">Qualquer</option><option value="up">Alta</option><option value="down">Baixa</option></select></div>
-    <div class="field"><label>Tendência semanal</label><select id="trend-weekly"><option value="any">Qualquer</option><option value="up">Alta</option><option value="down">Baixa</option></select></div>
-    <div class="field"><label>Tendência mensal</label><select id="trend-monthly"><option value="any">Qualquer</option><option value="up">Alta</option><option value="down">Baixa</option></select></div>
+    ${numericRange("rsi14","RSI 14","technical","Força relativa calculada em 14 pregões pelo suavizamento de Wilder.")}
+    <div class="field"><label>Média da tendência ${helpMark("Compara o preço atual à média simples de 20 ou 21 períodos, nos gráficos diário, semanal e mensal.")}</label><select id="trend-period"><option value="21">21 períodos</option><option value="20">20 períodos</option></select></div>
+    <div class="field"><label>Tendência diária ${helpMark("Preço atual acima ou abaixo da média escolhida no gráfico diário.")}</label><select id="trend-daily"><option value="any">Qualquer</option><option value="up">Alta</option><option value="down">Baixa</option></select></div>
+    <div class="field"><label>Tendência semanal ${helpMark("Preço atual acima ou abaixo da média escolhida em semanas concluídas.")}</label><select id="trend-weekly"><option value="any">Qualquer</option><option value="up">Alta</option><option value="down">Baixa</option></select></div>
+    <div class="field"><label>Tendência mensal ${helpMark("Preço atual acima ou abaixo da média escolhida em meses concluídos.")}</label><select id="trend-monthly"><option value="any">Qualquer</option><option value="up">Alta</option><option value="down">Baixa</option></select></div>
     <div class="field"><label>Período dos pivôs</label><select id="pivot-timeframe"><option value="daily">Diário</option><option value="weekly">Semanal</option><option value="monthly">Mensal</option></select></div>
     <div class="field"><label>Zona entre pivôs</label><select id="pivot-zone"><option value="any">Qualquer</option><option value="below_s3">Abaixo de S3</option><option value="s3_s2">S3–S2</option><option value="s2_s1">S2–S1</option><option value="s1_pp">S1–Pivô</option><option value="pp_r1">Pivô–R1</option><option value="r1_r2">R1–R2</option><option value="r2_r3">R2–R3</option><option value="above_r3">Acima de R3</option></select></div>
     <div class="field"><label>Próximo de</label><select id="near-pivot"><option value="none">Sem filtro</option><option value="s3">Suporte 3</option><option value="s2">Suporte 2</option><option value="s1">Suporte 1</option><option value="pp">Pivô</option><option value="r1">Resistência 1</option><option value="r2">Resistência 2</option><option value="r3">Resistência 3</option></select></div>
     <div class="field"><label>Tolerância ao pivô (%)</label><input id="pivot-tolerance" type="number" min="0" max="20" step="0.1" value="0.5"></div>
-    <div class="field"><label>Volume acima da média de 9</label><label class="check"><input id="volume-daily-ma9" type="checkbox"> Diário</label><label class="check"><input id="volume-monthly-ma9" type="checkbox"> Mensal</label></div>
+    <div class="field"><label>Volume acima da média de 9 ${helpMark("O volume atual precisa superar a média simples dos nove períodos concluídos anteriores.")}</label><label class="check"><input id="volume-daily-ma9" type="checkbox"> Diário</label><label class="check"><input id="volume-monthly-ma9" type="checkbox"> Mensal</label></div>
     <button id="apply-advanced-filters" class="button primary wide-action">Aplicar ajustes</button>`;
   updateFilterAvailability();
 }
 
 function updateFilterAvailability() {
   $$(".stock-only-filter").forEach(node=>node.classList.toggle("hidden",analysisType()!=="stock"));
+  const supportsFilters=["stock","fii"].includes(analysisType());
+  const canEdit=Boolean(state.session?.access?.can_use_advanced_filters)&&supportsFilters;
+  $$("#fundamental-filters input,#fundamental-filters select,#technical-filters input,#technical-filters select,#analysis-limit,#ibov-membership,#company-sizes,#below-graham,#below-barsi").forEach(node=>node.disabled=!canEdit);
+  if($("#apply-advanced-filters")) $("#apply-advanced-filters").disabled=!canEdit;
+  $$("#analysis-preset-row [data-preset-id]").forEach(node=>node.disabled=!supportsFilters);
+  if($("#analysis-filter-notice")) {
+    $("#analysis-filter-notice").textContent=!supportsFilters?"Este tipo de ativo exibe apenas os indicadores aplicáveis ao catálogo.":canEdit?"Os valores preenchidos pertencem à análise selecionada. Ajustes são temporários até você gravar uma análise personalizada.":"Os critérios da análise estão visíveis para consulta. A edição depende de autorização do administrador.";
+  }
 }
 
 function resetAdvancedFilters() {
@@ -396,6 +414,9 @@ function resetAdvancedFilters() {
   ["trend-daily","trend-weekly","trend-monthly"].forEach(id=>{if($(`#${id}`))$(`#${id}`).value="any";});
   if($("#pivot-zone")) $("#pivot-zone").value="any";
   if($("#near-pivot")) $("#near-pivot").value="none";
+  if($("#trend-period")) $("#trend-period").value="21";
+  if($("#pivot-timeframe")) $("#pivot-timeframe").value="daily";
+  if($("#pivot-tolerance")) $("#pivot-tolerance").value="0.5";
   ["below-graham","below-barsi","volume-daily-ma9","volume-monthly-ma9"].forEach(id=>{if($(`#${id}`))$(`#${id}`).checked=false;});
   if($("#ibov-membership")) $("#ibov-membership").value="any";
   if($("#company-sizes")) [...$("#company-sizes").options].forEach(option=>option.selected=false);
@@ -405,13 +426,156 @@ function analysisType() {
   return ({stocks:"stock",fiis:"fii",etfs:"etf",bdrs:"bdr",futures:"future"})[state.tabs.analysis];
 }
 
+function normalizedConfiguration(saved) {
+  const filters=saved?.filters||saved||{};
+  if(filters.schema_version===2)return filters.configuration||{};
+  if(filters.fundamental_filters)return filters;
+  const fundamental_filters={};
+  const mapping={roe_min:["roe_pct","min"],net_margin_min:["net_margin_pct","min"],ebit_margin_min:["ebit_margin_pct","min"],revenue_cagr_5y_min:["revenue_cagr_5y_pct","min"],pe_min:["pe","min"],pe_max:["pe","max"],pbv_max:["pbv","max"],dividend_yield_min:["dividend_yield_pct","min"],ev_ebitda_max:["ev_ebitda","max"],gross_debt_to_equity_max:["gross_debt_to_equity","max"],current_ratio_min:["current_ratio","min"],daily_liquidity_min:["daily_liquidity","min"],ffo_yield_min:["ffo_yield_pct","min"],cap_rate_min:["cap_rate_pct","min"],vacancy_max:["vacancy_pct","max"]};
+  Object.entries(mapping).forEach(([oldKey,[field,bound]])=>{if(!nullable(filters[oldKey])){fundamental_filters[field]??={min:null,max:null};fundamental_filters[field][bound]=filters[oldKey];}});
+  return {asset_type:saved?.asset_type||analysisType(),fundamental_filters,score_filters:{},valuation_flags:{below_graham:Boolean(filters.require_below_graham),below_barsi_6pct:Boolean(filters.require_below_dividend_target)},technical_filters:{},trend_period:21,pivot_timeframe:"daily",include_technical_columns:true,limit:50,company_sizes:[],ibov_membership:"any"};
+}
+
+function setRangeValue(selector, range) {
+  const group=$(selector); if(!group)return;
+  group.querySelector('[data-bound="min"]').value=range?.min??"";
+  group.querySelector('[data-bound="max"]').value=range?.max??"";
+}
+
+function fillAnalysisForm(configuration={}) {
+  resetAdvancedFilters();
+  Object.entries(configuration.fundamental_filters||{}).forEach(([key,value])=>setRangeValue(`[data-filter-field="${key}"]`,value));
+  Object.entries(configuration.score_filters||{}).forEach(([key,value])=>setRangeValue(`[data-score-field="${key}"]`,value));
+  const technical=configuration.technical_filters||{};
+  setRangeValue('[data-technical-field="rsi14"]',technical.rsi14);
+  if($("#trend-daily")) $("#trend-daily").value=technical.daily_trend||"any";
+  if($("#trend-weekly")) $("#trend-weekly").value=technical.weekly_trend||"any";
+  if($("#trend-monthly")) $("#trend-monthly").value=technical.monthly_trend||"any";
+  if($("#trend-period")) $("#trend-period").value=String(configuration.trend_period||21);
+  if($("#pivot-timeframe")) $("#pivot-timeframe").value=configuration.pivot_timeframe||"daily";
+  if($("#pivot-zone")) $("#pivot-zone").value=technical.pivot_zone||"any";
+  if($("#near-pivot")) $("#near-pivot").value=technical.near_pivot_level||"none";
+  if($("#pivot-tolerance")) $("#pivot-tolerance").value=technical.pivot_tolerance_pct??0.5;
+  if($("#volume-daily-ma9")) $("#volume-daily-ma9").checked=Boolean(technical.volume_daily_above_ma9);
+  if($("#volume-monthly-ma9")) $("#volume-monthly-ma9").checked=Boolean(technical.volume_monthly_above_ma9);
+  if($("#below-graham")) $("#below-graham").checked=Boolean(configuration.valuation_flags?.below_graham);
+  if($("#below-barsi")) $("#below-barsi").checked=Boolean(configuration.valuation_flags?.below_barsi_6pct);
+  if($("#ibov-membership")) $("#ibov-membership").value=configuration.ibov_membership||"any";
+  if($("#company-sizes")) [...$("#company-sizes").options].forEach(option=>option.selected=(configuration.company_sizes||[]).includes(option.value));
+  state.analysisLimit=Number(configuration.limit||50);
+  if($("#analysis-limit")) $("#analysis-limit").value=String(state.analysisLimit);
+  if($("#analysis-limit-label")) $("#analysis-limit-label").textContent=state.analysisLimit;
+}
+
+function analysisRequestFromForm() {
+  const fundamental_filters={};
+  $$("[data-filter-field]").forEach(group=>{
+    const min=group.querySelector('[data-bound="min"]').value,max=group.querySelector('[data-bound="max"]').value;
+    if(min!==""||max!=="")fundamental_filters[group.dataset.filterField]={min:min===""?null:Number(min),max:max===""?null:Number(max)};
+  });
+  const score_filters={};
+  $$('[data-score-field]').forEach(group=>{
+    const min=group.querySelector('[data-bound="min"]').value,max=group.querySelector('[data-bound="max"]').value;
+    if(min!==""||max!=="")score_filters[group.dataset.scoreField]={min:min===""?null:Number(min),max:max===""?null:Number(max)};
+  });
+  const rsiGroup=$("[data-technical-field='rsi14']"),rsiMin=rsiGroup?.querySelector('[data-bound="min"]').value,rsiMax=rsiGroup?.querySelector('[data-bound="max"]').value;
+  const technical_filters={daily_trend:$("#trend-daily")?.value||"any",weekly_trend:$("#trend-weekly")?.value||"any",monthly_trend:$("#trend-monthly")?.value||"any",pivot_zone:$("#pivot-zone")?.value||"any",near_pivot_level:$("#near-pivot")?.value||"none",pivot_tolerance_pct:Number($("#pivot-tolerance")?.value||.5),volume_daily_above_ma9:Boolean($("#volume-daily-ma9")?.checked),volume_monthly_above_ma9:Boolean($("#volume-monthly-ma9")?.checked)};
+  if(rsiMin!==""||rsiMax!=="")technical_filters.rsi14={min:rsiMin===""?null:Number(rsiMin),max:rsiMax===""?null:Number(rsiMax)};
+  state.analysisLimit=Number($("#analysis-limit")?.value||50);
+  return {asset_type:["stock","fii"].includes(analysisType())?analysisType():"other_b3",fundamental_filters,score_filters,valuation_flags:{below_graham:Boolean($("#below-graham")?.checked),below_barsi_6pct:Boolean($("#below-barsi")?.checked)},technical_filters,trend_period:Number($("#trend-period")?.value||21),pivot_timeframe:$("#pivot-timeframe")?.value||"daily",include_technical_columns:true,limit:state.analysisLimit,company_sizes:$("#company-sizes")?[...$("#company-sizes").selectedOptions].map(option=>option.value):[],ibov_membership:$("#ibov-membership")?.value||"any"};
+}
+
+function renderCustomPresetButtons() {
+  const root=$("#custom-preset-buttons"); if(!root)return;
+  root.innerHTML=state.analysisCustom.map(item=>`<button class="preset-button" data-custom-filter-id="${esc(item.id)}">${esc(item.name)}</button>`).join("");
+  const access=state.session?.access||{},allowed=Number(access.custom_filter_limit||0)>0&&["stock","fii"].includes(analysisType());
+  $("#custom-filter-controls").classList.toggle("hidden",!allowed);
+  $("#custom-filter-usage").textContent=allowed?`${state.analysisCustomUsage.used} de ${state.analysisCustomUsage.limit} análise(s) personalizada(s) utilizada(s).`:"";
+  updateCustomFilterControls();
+}
+
+function updateCustomFilterControls() {
+  const current=state.currentCustomFilter;
+  if(!$("#save-custom-filter"))return;
+  $("#save-custom-filter").textContent=current?"Salvar alterações da análise personalizada":"Gravar análise personalizada";
+  $("#delete-custom-filter").classList.toggle("hidden",!current);
+  if(current&&$("#custom-filter-name"))$("#custom-filter-name").value=current.name||"";
+}
+
+async function loadAnalysisCatalog(type, force=false) {
+  if(!["stock","fii"].includes(type)) { state.analysisCustom=[]; renderCustomPresetButtons(); return; }
+  if(force||!state.analysisCatalog[type]){
+    const presetPayload=await api(`/screen/presets?asset_type=${type}`);
+    state.analysisCatalog[type]=Object.fromEntries((presetPayload.items||[]).map(item=>[item.id,item]));
+  }
+  if(Number(state.session?.access?.custom_filter_limit||0)>0&&(force||!state.analysisCustomCache[type])) {
+    try {
+      const custom=await api(`/screen/custom-filters?asset_type=${type}`);
+      state.analysisCustomCache[type]=custom.items||[];state.analysisCustomUsageCache[type]={used:custom.used||0,limit:custom.limit||0};
+    } catch(_){state.analysisCustomCache[type]=[];}
+  }
+  state.analysisCustom=state.analysisCustomCache[type]||[];
+  state.analysisCustomUsage=state.analysisCustomUsageCache[type]||{used:0,limit:Number(state.session?.access?.custom_filter_limit||0)};
+  renderCustomPresetButtons();
+}
+
+function markActiveAnalysis({presetId=null,custom=null}={}) {
+  state.currentCustomFilter=custom;
+  if(presetId)state.analysisPreset=presetId;
+  $$("#analysis-preset-row .preset-button").forEach(button=>button.classList.toggle("active",presetId?button.dataset.presetId===presetId:button.dataset.customFilterId===custom?.id));
+  const label=custom?.name||state.analysisCatalog[analysisType()]?.[presetId]?.name||"Ajustes livres";
+  $("#active-analysis-summary").textContent=`${label} • ${custom?"análise personalizada":"critérios originais do sistema"}`;
+  if($("#custom-filter-name"))$("#custom-filter-name").value=custom?.name||"";
+  updateCustomFilterControls();
+}
+
+async function selectSystemPreset(presetId) {
+  const item=state.analysisCatalog[analysisType()]?.[presetId]; if(!item)return;
+  fillAnalysisForm(item.configuration);markActiveAnalysis({presetId});await loadAnalysisResults();
+}
+
+async function selectCustomFilter(filterId) {
+  const item=state.analysisCustom.find(row=>row.id===filterId);if(!item)return;
+  fillAnalysisForm(normalizedConfiguration(item));markActiveAnalysis({custom:item});await applyAdvancedFilters(false);
+}
+
+async function saveCustomFilter() {
+  const current=state.currentCustomFilter,name=$("#custom-filter-name").value.trim();
+  if(!name){toast("Informe um nome para a análise personalizada.","error");$("#custom-filter-name").focus();return;}
+  const method=current?"PUT":"POST",path=current?`/screen/custom-filters/${current.id}`:"/screen/custom-filters";
+  const body=current?{name,filters:analysisRequestFromForm()}:{asset_type:analysisType(),name,filters:analysisRequestFromForm()};
+  try {const saved=await api(path,{method,body:JSON.stringify(body)});await loadAnalysisCatalog(analysisType(),true);state.currentCustomFilter=state.analysisCustom.find(item=>item.id===saved.id)||saved;markActiveAnalysis({custom:state.currentCustomFilter});toast(current?"Alterações salvas.":"Análise personalizada gravada.","success");}
+  catch(error){toast(error.message,"error");}
+}
+
+async function deleteCustomFilter() {
+  const current=state.currentCustomFilter;if(!current)return;
+  if(!confirm(`Excluir a análise personalizada "${current.name}"?`))return;
+  try {await api(`/screen/custom-filters/${current.id}`,{method:"DELETE"});state.currentCustomFilter=null;await loadAnalysisCatalog(analysisType(),true);await selectSystemPreset("default");toast("Análise excluída.","success");}
+  catch(error){toast(error.message,"error");}
+}
+
 async function loadAnalysis() {
+  if(state.tabs.analysisMode==="guide"){renderIndicatorGuide();return;}
+  $("#analysis-list-workspace").classList.remove("hidden");$("#analysis-guide").classList.add("hidden");
+  const type=analysisType();
+  try {
+    await loadAnalysisCatalog(type);
+    if(state.analysisLoadedType!==type){state.analysisLoadedType=type;state.currentCustomFilter=null;state.analysisPreset="default";if(["stock","fii"].includes(type))fillAnalysisForm(state.analysisCatalog[type]?.default?.configuration||{});else resetAdvancedFilters();markActiveAnalysis({presetId:"default"});}
+  } catch(error){toast(`Configuração dos filtros: ${error.message}`,"error");}
+  updateFilterAvailability();
+  await loadAnalysisResults();
+}
+
+async function loadAnalysisResults() {
   const root = $("#analysis-table");
   root.innerHTML = loadingCards(6);
   const type = analysisType();
   try {
-    let rows;
-    if (type === "stock") rows = await api(`/screen/db/stocks/${state.analysisPreset}?limit=${state.analysisLimit}`, {requestKey:"analysis"});
+    let rows, warnings=[];
+    if (state.currentCustomFilter && ["stock","fii"].includes(type)) {
+      const payload=await api(`/screen/db/custom/${state.currentCustomFilter.id}?limit=${state.analysisLimit}`,{requestKey:"analysis"});rows=payload.rows||payload;warnings=payload?.meta?.warnings||[];
+    } else if (type === "stock") rows = await api(`/screen/db/stocks/${state.analysisPreset}?limit=${state.analysisLimit}`, {requestKey:"analysis"});
     else if (type === "fii") rows = await api(`/screen/db/fiis/${state.analysisPreset}?limit=${state.analysisLimit}`, {requestKey:"analysis"});
     else {
       const all = await api("/screen/db/universe/other_b3?limit=1200", {requestKey:"analysis"});
@@ -422,6 +586,7 @@ async function loadAnalysis() {
     rows = await enrichBacktestLeaders(rows);
     state.analysisRows = rows;
     renderAnalysisRows(rows);
+    if(warnings.length)toast(warnings.join(" "),"warning");
   } catch (error) { if (error.name !== "AbortError") root.innerHTML = errorState(error, "analysis"); }
 }
 
@@ -444,11 +609,35 @@ function signalLabel(value) {
   return ({buy:"Comprar",sell:"Vender",neutral:"Neutro",compra:"Comprar",venda:"Vender"})[String(value||"").toLowerCase()]||"—";
 }
 
+function backtestLeadersCell(row) {
+  const leaders=(row.backtest_leaders||[]).slice(0,3);
+  if(!leaders.length)return '<span class="muted">Sem dados</span>';
+  return `<div class="backtest-leader-stack">${leaders.map((leader,index)=>`<div><span class="leader-rank">${index+1}</span><span><strong>${esc(leader.strategy_name||leader.strategy_id||"Estratégia")}</strong><small>${nullable(leader.ranking_score)?"":`Pontuação ${number(leader.ranking_score,1)}`}</small></span><span class="pill signal-${esc(leader.current_signal||"neutral")}">${signalLabel(leader.current_signal)}</span></div>`).join("")}</div>`;
+}
+
+function renderIndicatorGuide() {
+  $("#analysis-count").textContent="";
+  $("#analysis-list-workspace").classList.add("hidden");
+  const root=$("#analysis-guide");root.classList.remove("hidden");
+  const indicators=[...filterDefinitions.fundamental.map(([,label,description])=>({label,description})),
+    {label:"Preço justo de Graham",description:"Raiz quadrada de 22,5 × lucro por ação × valor patrimonial por ação. Exige lucro e patrimônio positivos."},
+    {label:"Preço-teto de dividendos (Barsi/Bazin)",description:"Dividendos anuais por ação divididos pela taxa-alvo de 6%. Serve como referência educacional de renda."},
+    {label:"RSI 14",description:"Compara ganhos e perdas em 14 pregões pelo suavizamento de Wilder; extremos merecem contexto, não são ordem automática."},
+    {label:"Tendências",description:"Alta quando o preço atual está acima da média simples de 20 ou 21 períodos. Semanas e meses em formação são excluídos."},
+    {label:"Pivô, suportes e resistências",description:"PP=(máxima+mínima+fechamento)/3. R1=2×PP−mínima; S1=2×PP−máxima; R2/S2 usam a amplitude; R3/S3 usam os extremos e o PP."},
+    {label:"Volume / média 9",description:"Compara o volume atual com a média simples dos nove períodos concluídos anteriores, separadamente no diário e no mensal."},
+  ];
+  const notes=filterDefinitions.scores.map(([,label,description])=>({label,description}));
+  root.innerHTML=`<div class="guide-intro data-card"><div class="card-section"><p class="eyebrow">Base de consulta</p><h2>Como interpretar filtros, indicadores e notas</h2><p>Os filtros reduzem o universo; eles não substituem a análise do investidor. Campos sem dado não passam por um critério ativo, evitando aprovação artificial.</p></div></div>
+    <div class="guide-grid">${sectionCard("Indicadores e filtros",`<div class="guide-list">${indicators.map(item=>`<details><summary>${esc(item.label)}</summary><p>${esc(item.description)}</p></details>`).join("")}</div>`,"Passe o mouse sobre o ? nos filtros para consultar estas definições")}${sectionCard("Notas de 0 a 100",`<div class="guide-list">${notes.map(item=>`<details><summary>${esc(item.label)}</summary><p>${esc(item.description)}</p></details>`).join("")}</div>`,"As notas usam somente componentes disponíveis e registram a cobertura dos dados")}</div>
+    ${sectionCard("Como a Nota ALB é formada",`<div class="score-profile-grid"><article><strong>Empresas em geral</strong><span>Qualidade 25% • Valor 25% • Crescimento 15% • Técnica 10% • Risco 15% • Liquidez 10%</span></article><article><strong>Bancos</strong><span>Qualidade 30% • Valor 25% • Crescimento 10% • Técnica 10% • Risco 15% • Liquidez 10%</span></article><article><strong>Seguradoras</strong><span>Qualidade 28% • Valor 24% • Crescimento 13% • Técnica 10% • Risco 15% • Liquidez 10%</span></article><article><strong>Utilities</strong><span>Qualidade 25% • Valor 25% • Crescimento 10% • Técnica 10% • Risco 20% • Liquidez 10%</span></article><article><strong>FIIs</strong><span>Qualidade 25% • Valor 30% • Técnica 10% • Risco 20% • Liquidez 15%</span></article></div><div class="notice info" style="margin-top:14px">Se uma parte estiver sem dados, os pesos disponíveis são normalizados. A qualidade dos dados informa a cobertura para que a nota nunca pareça mais precisa do que realmente é.</div>`)}`;
+}
+
 function analysisColumns(type) {
   const common=[
     {id:"ticker",label:"Ativo",always:true,render:r=>`<span class="ticker-cell">${esc(r.ticker)}</span><br><small>${esc(r.name||"")}</small>`},
     {id:"price",label:"Preço",render:r=>money(r.price)},
-    {id:"best_signal",label:"Melhor backtest",render:r=>r.backtest_leaders?.length?`<span class="pill signal-${esc(r.best_signal||"neutral")}">${signalLabel(r.best_signal)}</span><br><small>${esc(r.best_strategy||"")}</small>`:"—"},
+    {id:"best_signal",label:"3 melhores backtests",render:backtestLeadersCell},
   ];
   if(type==="stock") return [common[0],
     {id:"sector",label:"Setor",render:r=>esc(r.sector_label||r.classification||"—")},
@@ -487,31 +676,17 @@ function renderAnalysisRows(rows) {
   $("#analysis-table").innerHTML = `<div class="table-toolbar">${picker}<span>Clique em um ativo para abrir todos os dados.</span></div><div class="table-scroll"><table><thead><tr>${columns.map(c=>`<th>${esc(c.label)}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr data-ticker="${esc(r.ticker)}">${columns.map(c=>`<td>${c.render(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
-async function applyAdvancedFilters() {
-  const fundamental_filters = {};
-  $$("[data-filter-field]").forEach(group => {
-    const min=group.querySelector('[data-bound="min"]').value, max=group.querySelector('[data-bound="max"]').value;
-    if (min!=="" || max!=="") fundamental_filters[group.dataset.filterField] = {min:min===""?null:Number(min),max:max===""?null:Number(max)};
-  });
-  const score_filters={};
-  $$('[data-score-field]').forEach(group=>{
-    const min=group.querySelector('[data-bound="min"]').value,max=group.querySelector('[data-bound="max"]').value;
-    if(min!==""||max!=="")score_filters[group.dataset.scoreField]={min:min===""?null:Number(min),max:max===""?null:Number(max)};
-  });
-  const rsiGroup = $("[data-technical-field='rsi14']");
-  const rsiMin=rsiGroup?.querySelector('[data-bound="min"]').value, rsiMax=rsiGroup?.querySelector('[data-bound="max"]').value;
-  const technical_filters={daily_trend:$("#trend-daily").value,weekly_trend:$("#trend-weekly").value,monthly_trend:$("#trend-monthly").value,pivot_zone:$("#pivot-zone").value,near_pivot_level:$("#near-pivot").value,pivot_tolerance_pct:Number($("#pivot-tolerance").value||.5),volume_daily_above_ma9:$("#volume-daily-ma9").checked,volume_monthly_above_ma9:$("#volume-monthly-ma9").checked};
-  if (rsiMin!=="" || rsiMax!=="") technical_filters.rsi14={min:rsiMin===""?null:Number(rsiMin),max:rsiMax===""?null:Number(rsiMax)};
-  const asset_type = ["stock","fii"].includes(analysisType()) ? analysisType() : "other_b3";
-  state.analysisLimit=Number($("#analysis-limit").value||50);
-  const company_sizes=$("#company-sizes")?[...$("#company-sizes").selectedOptions].map(option=>option.value):[];
-  const ibov_membership=$("#ibov-membership")?.value||"any";
-  const valuation_flags={below_graham:Boolean($("#below-graham")?.checked),below_barsi_6pct:Boolean($("#below-barsi")?.checked)};
+async function applyAdvancedFilters(showToast=true) {
+  const request=analysisRequestFromForm();
+  if(!state.currentCustomFilter){const label=state.analysisCatalog[analysisType()]?.[state.analysisPreset]?.name||"Análise";$("#active-analysis-summary").textContent=`${label} • ajustes temporários`;}
   $("#analysis-table").innerHTML=loadingCards(6);
   try {
-    const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify({asset_type,fundamental_filters,score_filters,valuation_flags,technical_filters,trend_period:21,pivot_timeframe:$("#pivot-timeframe").value,include_technical_columns:true,limit:state.analysisLimit,company_sizes,ibov_membership})});
+    const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify(request)});
     const rows=await enrichBacktestLeaders(payload.rows||payload);
-    state.analysisRows=rows; renderAnalysisRows(rows); toast(`${rows.length} ativo(s) após os ajustes.`,"success");
+    state.analysisRows=rows; renderAnalysisRows(rows);
+    const warnings=payload?.meta?.warnings||[];
+    if(warnings.length) toast(warnings.join(" "),"warning");
+    else if(showToast) toast(`${rows.length} ativo(s) após os ajustes.`,"success");
   } catch(error) { if(error.name!=="AbortError") $("#analysis-table").innerHTML=errorState(error,"analysis"); }
 }
 
@@ -740,15 +915,15 @@ function bindEvents() {
     const comparisonRefresh=event.target.closest("[data-comparison-refresh]");if(comparisonRefresh){state.comparison=null;loadComparison(true);}
     const saveUser=event.target.closest("[data-save-user]");if(saveUser)saveUserAccess(saveUser.dataset.saveUser);
     const marketSync=event.target.closest("[data-market-sync]");if(marketSync)syncMarketCatalog(marketSync.dataset.marketSync,marketSync.dataset.technicals==="true");
+    const preset=event.target.closest("[data-preset-id]");if(preset)selectSystemPreset(preset.dataset.presetId);
+    const customPreset=event.target.closest("[data-custom-filter-id]");if(customPreset)selectCustomFilter(customPreset.dataset.customFilterId);
     if(!event.target.closest(".global-search-wrap"))$("#search-results").classList.add("hidden");
   });
   $("#close-asset-dialog").addEventListener("click",()=>$("#asset-dialog").close());
   $("#asset-dialog").addEventListener("click",event=>{if(event.target===$("#asset-dialog"))$("#asset-dialog").close();});
-  $$(".preset-button").forEach(button=>button.addEventListener("click",()=>{
-    const map={padrao:"default",cnpi:"cnpi",alb:"alb"}; if(!map[button.dataset.preset]){toast("Seus filtros personalizados ficam vinculados à sua conta.");return;}
-    state.analysisPreset=map[button.dataset.preset]; resetAdvancedFilters(); $$(".preset-button").forEach(b=>b.classList.toggle("active",b===button)); loadAnalysis();
-  }));
   $("#apply-advanced-filters").addEventListener("click",applyAdvancedFilters);
+  $("#save-custom-filter").addEventListener("click",saveCustomFilter);
+  $("#delete-custom-filter").addEventListener("click",deleteCustomFilter);
   document.addEventListener("change",event=>{
     if(event.target.id==="portfolio-selector"){state.portfolioId=event.target.value;renderPortfolioTab();}
     if(event.target.id==="analysis-limit"){state.analysisLimit=Number(event.target.value);$("#analysis-limit-label").textContent=state.analysisLimit;}

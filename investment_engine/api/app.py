@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from authlib.integrations.starlette_client import OAuth, OAuthError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
@@ -636,6 +636,19 @@ class AdvancedScreenRequest(BaseModel):
     company_sizes: list[str] = Field(default_factory=list, max_length=3)
     ibov_membership: Literal["any", "inside", "outside"] = "any"
 
+    @field_validator("company_sizes", mode="before")
+    @classmethod
+    def normalize_company_sizes(cls, value):
+        aliases = {"blue_chip": "large", "large_cap": "large", "mid_cap": "mid", "middle_cap": "mid", "small_cap": "small"}
+        normalized = []
+        for item in value or []:
+            key = aliases.get(str(item), str(item))
+            if key not in COMPANY_SIZE_LABELS:
+                raise ValueError("invalid_company_size")
+            if key not in normalized:
+                normalized.append(key)
+        return normalized
+
 
 class MarketSyncRequest(BaseModel):
     asset_type: Literal["stock", "fii", "other_b3"] = "stock"
@@ -961,8 +974,85 @@ def _saved_filter_dict(row):
 
 
 def _validated_saved_filters(asset_type: str, payload: dict) -> dict:
-    model = StockFilterSet if asset_type == "stock" else FiiFilterSet
-    return model(**(payload or {})).model_dump()
+    payload = payload or {}
+    if payload.get("schema_version") == 2:
+        raw_configuration = payload.get("configuration") or {}
+    elif any(key in payload for key in (
+        "fundamental_filters", "score_filters", "valuation_flags", "technical_filters",
+        "company_sizes", "ibov_membership", "pivot_timeframe", "trend_period",
+    )):
+        raw_configuration = payload
+    else:
+        model = StockFilterSet if asset_type == "stock" else FiiFilterSet
+        return model(**payload).model_dump()
+
+    configuration = dict(raw_configuration)
+    configuration["asset_type"] = asset_type
+    validated = AdvancedScreenRequest(**configuration)
+    return {
+        "schema_version": 2,
+        "configuration": validated.model_dump(mode="json"),
+    }
+
+
+def _preset_screen_configuration(asset_type: str, strategy) -> dict:
+    """Expose system criteria in the same shape used by the advanced screener UI."""
+    values = strategy.filters.model_dump()
+    fundamental_filters: dict[str, dict] = {}
+
+    def add_range(field: str, *, minimum=None, maximum=None):
+        if minimum is not None or maximum is not None:
+            fundamental_filters[field] = {"min": minimum, "max": maximum}
+
+    if asset_type == "stock":
+        add_range("roe_pct", minimum=values.get("roe_min"))
+        add_range("net_margin_pct", minimum=values.get("net_margin_min"))
+        add_range("ebit_margin_pct", minimum=values.get("ebit_margin_min"))
+        add_range("revenue_cagr_5y_pct", minimum=values.get("revenue_cagr_5y_min"))
+        add_range("pe", minimum=values.get("pe_min"), maximum=values.get("pe_max"))
+        add_range("pbv", maximum=values.get("pbv_max"))
+        add_range("dividend_yield_pct", minimum=values.get("dividend_yield_min"))
+        add_range("ev_ebitda", maximum=values.get("ev_ebitda_max"))
+        add_range("gross_debt_to_equity", maximum=values.get("gross_debt_to_equity_max"))
+        add_range("current_ratio", minimum=values.get("current_ratio_min"))
+        add_range("daily_liquidity", minimum=values.get("daily_liquidity_min"))
+        valuation_flags = {"below_graham": bool(values.get("require_below_graham"))}
+    else:
+        add_range("pbv", maximum=values.get("pbv_max"))
+        add_range("dividend_yield_pct", minimum=values.get("dividend_yield_min"))
+        add_range("ffo_yield_pct", minimum=values.get("ffo_yield_min"))
+        add_range("cap_rate_pct", minimum=values.get("cap_rate_min"))
+        add_range("vacancy_pct", maximum=values.get("vacancy_max"))
+        add_range("daily_liquidity", minimum=values.get("daily_liquidity_min"))
+        valuation_flags = {"below_barsi_6pct": bool(values.get("require_below_dividend_target"))}
+
+    return AdvancedScreenRequest(
+        asset_type=asset_type,
+        fundamental_filters=fundamental_filters,
+        valuation_flags=valuation_flags,
+        limit=50,
+    ).model_dump(mode="json")
+
+
+@app.get("/screen/presets")
+def screening_presets(
+    asset_type: Literal["stock", "fii"] = "stock",
+    _access=Depends(require_permission("can_view_market")),
+):
+    strategies = STOCK_STRATEGIES if asset_type == "stock" else FII_STRATEGIES
+    return {
+        "asset_type": asset_type,
+        "items": [
+            {
+                "id": strategy.id,
+                "name": strategy.name,
+                "system": True,
+                "configuration": _preset_screen_configuration(asset_type, strategy),
+                "weights": strategy.weights.model_dump() if asset_type == "stock" else None,
+            }
+            for strategy in strategies.values()
+        ],
+    }
 
 
 def _require_custom_filter_access(access: dict):
@@ -1528,11 +1618,16 @@ def screen_db_custom(
     row = SavedScreeningFilterRepository(db).get(filter_id, access["email"])
     if row is None:
         raise HTTPException(404, "custom_filter_not_found")
+    stored = row.filters_json or {}
+    if stored.get("schema_version") == 2:
+        configuration = dict(stored.get("configuration") or {})
+        configuration.update({"asset_type": row.asset_type, "limit": limit})
+        return screen_advanced(AdvancedScreenRequest(**configuration), _access=access, db=db)
     repo = AssetRepository(db)
     if row.asset_type == "stock":
-        filters = StockFilterSet(**(row.filters_json or {}))
+        filters = StockFilterSet(**stored)
         return _stock_screen_result(repo.screen_latest_stocks(filters, limit=limit, offset=offset))
-    filters = FiiFilterSet(**(row.filters_json or {}))
+    filters = FiiFilterSet(**stored)
     return _fii_screen_result(repo.screen_latest_fiis(filters, limit=limit, offset=offset))
 
 @app.post("/screen/advanced")
@@ -1541,17 +1636,31 @@ def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permissi
         fundamental_filters = {k: v.model_dump(exclude_none=True) for k, v in req.fundamental_filters.items()}
         score_filters = {k: v.model_dump(exclude_none=True) for k, v in req.score_filters.items()}
         ibov_tickers = None
+        effective_ibov_membership = req.ibov_membership
+        warnings = []
         if req.ibov_membership != "any":
-            portfolio = _index_portfolio("IBOV")
-            ibov_tickers = [item.get("ticker") for item in portfolio.get("members") or [] if item.get("ticker")]
+            try:
+                portfolio = _index_portfolio("IBOV")
+                ibov_tickers = [item.get("ticker") for item in portfolio.get("members") or [] if item.get("ticker")]
+                if not ibov_tickers:
+                    raise ValueError("empty_ibov_portfolio")
+            except Exception:
+                # A indisponibilidade momentânea da B3 não deve derrubar todo o
+                # screener. Os demais critérios continuam ativos e a resposta deixa
+                # explícito que o recorte do IBOV não foi aplicado.
+                effective_ibov_membership = "any"
+                warnings.append("O filtro de participação no IBOV não foi aplicado porque a B3 não respondeu.")
         result = advanced_screen(
             AssetRepository(db), asset_type=req.asset_type, fundamental_filters=fundamental_filters,
             score_filters=score_filters, valuation_flags=req.valuation_flags,
             technical_filters=req.technical_filters.model_dump(exclude_none=True), trend_period=req.trend_period,
             pivot_timeframe=req.pivot_timeframe, include_technical_columns=req.include_technical_columns, limit=req.limit,
             allowed_tickers=req.allowed_tickers,
-            company_sizes=req.company_sizes, ibov_membership=req.ibov_membership, ibov_tickers=ibov_tickers,
+            company_sizes=req.company_sizes, ibov_membership=effective_ibov_membership, ibov_tickers=ibov_tickers,
         )
+        result.setdefault("meta", {})["warnings"] = warnings
+        result["meta"]["requested_ibov_membership"] = req.ibov_membership
+        result["meta"]["effective_ibov_membership"] = effective_ibov_membership
         return result
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
