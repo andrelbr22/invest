@@ -11,7 +11,7 @@ const state = {
   comparison: null,
   comparisonLoading: false,
   comparisonYears: 5,
-  comparisonSelected: ["CDI","IBOV","IFIX","POUPANCA","USD_BRL","IPCA"],
+  comparisonSelected: ["CDI","IBOV","IFIX"],
   analysisRows: [],
   analysisPreset: "default",
   analysisCatalog: {},
@@ -207,7 +207,7 @@ function renderDashboardTab() {
     ]);
     root.innerHTML = `<div class="panel-grid">${sectionCard("Selic e projeções Focus", selicCards, "Taxas anuais")}${sectionCard("Renda fixa brasileira", fixed, "Somente rentabilidades anual e mensal")}${sectionCard("Treasuries dos EUA", yields, `Spread 10a − 2a: ${pct(rates.spread_10y_2y)}`, {url:rates.url,label:rates.source})}${sectionCard("Rentabilidade de T-Bonds", bonds, "ETFs usados como proxies líquidos")}</div><div class="notice info" style="margin-top:16px"><strong>Para que serve o spread?</strong> ${esc(rates.spread_explanation || "Compara juros longos e curtos e ajuda a interpretar a inclinação da curva americana.")}</div>`;
   } else if (tab === "global") {
-    root.innerHTML = `<div class="panel-grid">${sectionCard("Bolsas globais", marketTable(data.quoted?.global, marketColumns))}${sectionCard("Risco e dólar", marketTable(data.quoted?.risk, marketColumns))}${sectionCard("Commodities", marketTable(data.quoted?.commodities, marketColumns))}</div>`;
+    root.innerHTML = `<div class="global-market-layout"><div class="global-market-main">${sectionCard("Bolsas globais", marketTable(data.quoted?.global, marketColumns))}</div><div class="global-market-stack">${sectionCard("Risco e dólar", marketTable(data.quoted?.risk, marketColumns))}${sectionCard("Commodities", marketTable(data.quoted?.commodities, marketColumns))}</div></div>`;
   } else if (tab === "crypto") {
     const crypto = marketTable(data.crypto || [], [
       {label:"Ativo",render:r=>`<strong>${esc(r.label)}</strong>`}, {label:"Em dólar",render:r=>money(r.value_usd,"USD")},
@@ -250,7 +250,7 @@ function renderCurve(curve) {
   return sectionCard(curve.title || "Curva de juros brasileira", `${controls}<div class="chart">${svg}</div><div class="chart-legend"><span><i class="legend-dot" style="background:#0b5d4b"></i>${esc(legend)}</span>${usable.some(p=>!nullable(p.real_rate))?'<span><i class="legend-dot" style="background:#c79b3b"></i>Juro real IPCA</span>':""}<span>Referência: ${dateOnly(curve.as_of)}</span></div><div class="notice info">${esc(curve.methodology || "Os pontos são exibidos somente até o maior prazo publicado pela fonte.")}</div>`, "Escolha o horizonte da curva; nenhum vértice é extrapolado", {url:curve.url,label:curve.source});
 }
 
-const comparisonColors = ["#0b5d4b","#c79b3b","#2775b6","#8c5aa6","#d0614c","#3d9a78","#9b7d31","#5267a5","#c24f86","#69766f","#df8437","#3999a3","#7c655c"];
+const comparisonColors = ["#0b5d4b","#c79b3b","#2775b6","#8c5aa6","#d0614c","#3d9a78","#9b7d31","#5267a5","#c24f86","#69766f","#df8437","#3999a3","#7c655c","#22577a","#9a031e","#386641","#7b2cbf","#bc6c25","#0077b6","#6a994e","#ef476f","#118ab2","#8338ec","#fb8500","#495057","#2a9d8f"];
 
 function visibleComparisonSeries() {
   const cutoff = new Date();
@@ -269,7 +269,7 @@ function renderComparison() {
   const root=$("#dashboard-tab-content"), payload=state.comparison||{}, all=payload.series||[];
   if(!all.length){root.innerHTML=errorState("As séries históricas ainda estão sendo preparadas.");return;}
   const periods=[[.5,"6 meses"],[1,"1 ano"],[2,"2 anos"],[3,"3 anos"],[5,"5 anos"],[10,"10 anos"],[15,"15 anos"],[20,"20 anos"]];
-  const selectors=`<div class="comparison-controls"><div class="chart-periods">${periods.map(([years,label])=>`<button class="button ${state.comparisonYears===years?"primary":"secondary"}" data-comparison-years="${years}">${label}</button>`).join("")}<button class="button secondary" data-comparison-refresh="true">Atualizar séries</button></div><div class="series-picker">${all.map((item,index)=>`<label class="check"><input type="checkbox" data-comparison-series="${esc(item.code)}" ${state.comparisonSelected.includes(item.code)?"checked":""} ${item.points?.length?"":"disabled"}><i class="legend-dot" style="background:${comparisonColors[index%comparisonColors.length]}"></i>${esc(item.label)}${item.proxy?" (proxy)":""}</label>`).join("")}</div></div>`;
+  const selectors=`<div class="comparison-controls"><div class="chart-periods">${periods.map(([years,label])=>`<button class="button ${state.comparisonYears===years?"primary":"secondary"}" data-comparison-years="${years}">${label}</button>`).join("")}<button class="button secondary" data-comparison-refresh="true">Atualizar séries</button></div><div class="series-picker" role="group" aria-label="Indicadores para comparação">${all.map((item,index)=>`<label class="check" title="${esc(item.note||item.source||item.label)}"><input type="checkbox" data-comparison-series="${esc(item.code)}" ${state.comparisonSelected.includes(item.code)?"checked":""} ${item.points?.length?"":"disabled"}><i class="legend-dot" style="background:${comparisonColors[index%comparisonColors.length]}"></i><span>${esc(item.label)}${item.proxy?" <small>proxy</small>":""}</span></label>`).join("")}</div></div>`;
   const selected=visibleComparisonSeries().filter(item=>item.points.length);
   if(!selected.length){root.innerHTML=sectionCard("Comparador histórico",selectors+'<div class="empty-state"><strong>Selecione ao menos uma série disponível</strong>Os dados ausentes não impedem o uso das demais séries.</div>');return;}
   const width=1000,height=330,padX=48,padY=25;

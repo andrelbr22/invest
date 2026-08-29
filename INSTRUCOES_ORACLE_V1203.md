@@ -10,4 +10,13 @@
 8. Execute os testes versionados dentro do contêiner de staging.
 9. Somente após aprovação explícita execute `./deployment/promote-staging-to-production.sh`.
 
+## Validação adicional da R4
+
+1. Em Painel de Mercado > Mercados globais, confirme Bolsas globais à esquerda e os dois painéis menores empilhados à direita.
+2. Confirme o nome `Criptos e Câmbio`.
+3. No Comparador histórico, confira a ordem das 26 opções, a separação visual e somente CDI, Ibovespa e IFIX inicialmente marcados.
+4. Selecione índices de diferentes regiões, Prata, VIX e DXY e alterne os períodos do gráfico.
+5. Passe o cursor sobre IMA-B, IRF-M e MSCI Europe e confirme que os proxies estão identificados.
+6. Valide também em tela estreita antes de aprovar a produção.
+
 Esta revisão cria somente a tabela de controle das partes entregues. Ela não altera nem exclui resultados existentes. Não altere o banco de produção manualmente.

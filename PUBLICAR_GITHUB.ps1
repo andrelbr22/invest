@@ -126,7 +126,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Corrige entrega fracionada dos backtests na V1.20.3 R3 em teste"
+    & $gitPath commit -m "Aprimora Painel de Mercado e comparador na V1.20.3 R4 em teste"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
@@ -143,4 +143,4 @@ try {
 Write-Host ""
 Write-Host "PUBLICACAO CONCLUIDA." -ForegroundColor Green
 Write-Host "A versao foi enviada ao ambiente de teste. A producao depende de aprovacao manual."
-Write-Host "Depois da atualização automática, valide a V1.20.3 R3 no endereço /testefdi antes de promover."
+Write-Host "Depois da atualização automática, valide a V1.20.3 R4 no endereço /testefdi antes de promover."

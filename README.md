@@ -15,6 +15,7 @@ A V1.20.3 preserva todas as funções da V1.17.4, a base assíncrona da V1.20.0,
 - parâmetros, filtros, premissas e métricas dos estudos apresentados em português, sem JSON ou códigos internos na interface.
 - rodadas oficiais entregues em partes autenticadas e idempotentes, evitando o limite HTTP 413 sem perder curvas ou operações.
 - detalhes de falha, progresso por partes e repetição apenas dos ativos pendentes no painel do proprietário.
+- Mercados globais reorganizados e Comparador histórico com 26 séries em ordem estável, opções separadas e proxies claramente identificados.
 
 A fundação para atualizações sem bloquear o usuário continua disponível:
 

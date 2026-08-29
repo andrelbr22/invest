@@ -48,6 +48,61 @@ FEC_ELECTION_CALENDAR_URL = (
     "election-results-and-voting-information/"
 )
 
+# Keep this order in one authoritative place. The web interface renders the
+# series exactly as supplied by the service, so new indicators cannot silently
+# reorder the investor's comparison panel.
+HISTORICAL_COMPARISON_ORDER = [
+    "CDI", "IBOV", "IFIX", "SP500", "NYSE", "NASDAQ", "DOW_JONES",
+    "NIKKEI225", "SHANGHAI_SSE", "EURO_STOXX50", "STOXX_EUROPE600",
+    "MSCI_EUROPE", "USD_BRL", "IMAB", "IRFM", "POUPANCA", "OURO",
+    "PRATA", "IPCA", "INPC", "IGPM", "IGPDI", "INCC", "IPCFIPE",
+    "VIX", "DXY",
+]
+
+HISTORICAL_PRICE_SPECS = [
+    ("IBOV", "Ibovespa", ["^BVSP"], False, None),
+    ("IFIX", "IFIX", ["^IFIX", "IFIX.SA", "XFIX11"], False, None),
+    ("SP500", "S&P 500", ["^GSPC"], False, None),
+    ("NYSE", "NYSE", ["^NYA"], False, None),
+    ("NASDAQ", "NASDAQ", ["^IXIC"], False, None),
+    ("DOW_JONES", "Dow Jones", ["^DJI"], False, None),
+    ("NIKKEI225", "Nikkei 225", ["^N225"], False, None),
+    ("SHANGHAI_SSE", "Shanghai SSE", ["000001.SS"], False, None),
+    ("EURO_STOXX50", "Euro Stoxx 50", ["^STOXX50E"], False, None),
+    (
+        "STOXX_EUROPE600", "STOXX Europe 600", ["^STOXX", "EXSA.DE"],
+        False, "O ETF EXSA é usado somente quando o índice não responde.",
+    ),
+    (
+        "MSCI_EUROPE", "MSCI Europe", ["IEUR"], True,
+        "ETF IEUR usado como proxy transparente do MSCI Europe.",
+    ),
+    ("USD_BRL", "Dólar", ["BRL=X"], False, None),
+    (
+        "IMAB", "IMA-B", ["IMAB11"], True,
+        "ETF IMAB11 usado como proxy transparente do índice IMA-B.",
+    ),
+    (
+        "IRFM", "IRF-M", ["IRFM11"], True,
+        "ETF IRFM11 usado como proxy transparente do IRF-M P2.",
+    ),
+    ("OURO", "Ouro", ["GC=F"], False, None),
+    ("PRATA", "Prata", ["SI=F"], False, None),
+    ("VIX", "VIX", ["^VIX"], False, None),
+    ("DXY", "DXY", ["DX-Y.NYB"], False, None),
+]
+
+HISTORICAL_RATE_SPECS = [
+    ("CDI", "CDI", 12, False, "Banco Central • SGS 12"),
+    ("POUPANCA", "Poupança", 25, True, "Banco Central • SGS 25"),
+    ("IPCA", "IPCA", 433, False, "IBGE via Banco Central • SGS 433"),
+    ("INPC", "INPC", 188, False, "IBGE via Banco Central • SGS 188"),
+    ("IGPM", "IGP-M", 189, False, "FGV via Banco Central • SGS 189"),
+    ("IGPDI", "IGP-DI", 190, False, "FGV via Banco Central • SGS 190"),
+    ("INCC", "INCC", 192, False, "FGV via Banco Central • SGS 192"),
+    ("IPCFIPE", "IPC-Fipe", 193, False, "Fipe via Banco Central • SGS 193"),
+]
+
 
 def _plain(value: object) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
@@ -825,23 +880,8 @@ class MarketDashboardService:
         years = max(1, min(int(years), 20))
         end = self.now.date()
         start = end - timedelta(days=round(365.25 * years) + 40)
-        price_specs = [
-            ("IBOV", "Ibovespa", ["^BVSP"], False, None),
-            ("IFIX", "IFIX", ["^IFIX", "IFIX.SA", "XFIX11"], False, None),
-            ("USD_BRL", "Dólar / Real", ["BRL=X"], False, None),
-            ("SP500", "S&P 500", ["^GSPC"], False, None),
-            ("OURO", "Ouro", ["GC=F"], False, None),
-        ]
-        rate_specs = [
-            ("CDI", "CDI", 12, False, "Banco Central • SGS 12"),
-            ("POUPANCA", "Poupança", 25, True, "Banco Central • SGS 25"),
-            ("IPCA", "IPCA", 433, False, "IBGE via Banco Central • SGS 433"),
-            ("INPC", "INPC", 188, False, "IBGE via Banco Central • SGS 188"),
-            ("IGPM", "IGP-M", 189, False, "FGV via Banco Central • SGS 189"),
-            ("IGPDI", "IGP-DI", 190, False, "FGV via Banco Central • SGS 190"),
-            ("IPCFIPE", "IPC-Fipe", 193, False, "Fipe via Banco Central • SGS 193"),
-            ("INCC", "INCC", 192, False, "FGV via Banco Central • SGS 192"),
-        ]
+        price_specs = HISTORICAL_PRICE_SPECS
+        rate_specs = HISTORICAL_RATE_SPECS
 
         def price_history(spec):
             code, label, symbols, proxy, note = spec
@@ -855,7 +895,7 @@ class MarketDashboardService:
                     )
                     points = self._monthly_price_points(bars)
                     if len(points) >= 6:
-                        actual_proxy = proxy or symbol == "XFIX11"
+                        actual_proxy = proxy or symbol in {"XFIX11", "EXSA.DE"}
                         return {
                             "code": code, "label": label, "points": points,
                             "source": "Yahoo Finance", "url": f"https://finance.yahoo.com/quote/{YahooPriceProvider.symbol(symbol)}",
@@ -883,7 +923,7 @@ class MarketDashboardService:
             except Exception as exc:
                 return {"code": code, "label": label, "points": [], "source": source, "error": f"{type(exc).__name__}: {str(exc)[:100]}"}
 
-        order = [spec[0] for spec in price_specs + rate_specs]
+        order = HISTORICAL_COMPARISON_ORDER
         series = []
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = [executor.submit(price_history, spec) for spec in price_specs]

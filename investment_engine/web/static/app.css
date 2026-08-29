@@ -118,6 +118,11 @@ kbd { position: absolute; right: 13px; top: 11px; padding: 3px 7px; border: 1px 
 .tab-content { min-height: 280px; }
 .panel-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; }
 .panel-grid.three { grid-template-columns: repeat(3, minmax(0,1fr)); }
+.global-market-layout { display: grid; grid-template-columns: minmax(0,1.7fr) minmax(310px,1fr); gap: 16px; align-items: stretch; }
+.global-market-main, .global-market-main > .data-card { min-width: 0; height: 100%; }
+.global-market-stack { min-width: 0; display: grid; grid-template-rows: repeat(2,minmax(0,1fr)); gap: 16px; }
+.global-market-stack > .data-card { min-height: 0; }
+.global-market-stack .card-section { height: 100%; }
 .data-card { overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: white; box-shadow: 0 4px 18px rgba(23,57,46,.04); }
 .card-section { padding: 20px; }
 .card-section + .card-section { border-top: 1px solid var(--line); }
@@ -208,8 +213,15 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
 .comparison-controls { display: grid; gap: 13px; margin-bottom: 5px; }
 .comparison-controls .chart-periods { padding: 0; }
-.series-picker { display: flex; flex-wrap: wrap; gap: 8px 15px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 12px; background: #f7f9f8; }
-.series-picker .check { font-size: .76rem; }
+.series-picker { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #f7f9f8; }
+.series-picker .check { min-width: 0; min-height: 45px; padding: 10px 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: .76rem; transition: background .15s ease; }
+.series-picker .check:nth-child(4n) { border-right: 0; }
+.series-picker .check:hover { background: var(--brand-soft); }
+.series-picker .check:has(input:checked) { color: var(--brand-strong) !important; background: #edf7f3; font-weight: 750; }
+.series-picker .check span { min-width: 0; }
+.series-picker .check small { color: var(--muted); font-size: .64rem; font-weight: 650; }
+.series-picker input:disabled { cursor: not-allowed; }
+.series-picker .check:has(input:disabled) { cursor: not-allowed; opacity: .55; }
 .series-picker input:disabled + .legend-dot { opacity: .35; }
 .comparison-chart { min-width: 720px; }
 
@@ -287,6 +299,9 @@ body.staging-mode .login-view { padding-top: 60px; }
   .metric-grid, .loading-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .panel-grid.three { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .profile-copy, .ghost-button { display: none; }
+  .series-picker { grid-template-columns: repeat(3,minmax(0,1fr)); }
+  .series-picker .check:nth-child(4n) { border-right: 1px solid var(--line); }
+  .series-picker .check:nth-child(3n) { border-right: 0; }
 }
 
 @media (max-width: 760px) {
@@ -301,7 +316,11 @@ body.staging-mode .login-view { padding-top: 60px; }
   .main-content { padding: 22px 14px 48px; }
   .page-heading { display: block; }
   .heading-actions { margin-top: 13px; }
-  .metric-grid, .loading-grid, .panel-grid, .panel-grid.three, .filter-columns, .asset-detail-grid, .backtest-form, .guide-grid, .score-profile-grid, .custom-filter-controls, .study-configuration-grid { grid-template-columns: 1fr; }
+  .metric-grid, .loading-grid, .panel-grid, .panel-grid.three, .global-market-layout, .filter-columns, .asset-detail-grid, .backtest-form, .guide-grid, .score-profile-grid, .custom-filter-controls, .study-configuration-grid { grid-template-columns: 1fr; }
+  .global-market-stack { grid-template-rows: auto; }
+  .series-picker { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .series-picker .check:nth-child(3n) { border-right: 1px solid var(--line); }
+  .series-picker .check:nth-child(2n) { border-right: 0; }
   .study-configuration > summary { align-items: flex-start; flex-direction: column; }
   .custom-filter-controls small { grid-column: auto; }
   .filter-grid { grid-template-columns: 1fr 1fr; }
@@ -314,4 +333,6 @@ body.staging-mode .login-view { padding-top: 60px; }
   .headline { grid-template-columns: 35px 1fr; }
   .headline > small { display: none; }
   .detail-list, .column-picker[open] > div { grid-template-columns: 1fr; }
+  .series-picker { grid-template-columns: 1fr; }
+  .series-picker .check:nth-child(n) { border-right: 0; }
 }
