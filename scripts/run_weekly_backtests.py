@@ -114,8 +114,10 @@ def main():
                 result = callback.deliver_asset(remote_job_id, payload)
                 imported = result.get("imported_runs", 0)
                 skipped = result.get("skipped_runs", 0)
+                chunks = result.get("chunks_sent", 1)
                 print(
                     f"{payload['ticker']}: entregue com segurança "
+                    f"em {chunks} pacote(s) "
                     f"({imported} novo(s), {skipped} já existente(s))."
                 )
 
@@ -133,7 +135,10 @@ def main():
                     remote_job_id,
                     code="github_worker_failed",
                     message="A execução no GitHub foi interrompida antes da conclusão.",
-                    details={"exception_type": type(exc).__name__},
+                    details={
+                        "exception_type": type(exc).__name__,
+                        "safe_message": str(exc)[:240],
+                    },
                 )
             except Exception:
                 pass

@@ -26,6 +26,7 @@ const state = {
   visibleColumns: JSON.parse(localStorage.getItem("fdi-visible-columns") || "{}"),
   portfolios: [],
   portfolioId: null,
+  officialBacktestJobs: new Map(),
   requestControllers: new Map(),
 };
 
@@ -849,6 +850,53 @@ async function openStudyStrategy(strategyId) {
   } catch(error) {content.innerHTML=errorState(error);}
 }
 
+const officialStatusLabels = {
+  queued:"Na fila", running:"Executando", completed:"Concluído",
+  completed_with_errors:"Concluído com avisos", failed:"Falhou", cancelled:"Cancelado",
+};
+
+function officialErrorText(item) {
+  const code=String(item?.code||"");
+  const labels={
+    github_worker_failed:"A execução no GitHub foi interrompida antes da conclusão.",
+    github_dispatch_failed:"Não foi possível iniciar a nova execução no GitHub.",
+    cancelled_by_owner:"A rodada foi cancelada pelo administrador.",
+  };
+  const safe=String(item?.details?.safe_message||"");
+  if(safe.includes("HTTP 413")) return "O pacote de resultados ultrapassou o limite de envio. Esta versão passa a entregá-lo em partes menores e repetíveis com segurança.";
+  return labels[code]||String(item?.message||item?.error||"Falha não detalhada.");
+}
+
+function openOfficialBacktestJob(jobId) {
+  const job=state.officialBacktestJobs.get(String(jobId));
+  if(!job)return;
+  const content=$("#asset-dialog-content"),dialog=$("#asset-dialog");
+  const total=Number(job.total_assets||(job.tickers||[]).length||0);
+  const processed=Number(job.processed_assets||0);
+  const errors=job.errors||[];
+  const canRetry=Boolean(state.session?.access?.is_owner&&(job.retry_tickers||[]).length&&["failed","cancelled","completed_with_errors"].includes(job.status));
+  content.innerHTML=`<div class="asset-dialog-header"><p class="eyebrow">Rodada oficial</p><h2 class="asset-title">${esc(officialStatusLabels[job.status]||job.status||"—")}</h2><p class="asset-subtitle">${esc(job.id)}</p></div>
+    <div class="metric-grid">${metricCard("Ativos concluídos",`${processed} / ${total}`)}${metricCard("Partes recebidas",number(job.received_chunks||0,0))}${metricCard("Execuções concluídas",number(job.completed_runs||0,0))}${metricCard("Execuções com falha",number(job.failed_runs||0,0))}</div>
+    ${sectionCard("Andamento",`<p><strong>Início:</strong> ${dateTime(job.started_at||job.created_at)}</p><p><strong>Última atualização:</strong> ${dateTime(job.last_update_at||job.finished_at)}</p><p><strong>Último ativo recebido:</strong> ${esc(job.last_ticker||job.last_chunk_ticker||"—")}${job.last_chunk_count?` • parte ${number(job.last_chunk_index,0)} de ${number(job.last_chunk_count,0)}`:""}</p>`)}
+    ${(job.pending_tickers||[]).length?sectionCard("Ativos pendentes",`<p>${esc(job.pending_tickers.join(", "))}</p>`):""}
+    ${errors.length?sectionCard("Motivo e orientação",`<div class="notice danger">${errors.map(item=>`<p>${esc(officialErrorText(item))}</p>`).join("")}</div>`):""}
+    <div class="dialog-actions">${canRetry?`<button class="button primary" data-retry-official-job="${esc(job.id)}">Repetir somente os ativos pendentes</button>`:""}<a class="button secondary" href="https://github.com/andrelbr22/invest/actions/workflows/backtests-semanais.yml" target="_blank" rel="noopener">Ver execuções no GitHub</a></div>`;
+  dialog.showModal();
+}
+
+async function retryOfficialBacktestJob(jobId, button) {
+  if(button){button.disabled=true;button.textContent="Solicitando nova execução…";}
+  try {
+    const result=await api(`/backtests/batch/jobs/${encodeURIComponent(jobId)}/retry`,{method:"POST",body:"{}"});
+    $("#asset-dialog").close();
+    toast(`${(result.retry_tickers||result.tickers||[]).length} ativo(s) enviado(s) para nova execução no ambiente de teste.`,"success");
+    await loadBacktests();
+  } catch(error) {
+    toast(error.message,"error");
+    if(button){button.disabled=false;button.textContent="Repetir somente os ativos pendentes";}
+  }
+}
+
 async function loadBacktests() {
   const root=$("#backtests-tab-content"),tab=state.tabs.backtests; root.innerHTML=loadingCards(6);
   try {
@@ -861,7 +909,8 @@ async function loadBacktests() {
       root.innerHTML=sectionCard("Estratégias mais consistentes",marketTable(rows,[{label:"Posição",render:(r)=>`<strong>${esc(r.position||r.rank||"—")}</strong>`},{label:"Estratégia",render:r=>`<button class="table-link" data-study-strategy="${esc(r.strategy_id)}">${esc(r.strategy_name||r.name||r.strategy_id)}</button><small class="block-hint">Abrir configurações</small>`},{label:"Pontuação",render:r=>number(r.study_score??r.score??r.points,1)},{label:"Presença no top 3",render:r=>number(r.top_three_count??r.top3_count,0)},{label:"1º lugares",render:r=>number(r.first_places,0)},{label:"Cobertura",render:r=>pct(r.coverage_pct)}]),"Ranking ponderado por recorrência no top 3, posição, qualidade e cobertura. Clique na estratégia para ver todas as variáveis.");
     } else if(tab==="official") {
       const rows=await api("/backtests/batch/jobs?limit=30");
-      root.innerHTML=sectionCard("Rodadas oficiais",marketTable(rows,[{label:"Criado em",render:r=>dateTime(r.created_at)},{label:"Identificador",render:r=>esc(r.id)},{label:"Ativos",render:r=>number((r.requested_tickers||r.tickers||[]).length,0)},{label:"Progresso",render:r=>`${number(r.completed_assets||0,0)} / ${number(r.total_assets||(r.requested_tickers||[]).length,0)}`},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":""}">${esc(r.status)}</span>`}]));
+      state.officialBacktestJobs=new Map(rows.map(row=>[String(row.id),row]));
+      root.innerHTML=sectionCard("Rodadas oficiais",marketTable(rows,[{label:"Criado em",render:r=>dateTime(r.created_at)},{label:"Identificador",render:r=>`<button class="table-link" data-official-job="${esc(r.id)}">${esc(String(r.id).slice(0,8))}…</button>`},{label:"Ativos",render:r=>number((r.requested_tickers||r.tickers||[]).length,0)},{label:"Progresso",render:r=>`${number(r.processed_assets||0,0)} / ${number(r.total_assets||(r.requested_tickers||r.tickers||[]).length,0)}`},{label:"Partes",render:r=>number(r.received_chunks||0,0)},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":""}">${esc(officialStatusLabels[r.status]||r.status)}</span>`},{label:"",render:r=>`<button class="button ghost compact" data-official-job="${esc(r.id)}">Detalhes</button>`}]),"A entrega de cada ativo é fracionada em partes pequenas. Uma interrupção pode ser retomada sem duplicar resultados.");
     } else {
       const catalog=await api("/backtests/strategies");
       const access=state.session.access;
@@ -1004,6 +1053,8 @@ function bindEvents() {
     const preset=event.target.closest("[data-preset-id]");if(preset)selectSystemPreset(preset.dataset.presetId);
     const customPreset=event.target.closest("[data-custom-filter-id]");if(customPreset)selectCustomFilter(customPreset.dataset.customFilterId);
     const studyStrategy=event.target.closest("[data-study-strategy]");if(studyStrategy)openStudyStrategy(studyStrategy.dataset.studyStrategy);
+    const officialJob=event.target.closest("[data-official-job]");if(officialJob)openOfficialBacktestJob(officialJob.dataset.officialJob);
+    const retryOfficial=event.target.closest("[data-retry-official-job]");if(retryOfficial)retryOfficialBacktestJob(retryOfficial.dataset.retryOfficialJob,retryOfficial);
     if(!event.target.closest(".global-search-wrap"))$("#search-results").classList.add("hidden");
   });
   $("#close-asset-dialog").addEventListener("click",()=>$("#asset-dialog").close());

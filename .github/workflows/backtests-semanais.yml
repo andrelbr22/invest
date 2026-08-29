@@ -19,6 +19,14 @@ on:
         description: "Identificador do pedido registrado no painel"
         required: false
         default: ""
+      environment:
+        description: "Ambiente que receberá os resultados"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
 
 concurrency:
   group: backtests-oficiais
@@ -45,7 +53,9 @@ jobs:
     env:
       # Banco descartável, acessível apenas durante esta execução no GitHub.
       DATABASE_URL: postgresql+psycopg://backtests_ci:temporary-ci-password@127.0.0.1:5432/backtests_ci
-      BACKTEST_CALLBACK_URL: https://formacaodoinvestidor.com.br
+      # As execuções agendadas continuam entregando na produção. Uma
+      # execução manual iniciada no ambiente de teste volta para /testefdi.
+      BACKTEST_CALLBACK_URL: ${{ github.event_name == 'schedule' && 'https://formacaodoinvestidor.com.br' || (inputs.environment == 'staging' && 'https://formacaodoinvestidor.com.br/testefdi' || 'https://formacaodoinvestidor.com.br') }}
       BACKTEST_CALLBACK_TOKEN: ${{ secrets.BACKTEST_CALLBACK_TOKEN }}
       APP_AUTH_REQUIRED: "false"
     steps:

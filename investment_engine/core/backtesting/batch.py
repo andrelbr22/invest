@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from uuid import UUID
 
 from sqlalchemy import select
@@ -15,7 +16,7 @@ from .strategies import STRATEGIES, warmup_bars
 from ..repositories.backtests import BacktestRepository
 from ..repositories.assets import AssetRepository
 from ..strategies.presets import STOCK_STRATEGIES
-from ...infrastructure.db.models import BacktestBatchDeliveryORM, BacktestBatchJobORM
+from ...infrastructure.db.models import BacktestBatchChunkORM, BacktestBatchDeliveryORM, BacktestBatchJobORM
 from ...core.instruments import is_supported_ticker
 
 
@@ -124,6 +125,17 @@ class BacktestBatchService:
             .order_by(BacktestBatchDeliveryORM.received_at, BacktestBatchDeliveryORM.ticker)
         ))
 
+    def delivery_chunks(self, job_id, ticker: str | None = None) -> list[BacktestBatchChunkORM]:
+        stmt = select(BacktestBatchChunkORM).where(BacktestBatchChunkORM.batch_job_id == job_id)
+        if ticker:
+            stmt = stmt.where(BacktestBatchChunkORM.ticker == str(ticker).strip().upper())
+        ordering = (
+            (BacktestBatchChunkORM.chunk_index,)
+            if ticker else
+            (BacktestBatchChunkORM.received_at, BacktestBatchChunkORM.ticker, BacktestBatchChunkORM.chunk_index)
+        )
+        return list(self.session.scalars(stmt.order_by(*ordering)))
+
     def start_existing_job(self, job) -> dict:
         if job.status == "failed":
             raise ValueError("batch_job_failed")
@@ -208,7 +220,8 @@ class BacktestBatchService:
     def receive_asset_delivery(
         self, job, *, ticker: str, checksum: str, completed_runs: int,
         failed_runs: int, results: list[dict], errors: list[dict],
-    ) -> tuple[BacktestBatchDeliveryORM, bool]:
+        chunk_index: int = 1, chunk_count: int = 1,
+    ) -> tuple[dict, bool]:
         clean_ticker = str(ticker).strip().upper()
         if clean_ticker not in set(job.requested_tickers_json or []):
             raise ValueError("batch_delivery_ticker_not_requested")
@@ -217,22 +230,53 @@ class BacktestBatchService:
             raise ValueError("batch_delivery_incomplete_asset")
         if len(results) > completed_runs:
             raise ValueError("batch_delivery_result_count_invalid")
-        existing = self.session.scalar(
+        part = int(chunk_index)
+        parts = int(chunk_count)
+        if parts < 1 or parts > 200 or part < 1 or part > parts:
+            raise ValueError("batch_delivery_chunk_position_invalid")
+        existing_delivery = self.session.scalar(
             select(BacktestBatchDeliveryORM).where(
                 BacktestBatchDeliveryORM.batch_job_id == job.id,
                 BacktestBatchDeliveryORM.ticker == clean_ticker,
             )
         )
-        if existing is not None:
-            if existing.checksum != checksum:
+        existing_chunk = self.session.scalar(
+            select(BacktestBatchChunkORM).where(
+                BacktestBatchChunkORM.batch_job_id == job.id,
+                BacktestBatchChunkORM.ticker == clean_ticker,
+                BacktestBatchChunkORM.chunk_index == part,
+            )
+        )
+        if existing_chunk is not None:
+            if existing_chunk.checksum != checksum:
                 raise ValueError("batch_delivery_checksum_conflict")
-            return existing, False
+            return {
+                "ticker": clean_ticker,
+                "chunk_index": part,
+                "chunk_count": parts,
+                "chunk_imported_runs": existing_chunk.imported_runs,
+                "chunk_skipped_runs": existing_chunk.skipped_runs,
+                "imported_runs": existing_delivery.imported_runs if existing_delivery else existing_chunk.imported_runs,
+                "skipped_runs": existing_delivery.skipped_runs if existing_delivery else existing_chunk.skipped_runs,
+                "asset_complete": existing_delivery is not None,
+            }, False
+        if existing_delivery is not None:
+            raise ValueError("batch_job_already_completed")
         if job.status == "failed":
             raise ValueError("batch_job_failed")
         if job.status == "cancelled":
             raise ValueError("batch_job_cancelled")
         if job.status in {"completed", "completed_with_errors"}:
             raise ValueError("batch_job_already_completed")
+
+        previous_chunks = self.delivery_chunks(job.id, clean_ticker)
+        if any(
+            item.chunk_count != parts
+            or item.completed_runs != completed_runs
+            or item.failed_runs != failed_runs
+            for item in previous_chunks
+        ):
+            raise ValueError("batch_delivery_chunk_manifest_conflict")
 
         imported = skipped = 0
         for package in results:
@@ -245,25 +289,16 @@ class BacktestBatchService:
                 imported += 1
             else:
                 skipped += 1
-        delivery = BacktestBatchDeliveryORM(
-            batch_job_id=job.id,
-            ticker=clean_ticker,
-            checksum=checksum,
-            status="received_with_errors" if failed_runs else "received",
-            completed_runs=completed_runs,
-            failed_runs=failed_runs,
-            imported_runs=imported,
-            skipped_runs=skipped,
-            received_at=datetime.now(timezone.utc),
+        chunk = BacktestBatchChunkORM(
+            batch_job_id=job.id, ticker=clean_ticker,
+            chunk_index=part, chunk_count=parts, checksum=checksum,
+            completed_runs=completed_runs, failed_runs=failed_runs,
+            result_count=len(results), imported_runs=imported, skipped_runs=skipped,
         )
-        self.session.add(delivery)
+        self.session.add(chunk)
         self.session.flush()
-        all_deliveries = self.deliveries(job.id)
         job.status = "running"
         job.started_at = job.started_at or datetime.now(timezone.utc)
-        job.total_runs = expected_runs * len(job.requested_tickers_json or [])
-        job.completed_runs = sum(item.completed_runs for item in all_deliveries)
-        job.failed_runs = sum(item.failed_runs for item in all_deliveries)
         if errors:
             safe_errors = [{
                 "ticker": clean_ticker,
@@ -271,11 +306,43 @@ class BacktestBatchService:
                 "error": str(item.get("error") or item.get("message") or "Falha no backtest")[:500],
             } for item in errors[:200]]
             job.error_json = [*(job.error_json or []), *safe_errors][-200:]
+
+        asset_chunks = self.delivery_chunks(job.id, clean_ticker)
+        positions = {item.chunk_index for item in asset_chunks}
+        asset_complete = positions == set(range(1, parts + 1))
+        delivery = None
+        if asset_complete:
+            manifest = "|".join(item.checksum for item in asset_chunks)
+            delivery = BacktestBatchDeliveryORM(
+                batch_job_id=job.id, ticker=clean_ticker,
+                checksum=sha256(manifest.encode("ascii")).hexdigest(),
+                status="received_with_errors" if failed_runs else "received",
+                completed_runs=completed_runs, failed_runs=failed_runs,
+                imported_runs=sum(item.imported_runs for item in asset_chunks),
+                skipped_runs=sum(item.skipped_runs for item in asset_chunks),
+                received_at=datetime.now(timezone.utc),
+            )
+            self.session.add(delivery)
+            self.session.flush()
+
+        all_deliveries = self.deliveries(job.id)
+        job.total_runs = expected_runs * len(job.requested_tickers_json or [])
+        job.completed_runs = sum(item.completed_runs for item in all_deliveries)
+        job.failed_runs = sum(item.failed_runs for item in all_deliveries)
         if len(all_deliveries) == len(job.requested_tickers_json or []):
             job.status = "completed_with_errors" if job.failed_runs else "completed"
             job.finished_at = datetime.now(timezone.utc)
         self.session.flush()
-        return delivery, True
+        return {
+            "ticker": clean_ticker,
+            "chunk_index": part,
+            "chunk_count": parts,
+            "chunk_imported_runs": imported,
+            "chunk_skipped_runs": skipped,
+            "imported_runs": delivery.imported_runs if delivery else sum(item.imported_runs for item in asset_chunks),
+            "skipped_runs": delivery.skipped_runs if delivery else sum(item.skipped_runs for item in asset_chunks),
+            "asset_complete": delivery is not None,
+        }, True
 
     def finalize_job(self, job):
         if job.status == "failed":
@@ -415,6 +482,7 @@ class BacktestBatchService:
 
     def job_dict(self, job) -> dict:
         deliveries = self.deliveries(job.id)
+        chunks = self.delivery_chunks(job.id)
         processed = len(deliveries)
         total_assets = len(job.requested_tickers_json or [])
         delivered_tickers = [item.ticker for item in deliveries]
@@ -436,6 +504,10 @@ class BacktestBatchService:
             "delivered_tickers": delivered_tickers, "pending_tickers": pending_tickers,
             "failed_tickers": failed_tickers, "retry_tickers": retry_tickers,
             "last_ticker": last_delivery.ticker if last_delivery else None,
+            "received_chunks": len(chunks),
+            "last_chunk_ticker": chunks[-1].ticker if chunks else None,
+            "last_chunk_index": chunks[-1].chunk_index if chunks else None,
+            "last_chunk_count": chunks[-1].chunk_count if chunks else None,
             "last_update_at": last_delivery.received_at if last_delivery else job.started_at,
             "started_at": job.started_at, "finished_at": job.finished_at, "created_at": job.created_at,
         }

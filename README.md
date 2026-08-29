@@ -13,6 +13,8 @@ A V1.20.3 preserva todas as funções da V1.17.4, a base assíncrona da V1.20.0,
 - continuidade do painel quando a consulta externa da composição do IBOV estiver temporariamente indisponível.
 - estudo de backtests com consulta enxuta e configurações inspecionáveis, sem carregar curvas completas desnecessariamente.
 - parâmetros, filtros, premissas e métricas dos estudos apresentados em português, sem JSON ou códigos internos na interface.
+- rodadas oficiais entregues em partes autenticadas e idempotentes, evitando o limite HTTP 413 sem perder curvas ou operações.
+- detalhes de falha, progresso por partes e repetição apenas dos ativos pendentes no painel do proprietário.
 
 A fundação para atualizações sem bloquear o usuário continua disponível:
 

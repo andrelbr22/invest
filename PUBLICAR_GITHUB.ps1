@@ -44,7 +44,7 @@ if ($forbiddenDirectories) {
 $sensitiveFiles = Get-ChildItem -LiteralPath $sourceRoot -File -Recurse -Force |
     Where-Object {
         ($_.Name -in @(".env", ".env.production", "secrets.toml")) -or
-        ($_.Extension -in @(".key", ".pem", ".pfx", ".p12"))
+        ($_.Extension -in @(".key", ".pem", ".pfx", ".p12", ".db", ".sqlite", ".sqlite3"))
     }
 if ($sensitiveFiles) {
     Stop-Publication "foi encontrado um arquivo de senha ou chave. Nenhum arquivo foi enviado."
@@ -126,7 +126,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Traduz configuracoes dos Estudos na V1.20.3 R2 em teste"
+    & $gitPath commit -m "Corrige entrega fracionada dos backtests na V1.20.3 R3 em teste"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
@@ -143,4 +143,4 @@ try {
 Write-Host ""
 Write-Host "PUBLICACAO CONCLUIDA." -ForegroundColor Green
 Write-Host "A versao foi enviada ao ambiente de teste. A producao depende de aprovacao manual."
-Write-Host "Depois da atualização automática, valide a V1.20.3 R2 no endereço /testefdi antes de promover."
+Write-Host "Depois da atualização automática, valide a V1.20.3 R3 no endereço /testefdi antes de promover."

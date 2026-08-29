@@ -9,6 +9,8 @@ import requests
 
 
 CALLBACK_API_VERSION = "1"
+MAX_DELIVERY_CHUNK_BYTES = 4_000_000
+MAX_DELIVERY_CHUNK_RESULTS = 8
 
 
 class BacktestDeliveryError(RuntimeError):
@@ -60,6 +62,7 @@ class BacktestDeliveryClient:
     def _post(self, path: str, payload: dict) -> dict:
         url = f"{self.base_url}{path}"
         last_status = None
+        last_exception = None
         for attempt in range(1, self.attempts + 1):
             try:
                 response = self.http.post(
@@ -74,11 +77,11 @@ class BacktestDeliveryClient:
                     return data if isinstance(data, dict) else {}
                 if response.status_code not in {408, 425, 429, 500, 502, 503, 504}:
                     break
-            except requests.RequestException:
-                pass
+            except requests.RequestException as exc:
+                last_exception = type(exc).__name__
             if attempt < self.attempts:
                 time.sleep(min(2 ** (attempt - 1), 8))
-        status_note = f" (HTTP {last_status})" if last_status else ""
+        status_note = f" (HTTP {last_status})" if last_status else (f" ({last_exception})" if last_exception else "")
         raise BacktestDeliveryError(f"A Oracle não confirmou a entrega dos resultados{status_note}.")
 
     def start_job(
@@ -93,9 +96,53 @@ class BacktestDeliveryClient:
         })
 
     def deliver_asset(self, job_id: str, payload: dict) -> dict:
-        body = dict(payload)
-        body["checksum"] = delivery_checksum(payload)
-        return self._post(f"/automation/backtests/jobs/{job_id}/assets", body)
+        """Deliver one asset in small, independently retryable requests.
+
+        A complete official asset can contain hundreds of strategies, curves
+        and trades. Sending it as one JSON document exceeded the reverse
+        proxy limit. Each part is signed separately and the Oracle only marks
+        the asset complete after every part has arrived.
+        """
+        source = dict(payload)
+        results = list(source.pop("results", []) or [])
+        errors = list(source.pop("errors", []) or [])
+        for transient in ("checksum", "chunk_index", "chunk_count"):
+            source.pop(transient, None)
+
+        groups: list[list[dict]] = []
+        current: list[dict] = []
+        current_size = 0
+        for result in results:
+            result_size = len(json.dumps(
+                result, ensure_ascii=True, separators=(",", ":"),
+            ).encode("utf-8"))
+            if current and (
+                len(current) >= MAX_DELIVERY_CHUNK_RESULTS
+                or current_size + result_size > MAX_DELIVERY_CHUNK_BYTES
+            ):
+                groups.append(current)
+                current = []
+                current_size = 0
+            current.append(result)
+            current_size += result_size
+        if current or not groups:
+            groups.append(current)
+
+        chunk_count = len(groups)
+        last_response: dict = {}
+        for index, group in enumerate(groups, start=1):
+            part = {
+                **source,
+                "chunk_index": index,
+                "chunk_count": chunk_count,
+                "results": group,
+                "errors": errors if index == chunk_count else [],
+            }
+            body = {**part, "checksum": delivery_checksum(part)}
+            last_response = self._post(
+                f"/automation/backtests/jobs/{job_id}/assets", body,
+            )
+        return {**last_response, "chunks_sent": chunk_count}
 
     def finish_job(self, job_id: str) -> dict:
         return self._post(f"/automation/backtests/jobs/{job_id}/complete", {})

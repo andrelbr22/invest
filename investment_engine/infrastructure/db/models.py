@@ -485,6 +485,31 @@ class BacktestBatchDeliveryORM(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class BacktestBatchChunkORM(Base):
+    """One authenticated, retry-safe portion of an official asset delivery."""
+
+    __tablename__ = "backtest_batch_chunks"
+    __table_args__ = (
+        UniqueConstraint("batch_job_id", "ticker", "chunk_index", name="uq_backtest_batch_chunk_position"),
+        Index("ix_backtest_batch_chunks_job_asset", "batch_job_id", "ticker", "chunk_index"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    batch_job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(
+        "backtest_batch_jobs.id", name="fk_backtest_batch_chunks_job", ondelete="CASCADE"
+    ), nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    completed_runs: Mapped[int] = mapped_column(Integer, nullable=False)
+    failed_runs: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    imported_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class BacktestTradeORM(Base):
     __tablename__ = "backtest_trades"
     __table_args__ = (UniqueConstraint("run_id", "sequence", name="uq_backtest_run_sequence"),)

@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     # list when APP_OWNER_EMAILS has not been configured yet.
     app_allowed_emails: str = ""
     backtest_callback_token: str = ""
+    github_actions_token: str = ""
+    github_actions_repository: str = "andrelbr22/invest"
+    github_actions_workflow: str = "backtests-semanais.yml"
+    github_actions_ref: str = "main"
     alert_monitor_enabled: bool = False
     alert_monitor_poll_seconds: int = 60
     smtp_host: str = ""

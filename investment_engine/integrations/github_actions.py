@@ -59,6 +59,7 @@ def dispatch_official_backtests(
     ref: str = DEFAULT_REF,
     max_combinations: int = 200,
     job_id: str | None = None,
+    environment: str = "production",
     http=requests,
 ) -> dict:
     """Solicita o lote oficial sem expor a credencial ao navegador."""
@@ -71,10 +72,14 @@ def dispatch_official_backtests(
         raise GitHubActionsError("Workflow ou branch do GitHub não foi configurado.")
     clean_tickers = normalize_tickers(tickers)
     combinations = max(1, min(int(max_combinations), 200))
+    clean_environment = str(environment or "production").strip().lower()
+    if clean_environment not in {"production", "staging"}:
+        raise GitHubActionsError("O ambiente de entrega dos backtests é inválido.")
     url = f"https://api.github.com/repos/{clean_repository}/actions/workflows/{clean_workflow}/dispatches"
     inputs = {
         "tickers": ",".join(clean_tickers),
         "max_combinations": str(combinations),
+        "environment": clean_environment,
     }
     clean_job_id = str(job_id or "").strip()
     if clean_job_id:
@@ -104,6 +109,7 @@ def dispatch_official_backtests(
         "tickers": clean_tickers,
         "max_combinations": combinations,
         "job_id": clean_job_id or None,
+        "environment": clean_environment,
         "actions_url": f"https://github.com/{clean_repository}/actions/workflows/{clean_workflow}",
     }
 

@@ -9,3 +9,9 @@ A R1 acrescenta a migração `0013_v1_20_backtest_study`, que cria somente um í
 ## Revisão R2
 
 A R2 mantém a mesma API e migração, mas traduz a apresentação das configurações de backtest. Objetos aninhados deixam de aparecer como JSON, códigos internos recebem rótulos em português e campos vazios, booleanos, percentuais e períodos passam a ter descrições compreensíveis.
+
+## Revisão R3
+
+A R3 acrescenta a migração `0014_v1_20_backtest_chunks`. Ela cria a tabela de controle `backtest_batch_chunks`, sem alterar nem excluir resultados existentes. Cada parte recebida possui posição, total, checksum e contadores próprios. A restrição única por rodada, ativo e posição impede duplicações.
+
+O workflow mantém as execuções de sábado direcionadas à produção e encaminha repetições iniciadas no ambiente de teste para `/testefdi`. A produção não recebe o novo protocolo antes da promoção manual.

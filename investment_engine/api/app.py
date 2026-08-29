@@ -45,6 +45,7 @@ from ..core.backtesting.study import build_strategy_configuration_catalog, build
 from ..core.alerts.catalog import market_alert_catalog, market_alert_item
 from ..core.alerts.service import AlertMonitor, AlertService, valid_email
 from ..integrations.email_delivery import AlertEmailSender
+from ..integrations.github_actions import GitHubActionsError, dispatch_official_backtests
 from ..infrastructure.db.models import AssetORM, BacktestRequestUsageORM, UserNewsCacheORM
 from ..core.instruments import is_alertable_b3_asset, is_supported_ticker
 from ..core.models.strategy import StockFilterSet, FiiFilterSet
@@ -601,6 +602,8 @@ class BacktestAutomationAssetRequest(BaseModel):
     checksum: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     completed_runs: int = Field(ge=0, le=200)
     failed_runs: int = Field(ge=0, le=200)
+    chunk_index: int = Field(default=1, ge=1, le=200)
+    chunk_count: int = Field(default=1, ge=1, le=200)
     errors: list[dict] = Field(default_factory=list, max_length=200)
     results: list[dict] = Field(default_factory=list, max_length=200)
 
@@ -2726,9 +2729,32 @@ def retry_backtest_batch_job(
             requested_by=access["email"],
         )
         db.commit()
+        dispatch = None
+        if dispatch_required:
+            try:
+                dispatch = dispatch_official_backtests(
+                    token=settings.github_actions_token,
+                    tickers=job.requested_tickers_json,
+                    repository=settings.github_actions_repository,
+                    workflow=settings.github_actions_workflow,
+                    ref=settings.github_actions_ref,
+                    max_combinations=job.max_combinations,
+                    job_id=str(job.id),
+                    environment=settings.app_environment,
+                )
+            except GitHubActionsError as exc:
+                service.mark_failed(
+                    job,
+                    code="github_dispatch_failed",
+                    message=str(exc),
+                    details={"retry_of": str(source_job.id)},
+                )
+                db.commit()
+                raise HTTPException(502, str(exc))
         return {
             **service.job_dict(job),
             "dispatch_required": dispatch_required,
+            "dispatch": dispatch,
             "retry_of": str(source_job.id),
         }
     except ValueError as exc:
@@ -2786,7 +2812,9 @@ def receive_automated_backtest_asset(
     job = service.get_job(job_id)
     if job is None:
         raise HTTPException(404, "backtest_batch_job_not_found")
-    payload = request.model_dump(exclude={"checksum"})
+    # Keep checksums compatible with the original one-part protocol while new
+    # clients explicitly sign their chunk position.
+    payload = request.model_dump(exclude={"checksum"}, exclude_unset=True)
     if not compare_digest(delivery_checksum(payload), request.checksum):
         raise HTTPException(422, "backtest_delivery_checksum_invalid")
     try:
@@ -2796,6 +2824,8 @@ def receive_automated_backtest_asset(
             checksum=request.checksum,
             completed_runs=request.completed_runs,
             failed_runs=request.failed_runs,
+            chunk_index=request.chunk_index,
+            chunk_count=request.chunk_count,
             results=request.results,
             errors=request.errors,
         )
@@ -2803,9 +2833,7 @@ def receive_automated_backtest_asset(
         return {
             "accepted": True,
             "idempotent": not created,
-            "ticker": delivery.ticker,
-            "imported_runs": delivery.imported_runs,
-            "skipped_runs": delivery.skipped_runs,
+            **delivery,
             "job": service.job_dict(job),
         }
     except ValueError as exc:
@@ -2813,7 +2841,7 @@ def receive_automated_backtest_asset(
         detail = str(exc)
         status = 409 if detail in {
             "batch_job_failed", "batch_job_cancelled", "batch_job_already_completed",
-            "batch_delivery_checksum_conflict",
+            "batch_delivery_checksum_conflict", "batch_delivery_chunk_manifest_conflict",
         } else 400
         raise HTTPException(status, detail)
 

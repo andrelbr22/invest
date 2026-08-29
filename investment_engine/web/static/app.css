@@ -225,6 +225,11 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .pill.danger { background: #ffeaea; }
 .notice { padding: 13px 15px; border-radius: 11px; color: #5c5540; background: #fff7e4; font-size: .78rem; line-height: 1.5; }
 .notice.info { color: #31534a; background: var(--brand-soft); }
+.notice.danger { color: #7b2828; background: #fff0f0; border: 1px solid #f2c9c9; }
+.notice.danger p { margin: 0 0 8px; }
+.notice.danger p:last-child { margin-bottom: 0; }
+.dialog-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.button.compact { min-height: 32px; padding: 6px 10px; font-size: .75rem; }
 
 .asset-dialog { width: min(1240px, calc(100vw - 30px)); height: min(94dvh, 980px); max-width: none; max-height: 94dvh; padding: 0; overflow: auto; border: 0; border-radius: 20px; box-shadow: 0 26px 80px rgba(6,38,29,.25); }
 .asset-dialog::backdrop { background: rgba(6,30,24,.45); backdrop-filter: blur(3px); }
