@@ -242,9 +242,14 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .study-configuration-grid article { padding: 14px; border-radius: 12px; background: var(--brand-soft); }
 .study-configuration-grid h4 { margin: 0 0 10px; }
 .configuration-pairs { display: grid; gap: 7px; margin: 0; }
-.configuration-pairs div { display: grid; grid-template-columns: minmax(120px,.8fr) minmax(0,1.2fr); gap: 10px; }
+.configuration-pairs > div { display: grid; grid-template-columns: minmax(120px,.8fr) minmax(0,1.2fr); gap: 10px; }
 .configuration-pairs dt { color: var(--muted); }
 .configuration-pairs dd { margin: 0; overflow-wrap: anywhere; font-weight: 700; }
+.configuration-pairs.nested { gap: 5px; padding: 8px 10px; border-left: 3px solid rgba(20,97,83,.22); border-radius: 8px; background: rgba(255,255,255,.55); }
+.configuration-pairs.nested > div { grid-template-columns: minmax(105px,.9fr) minmax(0,1.1fr); }
+.configuration-pairs.nested dt { font-size: .84rem; }
+.configuration-pairs.nested dd { font-size: .86rem; }
+.configuration-list { margin: 0; padding-left: 18px; }
 .configuration-text { margin: 0; color: var(--muted); line-height: 1.6; }
 .asset-dialog-header { position: sticky; top: 0; z-index: 1; margin: -28px -28px 18px; padding: 25px 65px 16px 28px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.96); backdrop-filter: blur(10px); }
 .asset-dialog-header .asset-subtitle { margin-bottom: 0; }

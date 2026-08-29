@@ -764,15 +764,76 @@ async function renderAlerts(root) {
 }
 
 function readableConfigurationKey(key) {
-  const labels={fast_window:"Média rápida",slow_window:"Média lenta",window:"Período",lower:"Limite inferior",upper:"Limite superior",initial_capital:"Capital inicial",fee_pct:"Taxa",slippage_pct:"Slippage",risk_free_rate_pct:"Taxa livre de risco",fundamental_filters:"Filtros fundamentalistas",technical_filters:"Filtros técnicos"};
+  const labels={
+    fast:"Período rápido",fast_period:"Período rápido",fast_window:"Média rápida",
+    slow:"Período lento",slow_period:"Período lento",slow_window:"Média lenta",
+    signal:"Período do sinal",signal_period:"Período do sinal",window:"Período",
+    lower:"Limite inferior",upper:"Limite superior",enabled:"Status",direction:"Direção",
+    period:"Período da média",mode:"Regra da tendência",slope_lookback:"Intervalo para confirmar a inclinação",
+    daily_trend:"Tendência diária",weekly_trend:"Tendência semanal",monthly_trend:"Tendência mensal",
+    trend_combination:"Combinação das tendências",adx_min:"ADX mínimo",volume_ratio_min:"Volume mínimo em relação à média",
+    rsi_min:"RSI mínimo",rsi_max:"RSI máximo",atr_pct_min:"ATR mínimo",atr_pct_max:"ATR máximo",
+    exit_on_filter_failure:"Sair quando um filtro deixar de ser atendido",fundamental_entry:"Fundamentos exigidos para entrada",
+    fundamental_exit:"Fundamentos que provocam saída",fundamental_exit_logic:"Combinação das condições de saída",
+    fundamental_min_coverage_pct:"Cobertura fundamentalista mínima",fundamental_max_age_days:"Idade máxima dos fundamentos",
+    initial_capital:"Capital inicial",fee_pct:"Taxa por operação",slippage_pct:"Slippage estimado",
+    risk_free_rate_pct:"Taxa livre de risco",apply_cash_yield:"Remunerar o caixa não investido",
+    cash_yield_rate_pct:"Rendimento anual do caixa",fundamental_filters:"Filtros fundamentalistas",
+    technical_filters:"Filtros técnicos",mean_total_return_pct:"Retorno total médio",
+    mean_cagr_pct:"Retorno anualizado médio (CAGR)",mean_sharpe_ratio:"Índice de Sharpe médio",
+    mean_max_drawdown_pct:"Perda máxima média (drawdown)",mean_profit_factor:"Fator de lucro médio",
+    mean_win_rate_pct:"Taxa média de acerto",mean_closed_trades:"Média de operações encerradas",
+    pe:"P/L",pbv:"P/VP",dividend_yield_pct:"Dividend yield",ev_ebitda:"EV/EBITDA",
+    ebit_margin_pct:"Margem EBIT",net_margin_pct:"Margem líquida",current_ratio:"Liquidez corrente",
+    roe_pct:"ROE",roic_pct:"ROIC",gross_debt_to_equity:"Dívida bruta / patrimônio",
+    net_debt_to_ebitda:"Dívida líquida / EBITDA",revenue_cagr_5y_pct:"Crescimento da receita em 5 anos",
+    earnings_cagr_5y_pct:"Crescimento dos lucros em 5 anos",ffo_yield_pct:"FFO yield",
+    cap_rate_pct:"Cap rate",vacancy_pct:"Vacância física",financial_vacancy_pct:"Vacância financeira",
+    ltv_pct:"LTV",wale_years:"Prazo médio dos contratos (WALE)",daily_liquidity:"Liquidez diária",
+    min:"Mínimo",max:"Máximo",
+  };
   return labels[key]||String(key||"").replaceAll("_"," ").replace(/^./,letter=>letter.toUpperCase());
 }
 
+function readableConfigurationValue(key,value,parentKey="") {
+  if(value===null||value===undefined||value==="")return "Não utilizado neste teste";
+  if(typeof value==="boolean")return key==="enabled"||key==="apply_cash_yield"?(value?"Ativado":"Desativado"):(value?"Sim":"Não");
+  if(typeof value==="number") {
+    if(key==="initial_capital")return money(value);
+    if(key==="fundamental_max_age_days")return `${number(value,0)} dias`;
+    if(["fast","fast_period","fast_window","slow","slow_period","slow_window","signal","signal_period","window","period","slope_lookback"].includes(key))return `${number(value,0)} períodos`;
+    if(key==="volume_ratio_min")return `${number(value,2)} × a média`;
+    if(String(key).includes("_pct")||String(parentKey).includes("_pct"))return `${number(value,2)}%`;
+    return number(value,2);
+  }
+  const text=String(value);
+  const labels={
+    up:"Alta",down:"Baixa",none:"Sem filtro",all:"Todas as condições",any:"Qualquer condição",
+    majority:"Maioria das condições",price_above:"Preço acima da média móvel",
+    sma_rising:"Média móvel simples em alta",price_above_or_sma_rising:"Preço acima da média OU média em alta",
+    price_above_and_sma_rising:"Preço acima da média E média em alta",close:"Fechamento",
+    low_touch:"Mínima toca a banda",close_reentry:"Fechamento retorna para dentro da banda",
+  };
+  if(key==="trend_combination")return {all:"Todas as tendências ativas devem concordar",any:"Ao menos uma tendência ativa deve confirmar",majority:"A maioria das tendências ativas deve confirmar"}[text]||readableConfigurationKey(text);
+  if(key==="fundamental_exit_logic")return {all:"Todas as condições devem ocorrer",any:"Qualquer condição pode provocar a saída"}[text]||readableConfigurationKey(text);
+  return labels[text]||readableConfigurationKey(text);
+}
+
+function configurationValue(value,key="",parentKey="") {
+  if(Array.isArray(value))return value.length?`<ul class="configuration-list">${value.map(item=>`<li>${configurationValue(item,key,parentKey)}</li>`).join("")}</ul>`:'<span class="muted">Nenhum item configurado.</span>';
+  if(value!==null&&typeof value==="object") {
+    const nested=Object.entries(value);
+    if(!nested.length)return '<span class="muted">Nenhuma condição configurada.</span>';
+    return `<dl class="configuration-pairs nested">${nested.map(([nestedKey,nestedValue])=>`<div><dt>${esc(readableConfigurationKey(nestedKey))}</dt><dd>${configurationValue(nestedValue,nestedKey,key||parentKey)}</dd></div>`).join("")}</dl>`;
+  }
+  return `<span>${esc(readableConfigurationValue(key,value,parentKey))}</span>`;
+}
+
 function configurationPairs(values) {
-  if(values!==null&&values!==undefined&&typeof values!=="object")return `<p class="configuration-text">${esc(String(values))}</p>`;
+  if(values!==null&&values!==undefined&&typeof values!=="object")return `<p class="configuration-text">${configurationValue(values)}</p>`;
   const entries=Object.entries(values||{});
   if(!entries.length)return '<span class="muted">Nenhuma configuração adicional.</span>';
-  return `<dl class="configuration-pairs">${entries.map(([key,value])=>`<div><dt>${esc(readableConfigurationKey(key))}</dt><dd>${esc(typeof value==="object"?JSON.stringify(value):String(value))}</dd></div>`).join("")}</dl>`;
+  return `<dl class="configuration-pairs">${entries.map(([key,value])=>`<div><dt>${esc(readableConfigurationKey(key))}</dt><dd>${configurationValue(value,key)}</dd></div>`).join("")}</dl>`;
 }
 
 async function openStudyStrategy(strategyId) {
