@@ -36,4 +36,16 @@
 5. Volte a um período rápido e confirme que o modo personalizado é encerrado.
 6. Confirme que `Atualizar séries` continua atualizando as fontes em segundo plano.
 
+## Validação adicional da R7
+
+1. Atualize somente o ambiente `/testefdi` e confirme `/testefdi/ready` antes de qualquer promoção.
+2. Abra cada aba do Painel de Mercado e confira o quadro `Atualizações deste painel`, com fonte, última atualização, estado e próxima rodada.
+3. Clique duas vezes em `Atualizar agora` em menos de cinco minutos e confirme que a segunda solicitação informa o intervalo de segurança, sem duplicar trabalho.
+4. Abra Mercado e Análises, Carteiras > Posições, Carteiras > Notícias, Backtests e Administração > Dados de mercado e confira as datas correspondentes.
+5. Confirme que o site continua navegável enquanto uma atualização estiver `Na fila` ou `Atualizando`.
+6. Execute os testes versionados. O resultado local esperado para este pacote é `59 passed`.
+7. Antes de promover, leia `RELATORIO_ATUALIZACOES_V1203_R7.md` e valide os horários nele registrados.
+8. Após aprovação explícita, execute a promoção manual. O script inicia primeiro a aplicação, depois o worker, e somente conclui quando ambos estiverem saudáveis.
+9. Confira que `docker compose -f docker-compose.oracle-web.yml ps` apresenta `app`, `worker`, `postgres`, `proxy` e `staging`; `app` e `worker` devem estar `healthy`.
+
 Esta revisão cria somente a tabela de controle das partes entregues. Ela não altera nem exclui resultados existentes. Não altere o banco de produção manualmente.

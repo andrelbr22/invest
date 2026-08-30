@@ -20,17 +20,17 @@ A V1.20.3 preserva todas as funções da V1.17.4, a base assíncrona da V1.20.0,
 A fundação para atualizações sem bloquear o usuário continua disponível:
 
 - fila persistente PostgreSQL com idempotência, lease, heartbeat e novas tentativas;
-- worker separado, ativado por profile e com concorrência inicial unitária;
+- worker separado e permanente, com concorrência unitária, agendador próprio e apenas uma conexão reservada ao PostgreSQL;
 - snapshots compartilhados que preservam o último resultado válido;
 - catálogo e observações de séries econômicas com horário de publicação;
 - endpoint `/ready`, request ID e logs de duração;
 - pool PostgreSQL limitado e `statement_timeout` configurável;
 - descoberta corrigida de todos os diretórios de testes versionados.
 
-O worker é opcional nesta primeira etapa e não altera o fluxo atual de produção até a homologação:
+Após a homologação da R7, o worker passa a integrar a produção e executa somente tarefas de segundo plano. O processo web não coleta mercado, notícias nem alertas durante uma resposta interativa:
 
 ```text
-docker compose -f docker-compose.oracle-web.yml --profile worker up -d worker
+docker compose -f docker-compose.oracle-web.yml up -d worker
 ```
 
 Plataforma educacional de análise fundamentalista e técnica, carteiras,

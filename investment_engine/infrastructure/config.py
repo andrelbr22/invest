@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     economy_headlines_ttl_seconds: int = 3600
     background_worker_poll_seconds: float = 2.0
     background_job_lease_timeout_seconds: int = 300
+    background_scheduler_enabled: bool = False
+    background_scheduler_tick_seconds: int = 60
+    in_process_background_worker_enabled: bool = False
     log_level: str = "INFO"
 
     @property

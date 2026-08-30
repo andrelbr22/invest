@@ -24,7 +24,9 @@ def test_pytest_discovers_every_versioned_test_directory():
     assert '"tests_v1200"' in pyproject
 
 
-def test_deployment_keeps_worker_opt_in():
+def test_deployment_runs_the_lightweight_worker_separately_from_the_web_app():
     compose = (ROOT / "docker-compose.oracle-web.yml").read_text(encoding="utf-8")
-    assert 'profiles: ["worker"]' in compose
+    assert 'profiles: ["worker"]' not in compose
     assert "start-worker.sh" in compose
+    assert 'BACKGROUND_SCHEDULER_ENABLED: "true"' in compose
+    assert 'DATABASE_POOL_SIZE: "1"' in compose

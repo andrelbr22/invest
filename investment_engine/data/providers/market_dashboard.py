@@ -339,14 +339,25 @@ class MarketDashboardService:
             cursor = chunk_end + timedelta(days=1)
         return sorted(rows.items())
 
-    def selic(self) -> dict:
-        errors = []
+    def selic_current(self) -> dict:
         try:
             current_rows = self._sgs(432, days=45)
         except Exception as exc:
             current_rows = []
-            errors.append(f"Selic atual: {type(exc).__name__}")
+            error = f"Selic atual: {type(exc).__name__}"
+        else:
+            error = None
         current = current_rows[-1][1] if current_rows else None
+        return {
+            "current": current,
+            "current_as_of": current_rows[-1][0].isoformat() if current_rows else None,
+            "source": "Banco Central do Brasil • SGS 432",
+            "url": "https://www.bcb.gov.br/controleinflacao/taxaselic",
+            "errors": [error] if error else [],
+        }
+
+    def selic_focus(self) -> dict:
+        errors = []
         year = self.now.year
         # The service currently rejects equality filters on its string fields
         # with an internal Boolean/String type error. Prefix matching works,
@@ -389,17 +400,24 @@ class MarketDashboardService:
         if not projections:
             errors.append("Focus: projeções anuais da Selic não foram localizadas")
         return {
-            "current": current,
-            "current_as_of": current_rows[-1][0].isoformat() if current_rows else None,
             "current_year": projections.get(str(year), {}),
             "next_year": projections.get(str(year + 1), {}),
-            "source": "Banco Central do Brasil • Selic/Focus",
+            "source": "Banco Central do Brasil • Relatório Focus",
             "url": "https://www.bcb.gov.br/publicacoes/focus",
             "projection_note": (
                 "Mediana das expectativas do Relatório Focus para a meta da taxa Selic "
                 "no encerramento de cada ano. Não se trata de projeção do CDI."
             ),
             "errors": errors,
+        }
+
+    def selic(self) -> dict:
+        current = self.selic_current()
+        focus = self.selic_focus()
+        return {
+            **current,
+            **{key: value for key, value in focus.items() if key != "errors"},
+            "errors": [*(current.get("errors") or []), *(focus.get("errors") or [])],
         }
 
     def cdi(self) -> dict:

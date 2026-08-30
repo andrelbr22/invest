@@ -9,7 +9,7 @@ class IntradayQuoteProvider:
     """Small Yahoo chart adapter used only for alert observations.
 
     The latest one-minute B3 candle provides the high/low crossing evidence.
-    Market-dashboard instruments use a thirty-minute candle. Yahoo quotations
+    Market-dashboard instruments use a five-minute candle. Yahoo quotations
     may be delayed and are therefore identified as indicative in every alert.
     """
 
@@ -29,7 +29,7 @@ class IntradayQuoteProvider:
         last_error = "cotacao_intradiaria_indisponivel"
         for candidate in symbols:
             provider_symbol = self._provider_symbol(candidate, market_scope)
-            interval = "1m" if market_scope == "b3" else "30m"
+            interval = "1m" if market_scope == "b3" else "5m"
             range_ = "1d" if market_scope == "b3" else "5d"
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{provider_symbol}"
             try:

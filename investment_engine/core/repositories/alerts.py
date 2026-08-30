@@ -136,7 +136,7 @@ class AlertRepository:
         self.session.flush()
 
     def due_alerts(self, now: datetime) -> list[PriceAlertORM]:
-        market_cutoff = now - timedelta(minutes=30)
+        market_cutoff = now - timedelta(minutes=10)
         b3_cutoff = now - timedelta(minutes=5)
         stmt = select(PriceAlertORM).where(
             PriceAlertORM.status == "active",

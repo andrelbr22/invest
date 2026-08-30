@@ -46,7 +46,7 @@ services:
       CANONICAL_URL: https://formacaodoinvestidor.com.br
       SECURE_COOKIES: "true"
       API_DOCS_ENABLED: "false"
-      ALERT_MONITOR_ENABLED: "true"
+      ALERT_MONITOR_ENABLED: "false"
       ALERT_MONITOR_POLL_SECONDS: "60"
     volumes:
       - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
@@ -80,6 +80,8 @@ services:
       SECURE_COOKIES: "true"
       API_DOCS_ENABLED: "false"
       ALERT_MONITOR_ENABLED: "false"
+      IN_PROCESS_BACKGROUND_WORKER_ENABLED: "true"
+      BACKGROUND_SCHEDULER_ENABLED: "false"
       DATABASE_NAME_OVERRIDE: investment_engine_staging
     volumes:
       - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
@@ -100,14 +102,17 @@ services:
 
   worker:
     image: formacao-do-investidor-production:current
-    profiles: ["worker"]
     restart: unless-stopped
     command: ["/app/deployment/start-worker.sh"]
     environment:
       APP_ENVIRONMENT: production
       APP_SECRETS_FILE: /app/secrets/app_secrets.toml
       BACKGROUND_WORKER_POLL_SECONDS: "2"
-      ALERT_MONITOR_ENABLED: "false"
+      BACKGROUND_SCHEDULER_ENABLED: "true"
+      BACKGROUND_SCHEDULER_TICK_SECONDS: "60"
+      ALERT_MONITOR_ENABLED: "true"
+      DATABASE_POOL_SIZE: "1"
+      DATABASE_MAX_OVERFLOW: "0"
     volumes:
       - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
     networks:
@@ -116,6 +121,12 @@ services:
       postgres:
         condition: service_healthy
     mem_limit: 260m
+    healthcheck:
+      test: ["CMD", "python", "-c", "from sqlalchemy import text; from investment_engine.infrastructure.db.session import get_session_factory; s=get_session_factory()(); s.execute(text('SELECT 1')); s.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   proxy:
     image: caddy:2-alpine

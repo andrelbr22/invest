@@ -10,6 +10,13 @@ from ...infrastructure.db.models import UserNewsCacheORM
 
 
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
+MANUAL_REFRESH_COOLDOWN = timedelta(minutes=5)
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
 def news_market_date(now: datetime | None = None) -> date:
@@ -66,8 +73,12 @@ class NewsCacheRepository:
             # The existence of the daily row is the once-a-day automatic lock,
             # including a failed attempt. Only the user can retry that day.
             return row, False
+        if row is not None and force and trigger == "manual":
+            activity = _aware(row.requested_at or row.updated_at)
+            if activity and now - activity < MANUAL_REFRESH_COOLDOWN:
+                return row, False
         if row is not None and row.status in {"queued", "running"}:
-            activity = row.started_at or row.requested_at
+            activity = _aware(row.started_at or row.requested_at)
             if activity and now - activity < timedelta(minutes=20):
                 return row, False
         if row is None:

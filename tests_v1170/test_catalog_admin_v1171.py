@@ -43,7 +43,8 @@ def test_owner_interface_exposes_catalog_counts_and_actions():
     script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
     assert 'data-tab="data">Dados de mercado' in index
     assert 'api("/data/catalog-summary")' in script
-    assert 'data-market-sync="fii" data-technicals="false"' in script
+    assert 'data-refresh-groups="catalog">Atualizar catálogo' in script
+    assert 'data-refresh-groups="fundamentals">Atualizar fundamentos e notas' in script
 
 
 def test_other_b3_pipeline_reclassifies_legacy_aura33_without_duplicate():

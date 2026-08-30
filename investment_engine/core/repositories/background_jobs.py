@@ -249,3 +249,11 @@ class BackgroundJobRepository:
             .order_by(BackgroundJobORM.created_at.desc())
             .limit(max(1, min(200, int(limit))))
         ))
+
+    def latest_for_deduplication(self, key: str) -> BackgroundJobORM | None:
+        return self.session.scalar(
+            select(BackgroundJobORM)
+            .where(BackgroundJobORM.deduplication_key == str(key or "").strip())
+            .order_by(BackgroundJobORM.created_at.desc())
+            .limit(1)
+        )

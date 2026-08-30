@@ -28,22 +28,37 @@ fi
 
 docker tag "${STAGING_IMAGE}" "${PRODUCTION_IMAGE}"
 docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate app
-CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q app)"
+APP_CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q app)"
+APP_READY="false"
 for _ in $(seq 1 48); do
-  STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${CONTAINER_ID}" 2>/dev/null || echo missing)"
+  STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${APP_CONTAINER_ID}" 2>/dev/null || echo missing)"
   if [[ "${STATUS}" == "healthy" ]]; then
-    cat "${PROJECT_DIR}/.git/investment-staging-commit" > "${PROJECT_DIR}/.git/investment-production-commit"
-    echo "Produção atualizada após aprovação manual."
-    exit 0
+    APP_READY="true"
+    break
   fi
   if [[ "${STATUS}" == "unhealthy" || "${STATUS}" == "missing" ]]; then break; fi
   sleep 5
 done
 
-docker compose -f "${COMPOSE_FILE}" logs --tail=120 app || true
+if [[ "${APP_READY}" == "true" ]]; then
+  docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate worker
+  WORKER_CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q worker)"
+  for _ in $(seq 1 24); do
+    STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${WORKER_CONTAINER_ID}" 2>/dev/null || echo missing)"
+    if [[ "${STATUS}" == "healthy" ]]; then
+      cat "${PROJECT_DIR}/.git/investment-staging-commit" > "${PROJECT_DIR}/.git/investment-production-commit"
+      echo "Produção e rotinas automáticas atualizadas após aprovação manual."
+      exit 0
+    fi
+    if [[ "${STATUS}" == "unhealthy" || "${STATUS}" == "missing" ]]; then break; fi
+    sleep 5
+  done
+fi
+
+docker compose -f "${COMPOSE_FILE}" logs --tail=120 app worker || true
 if docker image inspect "${ROLLBACK_IMAGE}" >/dev/null 2>&1; then
   docker tag "${ROLLBACK_IMAGE}" "${PRODUCTION_IMAGE}"
-  docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate app
+  docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate app worker
 fi
-echo "A promoção falhou; a versão oficial anterior foi restaurada."
+echo "A promoção falhou; a aplicação e o trabalhador anteriores foram restaurados."
 exit 1

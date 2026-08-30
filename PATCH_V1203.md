@@ -27,3 +27,13 @@ A R5 corrige a coleta dos indicadores econômicos do Comparador histórico. As s
 ## Revisão R6
 
 A R6 melhora somente a navegação temporal do Comparador histórico. O eixo horizontal passa a mostrar mês e ano em janelas de até cinco anos e somente anos em janelas maiores. A opção `Personalizar` permite escolher datas inicial e final dentro dos 20 anos já carregados, sem nova consulta ao servidor a cada alteração. Os períodos rápidos e o botão `Atualizar séries` permanecem disponíveis.
+
+## Revisão R7
+
+A R7 reorganiza as atualizações externas sem alterar tabelas de negócio nem excluir dados. Mercado, manchetes, comparador, catálogo, fundamentos, indicadores técnicos, cotações de carteiras e notícias passam pela fila persistente do PostgreSQL. O navegador recebe imediatamente o último resultado válido e não espera a fonte externa.
+
+O agendador separa as fontes por necessidade: cripto a cada 30 minutos, câmbio a cada duas horas, dados globais e juros em duas rodadas, macro e Focus em uma rodada, além de catálogo, fundamentos e técnica em horários próprios. Somente ativos presentes em carteiras ou alertas recebem consulta intradiária de 15 em 15 minutos durante o pregão. Não há repetição intradiária atrasada à noite ou em fins de semana.
+
+Cada painel mostra fonte, estado, última atualização e próxima rodada. Falhas parciais preservam o campo anterior e são identificadas sem apagar as demais fontes. Todos os botões manuais respeitam intervalo mínimo de cinco minutos.
+
+Em produção, o worker passa a ser permanente e também executa o monitor de alertas. Ele tem concorrência unitária, pool de uma conexão e limite de memória. O processo web não executa esses monitores. Em staging, um worker interno processa apenas os pedidos de homologação, sem manter outro contêiner. A promoção verifica aplicação e worker e restaura ambos em caso de falha.

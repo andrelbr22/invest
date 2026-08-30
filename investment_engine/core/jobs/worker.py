@@ -9,6 +9,7 @@ from collections.abc import Callable
 from ...infrastructure.db.session import get_session_factory
 from ..repositories.background_jobs import BackgroundJobRepository
 from .handlers import DEFAULT_JOB_HANDLERS
+from .schedules import enqueue_due_refreshes
 
 
 LOGGER = logging.getLogger("investment_engine.background_worker")
@@ -25,11 +26,30 @@ class BackgroundWorker:
         handlers: dict[str, JobHandler] | None = None,
         poll_seconds: float = 2.0,
         lease_timeout_seconds: int = 300,
+        scheduler_enabled: bool = False,
+        scheduler_tick_seconds: int = 60,
     ):
         self.worker_id = worker_id or f"{socket.gethostname()}:{threading.get_native_id()}"
         self.handlers = dict(handlers or DEFAULT_JOB_HANDLERS)
         self.poll_seconds = max(0.2, float(poll_seconds))
         self.lease_timeout_seconds = max(30, int(lease_timeout_seconds))
+        self.scheduler_enabled = bool(scheduler_enabled)
+        self.scheduler_tick_seconds = max(30, int(scheduler_tick_seconds))
+        self._last_scheduler_tick = 0.0
+
+    def schedule_due(self) -> list[str]:
+        session = get_session_factory()()
+        try:
+            created = enqueue_due_refreshes(session)
+            session.commit()
+            if created:
+                LOGGER.info("background_refreshes_scheduled groups=%s", ",".join(created))
+            return created
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def _renew_lease(self, job_id, stop_event: threading.Event) -> None:
         """Keep long jobs leased without sharing the handler's database session."""
@@ -115,6 +135,12 @@ class BackgroundWorker:
         stop = stop_event or threading.Event()
         LOGGER.info("background_worker_started worker_id=%s", self.worker_id)
         while not stop.is_set():
+            if self.scheduler_enabled and time.monotonic() - self._last_scheduler_tick >= self.scheduler_tick_seconds:
+                try:
+                    self.schedule_due()
+                except Exception:
+                    LOGGER.exception("background_scheduler_tick_failed")
+                self._last_scheduler_tick = time.monotonic()
             worked = self.run_once()
             if not worked:
                 stop.wait(self.poll_seconds)

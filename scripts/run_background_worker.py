@@ -4,6 +4,7 @@ import argparse
 import logging
 
 from investment_engine.core.jobs.worker import BackgroundWorker
+from investment_engine.core.alerts.service import AlertMonitor
 from investment_engine.infrastructure.config import settings
 
 
@@ -19,11 +20,20 @@ def main() -> None:
     worker = BackgroundWorker(
         poll_seconds=args.poll_seconds,
         lease_timeout_seconds=settings.background_job_lease_timeout_seconds,
+        scheduler_enabled=settings.background_scheduler_enabled,
+        scheduler_tick_seconds=settings.background_scheduler_tick_seconds,
     )
     if args.once:
         worker.run_once()
         return
-    worker.run_forever()
+    alert_monitor = AlertMonitor() if settings.alert_monitor_enabled else None
+    if alert_monitor is not None:
+        alert_monitor.start()
+    try:
+        worker.run_forever()
+    finally:
+        if alert_monitor is not None:
+            alert_monitor.stop()
 
 
 if __name__ == "__main__":

@@ -215,6 +215,16 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .comparison-controls .chart-periods { padding: 0; }
 .comparison-date-range { display: grid; grid-template-columns: repeat(2,minmax(180px,240px)); gap: 10px; align-items: end; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--brand-soft); }
 .comparison-refresh-row { display: flex; justify-content: flex-end; }
+.update-panel{margin:0 0 14px;border:1px solid #dce7e2;background:#f8fbf9;border-radius:14px;padding:11px 14px;color:#334b42}
+.update-summary{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.update-summary>span{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.update-summary small,.update-detail-row small{display:block;color:#697d74;font-size:.78rem}
+.button.compact{min-height:32px;padding:6px 10px;font-size:.78rem}
+.update-details{margin-top:8px;border-top:1px solid #e3ece8;padding-top:7px}
+.update-details summary{cursor:pointer;color:#42665a;font-size:.8rem;font-weight:700}
+.update-detail-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,.85fr);gap:14px;padding:9px 2px;border-bottom:1px solid #e8efec}
+.update-detail-row:last-child{border-bottom:0}
+.update-detail-row>span:last-child{text-align:right}
 .series-picker { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #f7f9f8; }
 .series-picker .check { min-width: 0; min-height: 45px; padding: 10px 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: .76rem; transition: background .15s ease; }
 .series-picker .check:nth-child(4n) { border-right: 0; }
@@ -341,3 +351,5 @@ body.staging-mode .login-view { padding-top: 60px; }
   .series-picker .check:nth-child(n) { border-right: 0; }
   .comparison-date-range { grid-template-columns: 1fr; }
 }
+
+@media(max-width:720px){.update-summary{align-items:flex-start;flex-direction:column}.update-summary>span:last-child{width:100%;justify-content:space-between}.update-detail-row{grid-template-columns:1fr}.update-detail-row>span:last-child{text-align:left}}
