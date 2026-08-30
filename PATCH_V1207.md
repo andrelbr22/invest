@@ -23,3 +23,7 @@ O `head` esperado do Alembic é `0018_v1_20_curve_history`.
 ## Rollback operacional
 
 A promoção existente continua criando backup e preservando a imagem anterior. Como as migrações são aditivas, retornar a aplicação anterior não exige apagar imediatamente as novas tabelas. Não execute `downgrade` nem exclusão manual durante uma recuperação de serviço.
+
+## R1 — correção do teste autenticado
+
+O teste de enfileiramento usava implicitamente o proprietário local, disponível somente quando a autenticação está desativada. Em staging, a proteção Google respondia corretamente com HTTP 401. A R1 injeta no teste a conta proprietária configurada e mantém a mesma validação funcional. O código executado pelos usuários não foi modificado por esta correção.

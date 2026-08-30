@@ -1,5 +1,7 @@
 # Homologação da V1.20.7 na Oracle
 
+> Use a revisão R1 do pacote. Ela corrige um teste que dependia do modo local sem autenticação; não há mudança funcional adicional nem nova migração.
+
 ## 1. Publicação inicial
 
 1. No Windows, extraia o ZIP em uma pasta nova.

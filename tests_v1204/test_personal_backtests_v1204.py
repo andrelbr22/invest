@@ -7,11 +7,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from investment_engine.api.app import app, get_db
+from investment_engine.api.app import _request_email, app, get_db
 from investment_engine.core.backtesting import engine as backtest_engine
 from investment_engine.core.repositories.access import full_owner_policy
 from investment_engine.core.repositories.background_jobs import BackgroundJobRepository
 from investment_engine.infrastructure.db.base import Base
+from investment_engine.infrastructure.config import settings
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +66,7 @@ def test_owner_receives_approved_backtest_limits():
 
 def test_personal_request_is_queued_and_visible_without_running_inline():
     factory = database_factory()
+    test_email = sorted(settings.owner_emails)[0] if settings.owner_emails else "local-owner@localhost"
 
     def override_db():
         session = factory()
@@ -74,6 +76,7 @@ def test_personal_request_is_queued_and_visible_without_running_inline():
             session.close()
 
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[_request_email] = lambda: test_email
     try:
         client = TestClient(app, base_url="http://localhost")
         response = client.post("/backtests/matrix", json={
@@ -88,7 +91,7 @@ def test_personal_request_is_queued_and_visible_without_running_inline():
         assert payload["job_id"]
         jobs = client.get("/backtests/jobs").json()
         assert jobs[0]["job_type"] == "personal_backtest_matrix"
-        assert jobs[0]["requested_by"] == "local-owner@localhost"
+        assert jobs[0]["requested_by"] == test_email
     finally:
         app.dependency_overrides.clear()
 
