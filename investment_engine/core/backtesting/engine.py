@@ -141,9 +141,15 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
                  initial_capital: float = 10000.0, fee_pct: float = 0.03, slippage_pct: float = 0.05,
                  risk_free_rate_pct: float = 0.0, cash_yield_rate_pct: float = 0.0,
                  apply_cash_yield: bool = False, params: dict | None = None, filters: dict | None = None,
-                 fundamental_snapshots: list[dict] | None = None) -> dict:
-    if strategy_id not in STRATEGIES:
+                 fundamental_snapshots: list[dict] | None = None,
+                 combination_strategy_ids: list[str] | None = None,
+                 combination_rule: str = "all") -> dict:
+    component_ids = list(dict.fromkeys(combination_strategy_ids or [strategy_id]))
+    if not component_ids or any(component_id not in STRATEGIES for component_id in component_ids):
         raise ValueError("strategy_not_found")
+    combined = len(component_ids) > 1
+    if combined and combination_rule not in {"all", "any", "majority"}:
+        raise ValueError("invalid_strategy_combination_rule")
     if initial_capital <= 0:
         raise ValueError("initial_capital_must_be_positive")
     if fee_pct < 0 or slippage_pct < 0:
@@ -172,7 +178,46 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
     df["adj_high"] = raw_high * factor
     df["adj_low"] = raw_low * factor
 
-    base_signal, indicators, effective_params = build_signal(df, strategy_id, params)
+    if not combined:
+        base_signal, indicators, effective_params = build_signal(df, strategy_id, params)
+        strategy_description = STRATEGIES[strategy_id].as_dict()
+    else:
+        component_signals: list[pd.Series] = []
+        indicator_frames: list[pd.DataFrame] = []
+        effective_params = {}
+        params_by_strategy = params or {}
+        for component_id in component_ids:
+            component_params = params_by_strategy.get(component_id, {}) if isinstance(params_by_strategy, dict) else {}
+            component_signal, component_indicators, component_effective_params = build_signal(
+                df, component_id, component_params,
+            )
+            component_signals.append(component_signal.rename(component_id))
+            indicator_frames.append(component_indicators.add_prefix(f"{component_id} · "))
+            effective_params[component_id] = component_effective_params
+        states = pd.concat(component_signals, axis=1)
+        valid = states.notna().all(axis=1)
+        active_count = (states.fillna(0.0) > 0).sum(axis=1)
+        if combination_rule == "all":
+            combined_state = active_count == len(component_ids)
+        elif combination_rule == "any":
+            combined_state = active_count >= 1
+        else:
+            combined_state = active_count >= math.ceil(len(component_ids) / 2)
+        base_signal = combined_state.astype(float).where(valid)
+        indicators = pd.concat(indicator_frames, axis=1) if indicator_frames else pd.DataFrame(index=df.index)
+        rule_names = {"all": "Todas (E)", "any": "Qualquer uma (OU)", "majority": "Maioria"}
+        strategy_description = {
+            "id": f"combined_{combination_rule}",
+            "name": f"Combinação: {rule_names[combination_rule]}",
+            "family": "Combinação de estratégias",
+            "description": "Combinação verdadeira dos estados de posição das estratégias selecionadas.",
+            "rules": (
+                "A posição é assumida somente após a regra de combinação ser satisfeita; "
+                "o sinal continua sendo executado no pregão seguinte."
+            ),
+            "components": [STRATEGIES[component_id].as_dict() for component_id in component_ids],
+            "combination_rule": combination_rule,
+        }
     signal, filter_indicators, effective_filters, filter_diagnostics = apply_backtest_filters(
         df, base_signal, filters, requested_start=requested_start, requested_end=requested_end,
         fundamental_snapshots=fundamental_snapshots,
@@ -242,7 +287,7 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
         "base_entry_signals": int(((base_bt.fillna(0) > 0) & (base_prev <= 0)).sum()),
         "filtered_entry_signals": int(((filtered_bt.fillna(0) > 0) & (filtered_prev <= 0)).sum()),
     }
-    if strategy_id == "bollinger_rsi_trend":
+    if not combined and strategy_id == "bollinger_rsi_trend":
         lower = indicators.reindex(bt.index).get("Bollinger inferior")
         rsi = indicators.reindex(bt.index).get("RSI")
         trend_col = f"SMA {int(effective_params.get('trend_period', 200))}"
@@ -306,8 +351,10 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
     }
 
     return {
-        "strategy": STRATEGIES[strategy_id].as_dict(),
+        "strategy": strategy_description,
         "parameters": effective_params,
+        "strategy_components": component_ids,
+        "combination_rule": combination_rule if combined else None,
         "requested_start": start.isoformat(), "requested_end": end.isoformat(),
         "actual_start": bt.index[0].isoformat(), "actual_end": bt.index[-1].isoformat(),
         "metrics": metrics, "equity_curve": curve, "trades": trades, "events": events,

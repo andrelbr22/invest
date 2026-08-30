@@ -5,7 +5,7 @@ const BASE_PATH = location.pathname === "/testefdi" || location.pathname.startsW
 const state = {
   session: null,
   view: "dashboard",
-  tabs: { dashboard: "overview", analysis: "stocks", analysisMode: "list", portfolio: "positions", backtests: "history", admin: "users" },
+  tabs: { dashboard: "overview", analysis: "stocks", analysisMode: "list", portfolio: "positions", finances: "monthly", backtests: "history", admin: "users" },
   market: null,
   marketEnvelope: null,
   comparison: null,
@@ -15,6 +15,7 @@ const state = {
   comparisonCustomFrom: "",
   comparisonCustomTo: "",
   comparisonSelected: ["CDI","IBOV","IFIX"],
+  comparisonBaseMode: "common",
   analysisRows: [],
   analysisPreset: "default",
   analysisCatalog: {},
@@ -26,9 +27,14 @@ const state = {
   currentCustomFilter: null,
   analysisLimit: 50,
   curveYears: 10,
+  curveHistory: [],
+  curveHistoryCount: 1,
+  curveHistoryLoading: false,
+  curveHistoryLoaded: false,
   visibleColumns: JSON.parse(localStorage.getItem("fdi-visible-columns") || "{}"),
   portfolios: [],
   portfolioId: null,
+  financeMonth: new Date().toISOString().slice(0,7),
   officialBacktestJobs: new Map(),
   requestControllers: new Map(),
 };
@@ -50,6 +56,27 @@ function toast(message, type = "") {
   node.textContent = message;
   $("#toast-region").append(node);
   setTimeout(() => node.remove(), 5200);
+}
+
+function readableApiError(detail,status){
+  const code=typeof detail==="string"?detail:"";
+  const messages={
+    permission_required:"Este recurso não está liberado para a sua conta.",
+    portfolio_not_found:"A carteira solicitada não foi encontrada.",
+    custom_investment_not_found:"O investimento não foi encontrado ou já foi arquivado.",
+    finance_transaction_not_found:"O lançamento não foi encontrado ou já foi arquivado.",
+    invalid_finance_category:"A categoria não corresponde ao tipo de lançamento escolhido.",
+    invalid_finance_status:"A situação não corresponde ao tipo de lançamento escolhido.",
+    invalid_competence_month:"O mês informado é inválido.",
+    unsupported_or_duplicate_ticker:"Use o código principal do ativo. Mercados fracionários e códigos temporários não são cadastrados separadamente.",
+    active_personal_backtest_exists:"Já existe uma análise em processamento. Aguarde a conclusão.",
+  };
+  if(typeof detail==="object"&&detail?.permission_required)return messages.permission_required;
+  if(messages[code])return messages[code];
+  if(status>=500)return "O serviço está temporariamente indisponível. Seus dados foram preservados; tente novamente em instantes.";
+  if(status===404)return "A informação solicitada não foi encontrada.";
+  if(status===422)return "Revise os campos informados e tente novamente.";
+  return code||`Não foi possível concluir a solicitação (HTTP ${status}).`;
 }
 
 async function api(path, options = {}) {
@@ -79,7 +106,7 @@ async function api(path, options = {}) {
   try { body = await response.json(); } catch (_) { body = null; }
   if (!response.ok) {
     const detail = body?.detail;
-    const readable = typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : `HTTP ${response.status}`;
+    const readable = readableApiError(detail,response.status);
     throw new Error(readable);
   }
   return body;
@@ -107,6 +134,7 @@ function configureAccess() {
   const navRules = {
     analysis: access.can_view_market,
     portfolio: access.can_view_portfolio,
+    finances: access.can_view_finances,
     backtests: access.can_view_backtests,
     admin: access.is_owner,
   };
@@ -238,6 +266,7 @@ function renderDashboardTab() {
     root.innerHTML = `${marketUpdatePanel(["crypto","fx"])}<div class="panel-grid">${sectionCard("Criptoativos", crypto)}${sectionCard("Resumo de câmbio", marketTable(data.fx, marketColumns), "Cotações orientadas conforme o nome do par")}</div>`;
   } else if (tab === "curve") {
     root.innerHTML = marketUpdatePanel(["rates_calendar"])+renderCurve(data.curve || {});
+    if(!state.curveHistoryLoading&&!state.curveHistoryLoaded)loadCurveHistory();
   } else if (tab === "comparison") {
     if (state.comparison) renderComparison(); else loadComparison();
   } else if (tab === "calendar") {
@@ -253,22 +282,35 @@ function renderDashboardTab() {
 }
 
 function renderCurve(curve) {
-  const points = curve.points || [];
-  if (!points.length) return errorState("A fonte oficial ainda não retornou os pontos da curva.", "market");
-  const usable = points.filter(p => (!state.curveYears || Number(p.years) <= state.curveYears) && (!nullable(p.nominal_rate) || !nullable(p.real_rate)));
-  if (!usable.length) return errorState("Não há vértices disponíveis para esse período.", "market");
-  const width = 900, height = 250, pad = 18;
-  const maxX = Math.max(...usable.map(p => Number(p.years) || 0), 1);
-  const values = usable.flatMap(p => [p.nominal_rate,p.real_rate]).filter(v => !nullable(v)).map(Number);
-  const minY = Math.min(...values), maxY = Math.max(...values);
-  const x = p => pad + (Number(p.years) / maxX) * (width - pad * 2);
-  const y = value => height - pad - ((Number(value) - minY) / Math.max(maxY-minY,.1)) * (height-pad*2);
-  const path = key => usable.filter(p=>!nullable(p[key])).map((p,i)=>`${i?"L":"M"}${x(p).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
-  const svg = `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Curva de juros"><path d="${path("nominal_rate")}" fill="none" stroke="#0b5d4b" stroke-width="3"/><path d="${path("real_rate")}" fill="none" stroke="#c79b3b" stroke-width="3"/>${usable.filter(p=>!nullable(p.nominal_rate)).map(p=>`<circle cx="${x(p)}" cy="${y(p.nominal_rate)}" r="3" fill="#0b5d4b"><title>${esc(p.contract||`${number(p.years,2)} anos`)} • ${pct(p.nominal_rate)}</title></circle>`).join("")}${usable.filter((_,i)=>i%Math.max(1,Math.ceil(usable.length/10))===0).map(p=>`<text x="${x(p)}" y="${height}" font-size="11" text-anchor="middle" fill="#67756f">${number(p.years,1)}a</text>`).join("")}</svg>`;
-  const periods = [[1,"1 ano"],[2,"2 anos"],[5,"5 anos"],[10,"10 anos"],[20,"20 anos"],[30,"30 anos"],[0,"Máximo"]];
-  const controls = `<div class="chart-periods" role="group" aria-label="Período da curva">${periods.map(([years,label])=>`<button class="button ${state.curveYears===years?"primary":"secondary"}" data-curve-years="${years}">${label}</button>`).join("")}</div>`;
-  const legend = curve.curve_type === "di_pre" ? "Taxa de ajuste DI1 • efetiva anual, base 252 dias úteis" : "Taxa prefixada nominal • ETTJ ANBIMA";
-  return sectionCard(curve.title || "Curva de juros brasileira", `${controls}<div class="chart">${svg}</div><div class="chart-legend"><span><i class="legend-dot" style="background:#0b5d4b"></i>${esc(legend)}</span>${usable.some(p=>!nullable(p.real_rate))?'<span><i class="legend-dot" style="background:#c79b3b"></i>Juro real IPCA</span>':""}<span>Referência: ${dateOnly(curve.as_of)}</span></div><div class="notice info">${esc(curve.methodology || "Os pontos são exibidos somente até o maior prazo publicado pela fonte.")}</div>`, "Escolha o horizonte da curva; nenhum vértice é extrapolado", {url:curve.url,label:curve.source});
+  const current={reference_date:curve.as_of,points:curve.points||[],curve_type:curve.curve_type,title:curve.title,source:curve.source,url:curve.url};
+  if(!current.points.length)return errorState("A fonte oficial ainda não retornou os pontos da curva.","market");
+  const history=(state.curveHistory||[]).filter(item=>String(item.reference_date)!==String(current.reference_date));
+  const requested=Math.max(1,Number(state.curveHistoryCount||1));
+  const series=[current,...history.slice(0,requested-1)].map(item=>({...item,points:(item.points||[]).filter(p=>(!state.curveYears||Number(p.years)<=state.curveYears)&&!nullable(p.nominal_rate))})).filter(item=>item.points.length);
+  if(!series.length)return errorState("Não há vértices disponíveis para esse horizonte.","market");
+  const width=900,height=285,padX=36,padTop=18,padBottom=32;
+  const allPoints=series.flatMap(item=>item.points),maxX=Math.max(...allPoints.map(p=>Number(p.years)||0),1);
+  const values=allPoints.map(p=>Number(p.nominal_rate)).filter(Number.isFinite),minY=Math.min(...values),maxY=Math.max(...values);
+  const x=p=>padX+(Number(p.years)/maxX)*(width-padX*2),y=value=>height-padBottom-((Number(value)-minY)/Math.max(maxY-minY,.1))*(height-padTop-padBottom);
+  const colors=["#0b5d4b","#c79b3b","#2775b6","#8c5aa6"],paths=series.map((item,index)=>`<path d="${item.points.map((p,i)=>`${i?"L":"M"}${x(p).toFixed(1)},${y(p.nominal_rate).toFixed(1)}`).join(" ")}" fill="none" stroke="${colors[index]}" stroke-width="${index?2:3}" ${index?'stroke-dasharray="7 4"':""}/>`).join("");
+  const currentPoints=series[0].points;
+  const circles=currentPoints.map(p=>`<circle cx="${x(p)}" cy="${y(p.nominal_rate)}" r="3" fill="${colors[0]}"><title>${esc(p.contract||`${number(p.years,2)} anos`)} • ${pct(p.nominal_rate)}</title></circle>`).join("");
+  const labels=currentPoints.filter((_,i)=>i%Math.max(1,Math.ceil(currentPoints.length/10))===0).map(p=>`<text x="${x(p)}" y="${height-7}" font-size="11" text-anchor="middle" fill="#67756f">${number(p.years,1)}a</text>`).join("");
+  const svg=`<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Curvas de juros atual e históricas">${paths}${circles}${labels}</svg>`;
+  const periods=[[1,"1 ano"],[2,"2 anos"],[5,"5 anos"],[10,"10 anos"],[20,"20 anos"],[30,"30 anos"],[0,"Máximo"]];
+  const controls=`<div class="curve-controls"><div class="chart-periods" role="group" aria-label="Horizonte da curva">${periods.map(([years,label])=>`<button class="button ${state.curveYears===years?"primary":"secondary"}" data-curve-years="${years}">${label}</button>`).join("")}</div><div class="chart-periods" role="group" aria-label="Comparar curvas anteriores">${[[1,"Somente atual"],[2,"+ 1 anterior"],[4,"+ 3 anteriores"]].map(([count,label])=>`<button class="button ${requested===count?"primary":"secondary"}" data-curve-history-count="${count}">${label}</button>`).join("")}</div></div>`;
+  const curveLegend=series.map((item,index)=>`<span><i class="legend-dot" style="background:${colors[index]}"></i>${index?"Curva anterior":"Curva atual"} • ${dateOnly(item.reference_date)}</span>`).join("");
+  const method=curve.curve_type==="di_pre"?"Taxa de ajuste DI1 • efetiva anual, base 252 dias úteis":"Taxa prefixada nominal • ETTJ ANBIMA";
+  const historyNote=state.curveHistory.length?"As referências diárias ficam preservadas para comparação.":"O histórico começará a ser formado após esta versão registrar as próximas atualizações.";
+  return sectionCard(curve.title || "Curva de juros brasileira",`${controls}<div class="chart">${svg}</div><div class="chart-legend">${curveLegend}</div><div class="notice info"><strong>${esc(method)}.</strong> ${esc(historyNote)} ${esc(curve.methodology||"Nenhum vértice é extrapolado.")}</div>`,`Curva de juros futuros • horizonte dos contratos e deslocamento entre datas`,{url:curve.url,label:curve.source});
+}
+
+async function loadCurveHistory(){
+  state.curveHistoryLoading=true;
+  try{state.curveHistory=await api("/market-dashboard/interest-curve/history?limit=12");if(state.tabs.dashboard==="curve")renderDashboardTab();}
+  catch(_){state.curveHistory=[];}
+  state.curveHistoryLoaded=true;
+  state.curveHistoryLoading=false;
 }
 
 const comparisonColors = ["#0b5d4b","#c79b3b","#2775b6","#8c5aa6","#d0614c","#3d9a78","#9b7d31","#5267a5","#c24f86","#69766f","#df8437","#3999a3","#7c655c","#22577a","#9a031e","#386641","#7b2cbf","#bc6c25","#0077b6","#6a994e","#ef476f","#118ab2","#8338ec","#fb8500","#495057","#2a9d8f"];
@@ -332,12 +374,23 @@ function comparisonTimeTicks(minX,maxX) {
 function visibleComparisonSeries() {
   const window=comparisonWindow();
   if(!window||window.error)return [];
-  return (state.comparison?.series || []).filter(item=>state.comparisonSelected.includes(item.code)).map(item=>{
-    const points=(item.points||[]).filter(point=>{const observed=new Date(`${point.date}T12:00:00Z`);return observed>=window.min&&observed<=window.max;});
+  let rows=(state.comparison?.series || []).filter(item=>state.comparisonSelected.includes(item.code)).map(item=>({...item,points:(item.points||[]).filter(point=>{const observed=new Date(`${point.date}T12:00:00Z`);return observed>=window.min&&observed<=window.max;})}));
+  if(state.comparisonBaseMode==="common"){
+    const starts=rows.filter(item=>item.points.length).map(item=>new Date(`${item.points[0].date}T12:00:00Z`).getTime());
+    if(starts.length){const commonStart=Math.max(...starts);rows=rows.map(item=>({...item,points:item.points.filter(point=>new Date(`${point.date}T12:00:00Z`).getTime()>=commonStart)}));}
+  }
+  return rows.map(item=>{
+    const points=item.points;
     if(!points.length)return {...item,points:[]};
     const base=Number(points[0].value)||100;
     return {...item,points:points.map(point=>({...point,value:Number(point.value)/base*100}))};
   });
+}
+
+function annualizedVolatility(points){
+  if(!points||points.length<3)return null;const returns=[],spans=[];
+  for(let index=1;index<points.length;index+=1){const before=Number(points[index-1].value),after=Number(points[index].value);if(before>0&&after>0)returns.push(after/before-1);spans.push(Math.max(1,(new Date(`${points[index].date}T12:00:00Z`)-new Date(`${points[index-1].date}T12:00:00Z`))/86400000));}
+  if(returns.length<2)return null;const mean=returns.reduce((sum,value)=>sum+value,0)/returns.length,variance=returns.reduce((sum,value)=>sum+(value-mean)**2,0)/(returns.length-1);const sorted=[...spans].sort((a,b)=>a-b),median=sorted[Math.floor(sorted.length/2)]||1;return Math.sqrt(variance)*Math.sqrt(365/median)*100;
 }
 
 function renderComparison() {
@@ -348,7 +401,7 @@ function renderComparison() {
   if(state.comparisonCustom)ensureComparisonCustomDates();
   const bounds=comparisonDateBounds(),minDate=bounds?isoDay(bounds.min):"",maxDate=bounds?isoDay(bounds.max):"";
   const customDates=state.comparisonCustom?`<div class="comparison-date-range"><div class="field"><label for="comparison-from">De</label><input id="comparison-from" type="date" data-comparison-date="from" value="${esc(state.comparisonCustomFrom)}" min="${minDate}" max="${maxDate}"></div><div class="field"><label for="comparison-to">Até</label><input id="comparison-to" type="date" data-comparison-date="to" value="${esc(state.comparisonCustomTo)}" min="${minDate}" max="${maxDate}"></div></div>`:"";
-  const selectors=`<div class="comparison-controls"><div class="chart-periods">${periods.map(([years,label])=>`<button class="button ${!state.comparisonCustom&&state.comparisonYears===years?"primary":"secondary"}" data-comparison-years="${years}">${label}</button>`).join("")}<button class="button ${state.comparisonCustom?"primary":"secondary"}" data-comparison-custom="true">Personalizar</button></div>${customDates}<div class="comparison-refresh-row"><button class="button secondary" data-comparison-refresh="true">Atualizar séries</button></div><div class="series-picker" role="group" aria-label="Indicadores para comparação">${all.map((item,index)=>`<label class="check" title="${esc(item.note||item.source||item.label)}"><input type="checkbox" data-comparison-series="${esc(item.code)}" ${state.comparisonSelected.includes(item.code)?"checked":""} ${item.points?.length?"":"disabled"}><i class="legend-dot" style="background:${comparisonColors[index%comparisonColors.length]}"></i><span>${esc(item.label)}${item.proxy?" <small>proxy</small>":""}</span></label>`).join("")}</div></div>`;
+  const selectors=`<div class="comparison-controls"><div class="chart-periods">${periods.map(([years,label])=>`<button class="button ${!state.comparisonCustom&&state.comparisonYears===years?"primary":"secondary"}" data-comparison-years="${years}">${label}</button>`).join("")}<button class="button ${state.comparisonCustom?"primary":"secondary"}" data-comparison-custom="true">Personalizar</button></div>${customDates}<div class="comparison-refresh-row"><span class="chart-periods"><button class="button ${state.comparisonBaseMode==="common"?"primary":"secondary"}" data-comparison-base="common">Início comum</button><button class="button ${state.comparisonBaseMode==="own"?"primary":"secondary"}" data-comparison-base="own">Histórico próprio</button></span><button class="button secondary" data-comparison-refresh="true">Atualizar séries</button></div><div class="series-picker" role="group" aria-label="Indicadores para comparação">${all.map((item,index)=>`<label class="check" title="${esc(item.note||item.source||item.label)}"><input type="checkbox" data-comparison-series="${esc(item.code)}" ${state.comparisonSelected.includes(item.code)?"checked":""} ${item.points?.length?"":"disabled"}><i class="legend-dot" style="background:${comparisonColors[index%comparisonColors.length]}"></i><span>${esc(item.label)}${item.proxy?" <small>proxy</small>":""}</span></label>`).join("")}</div></div>`;
   const selectedWindow=comparisonWindow();
   if(selectedWindow?.error){root.innerHTML=sectionCard("Comparador histórico",selectors+`<div class="notice danger">${esc(selectedWindow.error)}</div>`);return;}
   const selected=visibleComparisonSeries().filter(item=>item.points.length);
@@ -370,7 +423,8 @@ function renderComparison() {
   const legend=selected.map(item=>{const originalIndex=all.findIndex(row=>row.code===item.code),points=item.points,last=points[points.length-1],result=Number(last.value)-100;return `<span><i class="legend-dot" style="background:${comparisonColors[originalIndex%comparisonColors.length]}"></i>${esc(item.label)} <strong class="${variationClass(result)}">${pct(result,true)}</strong></span>`;}).join("");
   const unavailable=all.filter(item=>!item.points?.length).map(item=>item.label);
   const periodLabel=state.comparisonCustom?`de ${dateOnly(state.comparisonCustomFrom)} até ${dateOnly(state.comparisonCustomTo)}`:state.comparisonYears===.5?"6 meses":`${state.comparisonYears} ano(s)`;
-  root.innerHTML=marketUpdatePanel(["comparison"])+sectionCard("Comparador histórico",`${selectors}<div class="chart comparison-chart-wrap">${svg}</div><div class="chart-legend">${legend}</div>${unavailable.length?`<div class="notice">Sem dados nesta atualização: ${esc(unavailable.join(", "))}.</div>`:""}<div class="notice info">${esc(payload.note||"Base 100 no início do período selecionado.")}</div>`,`Desempenho acumulado • base R$ 100 • ${periodLabel}`);
+  const metrics=marketTable(selected.map(item=>{const points=item.points,last=points[points.length-1];return {label:item.label,start:points[0]?.date,end:last?.date,return_pct:Number(last?.value)-100,volatility_pct:annualizedVolatility(points),observations:points.length};}),[{label:"Indicador",render:r=>`<strong>${esc(r.label)}</strong>`},{label:"Início efetivo",render:r=>dateOnly(r.start)},{label:"Fim",render:r=>dateOnly(r.end)},{label:"Retorno",render:r=>pct(r.return_pct,true),className:r=>variationClass(r.return_pct)},{label:"Volatilidade anual",render:r=>pct(r.volatility_pct)},{label:"Observações",render:r=>number(r.observations,0)}]);
+  root.innerHTML=marketUpdatePanel(["comparison"])+sectionCard("Comparador histórico",`${selectors}<div class="chart comparison-chart-wrap">${svg}</div><div class="chart-legend">${legend}</div>${sectionCard("Retorno e risco no período",metrics,"Volatilidade anualizada conforme a frequência de cada série")}${unavailable.length?`<div class="notice">Sem dados nesta atualização: ${esc(unavailable.join(", "))}.</div>`:""}<div class="notice info">${esc(payload.note||"Base 100 no início do período selecionado.")} ${state.comparisonBaseMode==="common"?"Todas as linhas começam na primeira data disponível em comum.":"Cada linha usa seu próprio primeiro dado disponível."}</div>`,`Desempenho acumulado • base R$ 100 • ${periodLabel}`);
 }
 
 async function loadComparison(force=false,attempt=0) {
@@ -836,6 +890,14 @@ async function loadPortfolios() {
   } catch(error) { root.innerHTML=errorState(error,"portfolio"); }
 }
 
+function allocationDonut(items) {
+  const rows=(items||[]).filter(item=>Number(item.value)>0);
+  if(!rows.length)return '<div class="empty-state"><strong>Composição ainda vazia</strong>Cadastre posições ou investimentos para visualizar a distribuição.</div>';
+  const colors=["#0b5d4b","#c79b3b","#4f7cac","#9b5de5","#e07a5f","#2a9d8f","#6c757d","#f4a261"];
+  let cursor=0;const stops=rows.map((item,index)=>{const start=cursor;cursor+=Number(item.weight_pct||0);return `${colors[index%colors.length]} ${start}% ${cursor}%`;});
+  return `<div class="allocation-visual"><div class="allocation-donut" style="background:conic-gradient(${stops.join(",")})"><span>${money(rows.reduce((sum,item)=>sum+Number(item.value||0),0))}</span></div><div class="allocation-legend">${rows.map((item,index)=>`<div><i class="legend-dot" style="background:${colors[index%colors.length]}"></i><span>${esc(item.label)}</span><strong>${pct(item.weight_pct)}</strong></div>`).join("")}</div></div>`;
+}
+
 async function renderPortfolioTab() {
   const root=$("#portfolio-tab-content"), tab=state.tabs.portfolio;
   root.innerHTML=loadingCards(5);
@@ -844,11 +906,18 @@ async function renderPortfolioTab() {
       const data=await api(`/portfolios/${state.portfolioId}`);
       const positions=data.positions||data.items||[];
       const summary=data.summary||{};
-      const cards=`<div class="metric-grid summary-grid">${metricCard("Patrimônio",money(summary.total_value??data.total_value))}${metricCard("Posições",String(positions.length))}${metricCard("Caixa",money(data.portfolio?.cash_balance))}${metricCard("Alocação",pct(summary.invested_pct))}</div>`;
+      const cards=`<div class="metric-grid summary-grid">${metricCard("Patrimônio",money(data.consolidated_summary?.total_value??data.consolidated_summary?.known_total_value??summary.market_value))}${metricCard("Posições",String(positions.length))}${metricCard("Outros investimentos",money(data.custom_summary?.current_value||0))}${metricCard("Caixa",money(data.portfolio?.cash_balance))}</div>`;
       const priceDates=positions.map(item=>item.current_price_as_of).filter(Boolean).sort();
       const priceUpdate=data.price_update||{};
       const quoteUpdate=`<div class="update-panel"><div class="update-summary"><span><strong>Cotações da carteira</strong><small>${priceDates.length?`Mais recente: ${dateTime(priceDates[priceDates.length-1])}`:"Nenhuma cotação disponível"} • ${esc(priceUpdate.source||"Yahoo Finance")}${priceUpdate.next_update_at?` • próxima ${dateTime(priceUpdate.next_update_at)}`:""}</small></span><span><span class="pill ${["failed","stale","partial"].includes(priceUpdate.status)?"warning":""}">${esc(updateStatusLabels[priceUpdate.status]||priceUpdate.status||"Sob demanda")}</span><button class="button secondary compact" data-portfolio-prices-refresh="${esc(state.portfolioId)}">Atualizar agora</button></span></div></div>`;
-      root.innerHTML=quoteUpdate+cards+sectionCard("Posições",marketTable(positions,[{label:"Ativo",render:r=>`<span class="ticker-cell">${esc(r.ticker)}</span>`},{label:"Quantidade",render:r=>number(r.quantity,0)},{label:"Preço médio",render:r=>money(r.average_price)},{label:"Preço atual",render:r=>`${money(r.current_price)}${r.current_price_as_of?`<br><small>${dateTime(r.current_price_as_of)} • ${esc(r.price_source||"")}</small>`:""}`},{label:"Valor",render:r=>money(r.market_value??(Number(r.quantity)*Number(r.current_price)))},{label:"Setor",render:r=>esc(r.classification||r.sector||"—")} ]));
+      const positionForm=state.session.access.can_write_portfolio?`<details class="data-card"><summary><strong>Adicionar ou atualizar posição</strong></summary><form id="portfolio-position-form" class="filter-grid" style="margin-top:16px"><div class="field"><label>Código do ativo</label><input name="ticker" required maxlength="24" placeholder="PETR4"></div><div class="field"><label>Tipo</label><select name="asset_type"><option value="stock">Ação</option><option value="fii">FII</option><option value="etf">ETF</option><option value="bdr">BDR</option><option value="future">Futuro</option><option value="crypto">Cripto</option><option value="other">Outro</option></select></div><div class="field"><label>Quantidade total</label><input name="quantity" type="number" min="0" step="0.000001" required></div><div class="field"><label>Preço médio</label><input name="average_price" type="number" min="0" step="0.000001"></div><div class="field"><label>Meta na carteira (%)</label><input name="target_weight_pct" type="number" min="0" max="100" step="0.01" value="0"></div><div class="field"><label>Classificação opcional</label><input name="classification_override" maxlength="120" placeholder="Ex.: Bancos"></div><button class="button primary wide-action" type="submit">Salvar posição</button></form></details>`:"";
+      const positionTable=marketTable(positions,[{label:"Ativo",render:r=>`<span class="ticker-cell">${esc(r.ticker)}</span>`},{label:"Quantidade",render:r=>Number(r.quantity||0).toLocaleString("pt-BR",{maximumFractionDigits:6})},{label:"Preço médio",render:r=>money(r.average_price)},{label:"Preço atual",render:r=>`${money(r.current_price)}${r.current_price_as_of?`<br><small>${dateTime(r.current_price_as_of)} • ${esc(r.price_source||"")}</small>`:""}`},{label:"Valor",render:r=>money(r.market_value??(Number(r.quantity)*Number(r.current_price)))},{label:"Peso / meta",render:r=>`${pct(r.current_weight_pct)}<br><small>meta ${pct(r.effective_target_weight_pct??r.target_weight_pct)}</small>`},{label:"Rebalanceamento",render:r=>nullable(r.rebalance_value)?"—":`<strong class="${variationClass(r.rebalance_value)}">${Number(r.rebalance_value)>=0?"Comprar":"Reduzir"} ${money(Math.abs(Number(r.rebalance_value)))}</strong>${nullable(r.rebalance_quantity)?"":`<br><small>aprox. ${number(Math.abs(Number(r.rebalance_quantity)),0)} unidade(s)</small>`}`},{label:"Setor",render:r=>esc(r.classification||r.sector||"—")},{label:"",render:r=>state.session.access.can_write_portfolio?`<button class="button ghost compact danger" data-delete-position="${esc(r.ticker)}">Remover</button>`:""}]);
+      root.innerHTML=quoteUpdate+cards+sectionCard("Posições",positionTable,"Sugestão matemática baseada nas metas informadas; não constitui recomendação de investimento.")+positionForm;
+    } else if (tab==="allocation") {
+      const [data,catalog]=await Promise.all([api(`/portfolios/${state.portfolioId}`),api(`/portfolios/${state.portfolioId}/custom-investments/catalog`)]);
+      const rows=data.custom_investments||[],summary=data.consolidated_summary||{},today=new Date().toISOString().slice(0,10);
+      const form=state.session.access.can_write_portfolio?`<details class="data-card" ${rows.length?"":"open"}><summary><strong>Adicionar investimento sem ticker</strong></summary><form id="custom-investment-form" class="filter-grid" style="margin-top:16px"><div class="field"><label>Tipo</label><select name="category" required>${catalog.map(item=>`<option value="${esc(item.id)}">${esc(item.label)}</option>`).join("")}</select></div><div class="field"><label>Nome do investimento</label><input name="name" required maxlength="200" placeholder="Ex.: CDB Banco X 110% CDI"></div><div class="field"><label>Instituição</label><input name="institution" maxlength="160" placeholder="Banco ou corretora"></div><div class="field"><label>Data da aplicação</label><input type="date" name="application_date" required value="${today}"></div><div class="field"><label>Vencimento (opcional)</label><input type="date" name="maturity_date"></div><div class="field"><label>Valor aplicado</label><input type="number" name="invested_value" min="0.01" step="0.01" required></div><div class="field"><label>Valor atual</label><input type="number" name="current_value" min="0" step="0.01" required></div><div class="field"><label>Data do valor atual</label><input type="date" name="current_value_as_of" required value="${today}"></div><div class="field"><label>Indexador / referência</label><input name="benchmark" maxlength="80" placeholder="Ex.: 110% do CDI"></div><div class="field"><label>Liquidez</label><input name="liquidity" maxlength="120" placeholder="Ex.: no vencimento ou D+1"></div><div class="field wide-action"><label>Observações</label><textarea name="notes" rows="2"></textarea></div><button class="button primary wide-action" type="submit">Salvar investimento</button></form></details>`:"";
+      root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Patrimônio conhecido",money(summary.known_total_value))}${metricCard("Investimentos sem ticker",money(data.custom_summary?.current_value||0),`${rows.length} cadastro(s)`)}${metricCard("Valor aplicado",money(data.custom_summary?.invested_value||0))}${metricCard("Variação",pct(data.custom_summary?.variation_pct,true))}</div>${sectionCard("Composição consolidada",allocationDonut(data.consolidated_allocation||[]),summary.allocation_complete?"Valores de mercado e valores informados manualmente":"Composição parcial: existe posição sem cotação")}${sectionCard("Renda fixa, fundos e outros",marketTable(rows,[{label:"Investimento",render:r=>`<strong>${esc(r.name)}</strong><br><small>${esc(r.category_label)}</small>`},{label:"Instituição",render:r=>esc(r.institution||"—")},{label:"Aplicação",render:r=>dateOnly(r.application_date)},{label:"Vencimento",render:r=>dateOnly(r.maturity_date)},{label:"Aplicado",render:r=>money(r.invested_value)},{label:"Atual",render:r=>`${money(r.current_value)}<br><small>${dateOnly(r.current_value_as_of)}</small>`},{label:"Variação",render:r=>pct(r.variation_pct,true),className:r=>variationClass(r.variation_pct)},{label:"",render:r=>state.session.access.can_write_portfolio?`<span class="row-actions"><button class="button ghost compact" data-update-custom-investment="${esc(r.id)}" data-current-value="${esc(r.current_value)}">Atualizar valor</button><button class="button ghost compact danger" data-delete-custom-investment="${esc(r.id)}">Arquivar</button></span>`:""}]),"O histórico preserva cada valor informado por data")}${form}`;
     } else if (tab==="news") {
       const cache=await api(`/insights/news/cache/portfolios/${state.portfolioId}`);
       const data=cache.data||{};
@@ -878,6 +947,48 @@ async function refreshPortfolioNews(portfolioId) {
     toast(result.scheduled===false?"As notícias já estão sendo atualizadas.":"Atualização das notícias solicitada.",result.scheduled===false?"info":"success");
     setTimeout(()=>renderPortfolioTab(),2500);
   } catch(error) { toast(error.message,"error"); }
+}
+
+async function saveCustomInvestment(form) {
+  const values=Object.fromEntries(new FormData(form));
+  for(const key of ["invested_value","current_value"])values[key]=Number(values[key]);
+  for(const key of ["maturity_date","institution","benchmark","liquidity","notes"])if(!values[key])values[key]=null;
+  try{await api(`/portfolios/${encodeURIComponent(state.portfolioId)}/custom-investments`,{method:"POST",body:JSON.stringify(values)});toast("Investimento salvo.","success");renderPortfolioTab();}
+  catch(error){toast(error.message,"error");}
+}
+
+async function savePortfolioPosition(form){
+  const values=Object.fromEntries(new FormData(form)),ticker=String(values.ticker||"").trim().toUpperCase();
+  const payload={asset_type:values.asset_type,stage:"position",quantity:Number(values.quantity||0),average_price:values.average_price?Number(values.average_price):null,target_weight_pct:Number(values.target_weight_pct||0),classification_override:values.classification_override||null,notes:null};
+  try{await api(`/portfolios/${encodeURIComponent(state.portfolioId)}/positions/${encodeURIComponent(ticker)}`,{method:"PUT",body:JSON.stringify(payload)});toast("Posição salva e alocação recalculada.","success");renderPortfolioTab();}
+  catch(error){toast(error.message,"error");}
+}
+
+async function deletePortfolioPosition(button){
+  if(!window.confirm(`Remover ${button.dataset.deletePosition} desta carteira?`))return;
+  try{await api(`/portfolios/${encodeURIComponent(state.portfolioId)}/positions/${encodeURIComponent(button.dataset.deletePosition)}`,{method:"DELETE"});toast("Posição removida.","success");renderPortfolioTab();}
+  catch(error){toast(error.message,"error");}
+}
+
+async function updateCustomInvestmentValue(button) {
+  const dialog=$("#custom-value-dialog"),form=$("#custom-value-form");
+  form.elements.investment_id.value=button.dataset.updateCustomInvestment;
+  form.elements.current_value.value=button.dataset.currentValue||"";
+  form.elements.current_value_as_of.value=new Date().toISOString().slice(0,10);
+  dialog.showModal();
+}
+
+async function saveCustomInvestmentValue(form){
+  const values=Object.fromEntries(new FormData(form)),value=Number(values.current_value);
+  if(!Number.isFinite(value)||value<0){toast("Informe um valor válido.","error");return;}
+  try{await api(`/portfolios/${encodeURIComponent(state.portfolioId)}/custom-investments/${encodeURIComponent(values.investment_id)}`,{method:"PATCH",body:JSON.stringify({current_value:value,current_value_as_of:values.current_value_as_of})});$("#custom-value-dialog").close();toast("Valor e histórico atualizados.","success");renderPortfolioTab();}
+  catch(error){toast(error.message,"error");}
+}
+
+async function deleteCustomInvestment(button) {
+  if(!window.confirm("Arquivar este investimento? O histórico será preservado."))return;
+  try{await api(`/portfolios/${encodeURIComponent(state.portfolioId)}/custom-investments/${encodeURIComponent(button.dataset.deleteCustomInvestment)}`,{method:"DELETE"});toast("Investimento arquivado.","success");renderPortfolioTab();}
+  catch(error){toast(error.message,"error");}
 }
 
 async function refreshPortfolioPrices(portfolioId) {
@@ -1037,15 +1148,19 @@ async function loadBacktests() {
       const officialUpdated=rows.map(row=>row.last_update_at||row.finished_at||row.created_at).filter(Boolean).sort().pop();
       root.innerHTML=recordedUpdatePanel("Backtests oficiais",officialUpdated,"Rodada automática aos sábados às 00h01, horário de Brasília")+sectionCard("Rodadas oficiais",marketTable(rows,[{label:"Criado em",render:r=>dateTime(r.created_at)},{label:"Identificador",render:r=>`<button class="table-link" data-official-job="${esc(r.id)}">${esc(String(r.id).slice(0,8))}…</button>`},{label:"Ativos",render:r=>number((r.requested_tickers||r.tickers||[]).length,0)},{label:"Progresso",render:r=>`${number(r.processed_assets||0,0)} / ${number(r.total_assets||(r.requested_tickers||r.tickers||[]).length,0)}`},{label:"Partes",render:r=>number(r.received_chunks||0,0)},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":""}">${esc(officialStatusLabels[r.status]||r.status)}</span>`},{label:"",render:r=>`<button class="button ghost compact" data-official-job="${esc(r.id)}">Detalhes</button>`}]),"A entrega de cada ativo é fracionada em partes pequenas. Uma interrupção pode ser retomada sem duplicar resultados.");
     } else {
-      const catalog=await api("/backtests/strategies");
+      const [catalog,recentJobs]=await Promise.all([api("/backtests/strategies"),api("/backtests/jobs?limit=5")]);
       const access=state.session.access;
       root.innerHTML=sectionCard("Comparar estratégias",`<form id="backtest-form" class="filter-grid backtest-form">
         <div class="field wide-action"><label>Ativos — separe por vírgula ou espaço</label><textarea name="tickers" required rows="3" placeholder="PETR4, VALE3, BBAS3"></textarea><small>Limite autorizado por análise: ${number(access.backtest_asset_limit||0,0)} ativo(s).</small></div>
-        <div class="field"><label>Estratégias (até 3)</label><select name="strategy_ids" multiple size="6" required>${(catalog.strategies||[]).map(s=>`<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("")}</select></div>
+        <div class="field"><label>Estratégias (até ${number(access.backtest_strategy_limit||0,0)})</label><select name="strategy_ids" multiple size="7" required>${(catalog.strategies||[]).map(s=>`<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("")}</select><small>Use Ctrl para selecionar mais de uma.</small></div>
+        <div class="field"><label>Forma de análise</label><select name="execution_mode"><option value="compare">Comparar separadamente</option><option value="combined">Combinar estratégias</option></select><small>A combinação produz uma única posição.</small></div>
+        <div class="field" data-combination-rule hidden><label>Regra da combinação</label><select name="combination_rule"><option value="all">Todas confirmam (E)</option><option value="any">Qualquer uma confirma (OU)</option><option value="majority">Maioria confirma</option></select></div>
         <div class="field"><label>Tipo de ativo</label><select name="asset_type"><option value="stock">Ações</option><option value="fii">FIIs</option><option value="etf">ETFs</option><option value="bdr">BDRs</option></select></div>
-        <div class="field"><label>Período</label><select name="period">${Object.entries(catalog.periods||{}).map(([id,label])=>`<option value="${esc(id)}" ${id==="5y"?"selected":""}>${esc(label)}</option>`).join("")}</select></div>
-        <button class="button primary wide-action" type="submit">Executar e comparar</button>
-      </form><div id="backtest-result" style="margin-top:16px"></div>`,`Cada envio conta como uma análise diária. Limite desta conta: ${access.backtest_daily_limit||0} por dia; os resultados ficam salvos no histórico.`);
+        <div class="field"><label>Período</label><select name="period">${Object.entries(catalog.periods||{}).map(([id,label])=>`<option value="${esc(id)}" ${id==="5y"?"selected":""}>${esc(label)}</option>`).join("")}<option value="custom">Personalizado</option></select></div>
+        <div class="field" data-backtest-custom-date hidden><label>De</label><input type="date" name="start"></div><div class="field" data-backtest-custom-date hidden><label>Até</label><input type="date" name="end"></div>
+        <details class="wide-action"><summary>Premissas financeiras</summary><div class="filter-grid compact-grid"><div class="field"><label>Capital inicial</label><input type="number" name="initial_capital" min="1" step="100" value="10000"></div><div class="field"><label>Taxa (%)</label><input type="number" name="fee_pct" min="0" max="5" step="0.01" value="0.03"></div><div class="field"><label>Slippage (%)</label><input type="number" name="slippage_pct" min="0" max="5" step="0.01" value="0.05"></div><div class="field"><label>Taxa livre de risco (% a.a.)</label><input type="number" name="risk_free_rate_pct" min="-20" max="100" step="0.1" value="0"></div><label class="check"><input type="checkbox" name="apply_cash_yield"> Remunerar o caixa</label><div class="field"><label>Rendimento do caixa (% a.a.)</label><input type="number" name="cash_yield_rate_pct" min="-99" max="100" step="0.1" value="0"></div></div></details>
+        <button class="button primary wide-action" type="submit">Enviar análise para processamento</button>
+      </form><div id="backtest-result" style="margin-top:16px"></div>`+((recentJobs||[]).length?`<div style="margin-top:18px">${sectionCard("Execuções recentes",marketTable(recentJobs,[{label:"Solicitado",render:r=>dateTime(r.created_at)},{label:"Progresso",render:r=>`${number(r.progress_current||0,0)} / ${number(r.progress_total||0,0)}`},{label:"Status",render:r=>`<span class="pill">${esc(r.status)}</span>`}]))}</div>`:""),`Cada envio conta como uma análise diária. Limite: ${access.backtest_daily_limit||0} por dia; até ${access.backtest_strategy_limit||0} estratégia(s); intervalo mínimo de ${access.backtest_cooldown_seconds||60} segundos. A tela permanece livre durante o processamento.`);
     }
   } catch(error) { root.innerHTML=errorState(error,"backtests"); }
 }
@@ -1057,18 +1172,119 @@ async function runBacktest(form) {
   const strategy_ids=[...form.querySelector('[name="strategy_ids"]').selectedOptions].map(option=>option.value);
   if(!tickers.length||!strategy_ids.length){result.innerHTML=errorState("Informe ao menos um ativo e uma estratégia.");return;}
   try {
-    const data=await api("/backtests/matrix",{method:"POST",body:JSON.stringify({tickers,strategy_ids,asset_type:values.asset_type,period:values.period,initial_capital:10000,fee_pct:.03,slippage_pct:.05,risk_free_rate_pct:0,filters:{}})});
-    const rows=data.results||[];
-    result.innerHTML=sectionCard("Resultado comparativo",marketTable(rows,[
-      {label:"Ativo",render:r=>`<strong>${esc(r.ticker||r.requested_ticker)}</strong>`},
-      {label:"Estratégia",render:r=>esc(r.strategy_name||r.strategy_id)},
-      {label:"Retorno",render:r=>pct(r.total_return_pct,true),className:r=>variationClass(r.total_return_pct)},
-      {label:"CAGR",render:r=>pct(r.cagr_pct??r.cagr,true),className:r=>variationClass(r.cagr_pct??r.cagr)},
-      {label:"Sharpe",render:r=>number(r.sharpe_ratio??r.sharpe)},
-      {label:"Drawdown",render:r=>pct(r.max_drawdown_pct??r.max_drawdown,true)},
-    ]),`${data.assets_requested} ativo(s), ${data.strategies_requested} estratégia(s) • uso diário ${data.daily_used}/${data.daily_limit}`)+(data.failures?.length?`<div class="notice" style="margin-top:12px">${data.failures.length} ativo(s) não puderam ser processados nesta rodada.</div>`:"");
-    toast("Comparação concluída e salva no histórico.","success");
+    const payload={tickers,strategy_ids,execution_mode:values.execution_mode,combination_rule:values.combination_rule,asset_type:values.asset_type,period:values.period,start:values.period==="custom"&&values.start?`${values.start}T00:00:00Z`:null,end:values.period==="custom"&&values.end?`${values.end}T23:59:59Z`:null,initial_capital:Number(values.initial_capital||10000),fee_pct:Number(values.fee_pct||0),slippage_pct:Number(values.slippage_pct||0),risk_free_rate_pct:Number(values.risk_free_rate_pct||0),apply_cash_yield:form.querySelector('[name="apply_cash_yield"]')?.checked||false,cash_yield_rate_pct:Number(values.cash_yield_rate_pct||0),filters:{}};
+    const data=await api("/backtests/matrix",{method:"POST",body:JSON.stringify(payload)});
+    result.innerHTML=sectionCard("Análise na fila",`<div class="notice"><strong>Você pode continuar usando o site.</strong><br>O processamento ocorre em segundo plano.</div><progress max="${data.assets_requested}" value="0" style="width:100%;margin-top:14px"></progress><p class="block-hint">Preparando a análise…</p>`);
+    toast("Análise enviada. Você pode continuar navegando.","success");
+    await watchBacktestJob(data.job_id,result,data);
   } catch(error) { result.innerHTML=errorState(error); }
+}
+
+function renderPersonalBacktestResult(job,submission) {
+  const data=job.result||{},rows=data.results||[];
+  return sectionCard(data.execution_mode==="combined"?"Resultado da combinação":"Resultado comparativo",marketTable(rows,[
+    {label:"Ativo",render:r=>`<strong>${esc(r.ticker||r.requested_ticker)}</strong>`},
+    {label:"Estratégia",render:r=>esc(r.strategy_name||r.strategy_id)},
+    {label:"Retorno",render:r=>pct(r.total_return_pct,true),className:r=>variationClass(r.total_return_pct)},
+    {label:"CAGR",render:r=>pct(r.cagr_pct??r.cagr,true),className:r=>variationClass(r.cagr_pct??r.cagr)},
+    {label:"Sharpe",render:r=>number(r.sharpe_ratio??r.sharpe)},
+    {label:"Drawdown",render:r=>pct(r.max_drawdown_pct??r.max_drawdown,true)},
+  ]),`${data.assets_requested||submission.assets_requested} ativo(s), ${data.strategies_requested||submission.strategies_requested} estratégia(s) • uso diário ${submission.daily_used}/${submission.daily_limit}`)+(data.failures?.length?`<div class="notice" style="margin-top:12px">${data.failures.length} ativo(s) não puderam ser processados nesta rodada.</div>`:"")+`<p style="margin-top:14px"><a class="button secondary" href="${BASE_PATH}/backtests/jobs/${encodeURIComponent(job.id)}/export.csv">Exportar operações em CSV</a></p>`;
+}
+
+async function watchBacktestJob(jobId,result,submission) {
+  for(let attempt=0;attempt<3600;attempt+=1) {
+    if(!result?.isConnected)return;
+    const job=await api(`/backtests/jobs/${encodeURIComponent(jobId)}`);
+    const total=Math.max(1,Number(job.progress_total||submission.assets_requested||1));
+    const current=Math.min(total,Number(job.progress_current||0));
+    if(job.status==="succeeded"){
+      result.innerHTML=renderPersonalBacktestResult(job,submission);
+      toast("Análise concluída e salva no histórico.","success");return;
+    }
+    if(job.status==="failed"||job.status==="cancelled"){
+      result.innerHTML=errorState(`A análise não foi concluída (${job.last_error_code||job.status}).`);return;
+    }
+    result.innerHTML=sectionCard("Análise em segundo plano",`<progress max="${total}" value="${current}" style="width:100%"></progress><p><strong>${current} de ${total}</strong> ativo(s)</p><p class="block-hint">${esc(job.message||"Processando…")} Você pode continuar usando as outras áreas.</p>`);
+    await new Promise(resolve=>setTimeout(resolve,2000));
+  }
+  result.innerHTML=errorState("O acompanhamento excedeu o tempo desta tela. Consulte o histórico de execuções.");
+}
+
+function financeCategoryBars(rows,total) {
+  if(!(rows||[]).length)return '<div class="empty-state compact"><strong>Nenhuma despesa neste mês</strong>Os grupos aparecerão à medida que você fizer lançamentos.</div>';
+  const maximum=Math.max(...rows.map(row=>Number(row.value||0)),1);
+  return `<div class="finance-bars">${rows.map(row=>`<div class="finance-bar-row"><span>${esc(row.category)}</span><div><i style="width:${Math.max(2,Number(row.value||0)/maximum*100)}%"></i></div><strong>${money(row.value)}</strong></div>`).join("")}</div><small>Total previsto e realizado: ${money(total)}</small>`;
+}
+
+function financeBudgetTable(rows) {
+  return marketTable(rows||[],[
+    {label:"Categoria",render:r=>`<strong>${esc(r.category)}</strong>`},
+    {label:"Limite",render:r=>money(r.limit_value)},
+    {label:"Usado",render:r=>money(r.used_value)},
+    {label:"Consumo",render:r=>`<span class="pill ${Number(r.used_pct)>100?"danger":""}">${pct(r.used_pct)}</span>`},
+  ]);
+}
+
+function financeTransactionTable(rows,canWrite) {
+  const statusLabels={planned:"Previsto",paid:"Pago",received:"Recebido",overdue:"Atrasado"};
+  return marketTable(rows||[],[
+    {label:"Data",render:r=>dateOnly(r.transaction_date)},
+    {label:"Descrição",render:r=>`<strong>${esc(r.description)}</strong><br><small>${esc(r.category)}${r.institution?` • ${esc(r.institution)}`:""}</small>`},
+    {label:"Tipo",render:r=>r.kind==="income"?"Receita":"Despesa"},
+    {label:"Valor",render:r=>money(r.amount),className:r=>r.kind==="income"?"positive":"negative"},
+    {label:"Status",render:r=>`<span class="pill ${r.status==="overdue"?"danger":""}">${esc(statusLabels[r.status]||r.status)}</span>`},
+    {label:"",render:r=>canWrite?`<span class="row-actions">${["paid","received"].includes(r.status)?"":`<button class="button ghost compact" data-set-finance-status="${esc(r.id)}" data-finance-kind="${esc(r.kind)}">${r.kind==="income"?"Marcar recebido":"Marcar pago"}</button>`}<button class="button ghost compact danger" data-delete-finance="${esc(r.id)}">Arquivar</button></span>`:""},
+  ]);
+}
+
+async function loadFinances() {
+  const root=$("#finances-tab-content"),monthInput=$("#finance-month");
+  if(monthInput&&!monthInput.value)monthInput.value=state.financeMonth;
+  root.innerHTML=loadingCards(5);
+  try {
+    const [data,catalog]=await Promise.all([
+      api(`/finances/summary?month=${encodeURIComponent(state.financeMonth)}`,{requestKey:"finances"}),
+      api("/finances/catalog"),
+    ]);
+    const access=state.session.access,tab=state.tabs.finances,transactions=data.transactions||[];
+    if(tab==="monthly"){
+      const expenseTotal=(data.expense_by_category||[]).reduce((sum,row)=>sum+Number(row.value||0),0);
+      root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Receitas recebidas",money(data.realized?.income),"Realizado")}${metricCard("Despesas pagas",money(data.realized?.expense),"Realizado")}${metricCard("Saldo realizado",money(data.realized?.balance),"Entradas menos saídas",data.realized?.balance)}${metricCard("Saldo previsto",money(data.forecast?.balance),"Inclui lançamentos pendentes",data.forecast?.balance)}</div><div class="finance-overview-grid">${sectionCard("Despesas por categoria",financeCategoryBars(data.expense_by_category||[],expenseTotal),`Competência ${state.financeMonth}`)}${sectionCard("Orçamento do mês",(data.budgets||[]).length?financeBudgetTable(data.budgets):'<div class="empty-state compact"><strong>Orçamento ainda não definido</strong>Use a aba Orçamento para criar limites por categoria.</div>')}</div>${sectionCard("Lançamentos mais recentes",financeTransactionTable(transactions.slice(0,8),access.can_write_finances),data.updated_at?`Atualizado em ${dateTime(data.updated_at)}`:"Sem lançamentos")}`;
+    }else if(tab==="transactions"){
+      const options=(kind)=>(catalog.categories?.[kind]||[]).map(item=>`<option data-finance-category-kind="${kind}" ${kind==="income"?"hidden disabled":""}>${esc(item)}</option>`).join("");
+      const form=access.can_write_finances?`<details class="data-card" open><summary><strong>Novo lançamento</strong></summary><form id="finance-transaction-form" class="filter-grid" style="margin-top:16px"><div class="field"><label>Tipo</label><select name="kind"><option value="expense">Despesa</option><option value="income">Receita</option></select></div><div class="field"><label>Categoria</label><select name="category">${options("expense")}${options("income")}</select></div><div class="field"><label>Descrição</label><input name="description" required maxlength="200"></div><div class="field"><label>Valor</label><input name="amount" type="number" min="0.01" step="0.01" required></div><div class="field"><label>Data</label><input name="transaction_date" type="date" value="${new Date().toISOString().slice(0,10)}" required></div><div class="field"><label>Situação</label><select name="status"><option value="planned">Previsto</option><option value="paid" data-finance-status-kind="expense">Pago</option><option value="received" data-finance-status-kind="income" hidden disabled>Recebido</option><option value="overdue">Atrasado</option></select></div><div class="field"><label>Instituição</label><input name="institution" maxlength="120"></div><div class="field"><label>Forma de pagamento</label><input name="payment_method" maxlength="80"></div><div class="field wide-action"><label>Observações</label><textarea name="notes" rows="2"></textarea></div><button class="button primary wide-action" type="submit">Salvar lançamento</button></form></details>`:"";
+      root.innerHTML=form+sectionCard("Planilha mensal",financeTransactionTable(transactions,access.can_write_finances),`${transactions.length} lançamento(s) em ${state.financeMonth}`);
+    }else{
+      const current=new Map((data.budgets||[]).map(row=>[row.category,Number(row.limit_value||0)]));
+      const fields=(catalog.categories?.expense||[]).map(category=>`<div class="field"><label>${esc(category)}</label><input type="number" min="0" step="0.01" name="${esc(category)}" value="${current.get(category)||""}" placeholder="Sem limite"></div>`).join("");
+      root.innerHTML=`${sectionCard("Acompanhamento",(data.budgets||[]).length?financeBudgetTable(data.budgets):'<div class="empty-state compact">Nenhum limite definido.</div>',"O consumo inclui despesas previstas e pagas")}${access.can_write_finances?`<form id="finance-budget-form" class="data-card filter-grid" style="margin-top:16px">${fields}<button class="button primary wide-action" type="submit">Salvar orçamento de ${esc(state.financeMonth)}</button></form>`:""}`;
+    }
+  }catch(error){root.innerHTML=errorState(error,"finances");}
+}
+
+async function saveFinanceTransaction(form){
+  const values=Object.fromEntries(new FormData(form));values.amount=Number(values.amount);values.competence_month=state.financeMonth;
+  try{await api("/finances/transactions",{method:"POST",body:JSON.stringify(values)});toast("Lançamento salvo.","success");loadFinances();}
+  catch(error){toast(error.message,"error");}
+}
+
+async function saveFinanceBudget(form){
+  const values={};new FormData(form).forEach((value,key)=>{values[key]=Number(value||0);});
+  try{await api("/finances/budgets",{method:"PUT",body:JSON.stringify({competence_month:state.financeMonth,values})});toast("Orçamento atualizado.","success");loadFinances();}
+  catch(error){toast(error.message,"error");}
+}
+
+async function setFinanceStatus(button){
+  const status=button.dataset.financeKind==="income"?"received":"paid";
+  try{await api(`/finances/transactions/${encodeURIComponent(button.dataset.setFinanceStatus)}`,{method:"PATCH",body:JSON.stringify({status})});toast("Situação atualizada.","success");loadFinances();}
+  catch(error){toast(error.message,"error");}
+}
+
+async function archiveFinanceTransaction(button){
+  if(!window.confirm("Arquivar este lançamento? O registro continuará preservado no banco."))return;
+  try{await api(`/finances/transactions/${encodeURIComponent(button.dataset.deleteFinance)}`,{method:"DELETE"});toast("Lançamento arquivado.","success");loadFinances();}
+  catch(error){toast(error.message,"error");}
 }
 
 async function loadAdmin() {
@@ -1076,8 +1292,8 @@ async function loadAdmin() {
   try {
     if(state.tabs.admin==="users") {
       const users=await api("/access/users");
-      const body=`<div class="table-scroll"><table><thead><tr><th>Usuário</th><th>Status</th><th>Executa backtests</th><th>Ativos por análise</th><th>Análises por dia</th><th>Alertas</th><th></th></tr></thead><tbody>${users.map(user=>`<tr data-user-row="${esc(user.email)}"><td><strong>${esc(user.display_name||user.email)}</strong><br><small>${esc(user.email)}</small></td><td>${user.is_owner?'<span class="pill">Permanente</span>':`<select data-user-field="status"><option value="pending" ${user.status==="pending"?"selected":""}>Pendente</option><option value="approved" ${user.status==="approved"?"selected":""}>Aprovado</option><option value="blocked" ${user.status==="blocked"?"selected":""}>Bloqueado</option></select>`}</td><td>${user.is_owner?"Sim":`<label class="check"><input type="checkbox" data-user-field="can_run_backtests" ${user.can_run_backtests?"checked":""}> Permitir</label>`}</td><td>${user.is_owner?"30":`<select data-user-field="backtest_asset_limit">${[0,1,3,5,10,20,30].map(value=>`<option value="${value}" ${Number(user.backtest_asset_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${user.is_owner?"30":`<select data-user-field="backtest_daily_limit">${[0,1,5,10,20,30].map(value=>`<option value="${value}" ${Number(user.backtest_daily_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${number(user.alert_asset_limit||0,0)}</td><td>${user.is_owner?"":`<button class="button secondary" data-save-user="${esc(user.email)}">Salvar</button>`}</td></tr>`).join("")}</tbody></table></div>`;
-      root.innerHTML=sectionCard("Usuários e permissões",body,"Os limites de backtest podem ser 1, 3, 5, 10, 20 ou 30 ativos e 1, 5, 10, 20 ou 30 análises por dia.");
+      const body=`<div class="table-scroll"><table><thead><tr><th>Usuário</th><th>Status</th><th>Finanças</th><th>Executa backtests</th><th>Ativos</th><th>Estratégias</th><th>Análises/dia</th><th>Alertas</th><th></th></tr></thead><tbody>${users.map(user=>`<tr data-user-row="${esc(user.email)}"><td><strong>${esc(user.display_name||user.email)}</strong><br><small>${esc(user.email)}</small></td><td>${user.is_owner?'<span class="pill">Permanente</span>':`<select data-user-field="status"><option value="pending" ${user.status==="pending"?"selected":""}>Pendente</option><option value="approved" ${user.status==="approved"?"selected":""}>Aprovado</option><option value="blocked" ${user.status==="blocked"?"selected":""}>Bloqueado</option></select>`}</td><td>${user.is_owner?"Leitura e escrita":`<label class="check"><input type="checkbox" data-user-field="can_view_finances" ${user.can_view_finances?"checked":""}> Ver</label><label class="check"><input type="checkbox" data-user-field="can_write_finances" ${user.can_write_finances?"checked":""}> Editar</label>`}</td><td>${user.is_owner?"Sim":`<label class="check"><input type="checkbox" data-user-field="can_run_backtests" ${user.can_run_backtests?"checked":""}> Permitir</label>`}</td><td>${user.is_owner?"10":`<select data-user-field="backtest_asset_limit">${[0,1,3,5,10].map(value=>`<option value="${value}" ${Number(user.backtest_asset_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${user.is_owner?"5":`<select data-user-field="backtest_strategy_limit">${[0,1,2,3,5].map(value=>`<option value="${value}" ${Number(user.backtest_strategy_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${user.is_owner?"20":`<select data-user-field="backtest_daily_limit">${[0,1,5,10,20].map(value=>`<option value="${value}" ${Number(user.backtest_daily_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${number(user.alert_asset_limit||0,0)}</td><td>${user.is_owner?"":`<button class="button secondary" data-save-user="${esc(user.email)}">Salvar</button>`}</td></tr>`).join("")}</tbody></table></div>`;
+      root.innerHTML=sectionCard("Usuários e permissões",body,"Níveis disponíveis: 1, 3, 5 ou 10 ativos; 1, 2, 3 ou 5 estratégias; e 1, 5, 10 ou 20 solicitações por dia. Toda conta respeita intervalo mínimo de 60 segundos.");
     } else if(state.tabs.admin==="data") {
       const [summary,updatePayload]=await Promise.all([api("/data/catalog-summary"),api("/market-dashboard/updates")]);
       state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),...(updatePayload.updates||{})};
@@ -1117,12 +1333,18 @@ async function saveUserAccess(email) {
   if(!row)return;
   const value=name=>row.querySelector(`[data-user-field="${name}"]`);
   const canRun=Boolean(value("can_run_backtests")?.checked);
+  const canViewFinances=Boolean(value("can_view_finances")?.checked);
+  const canWriteFinances=Boolean(value("can_write_finances")?.checked);
   const payload={
     status:value("status")?.value,
+    can_view_finances:canViewFinances||canWriteFinances,
+    can_write_finances:canWriteFinances,
     can_run_backtests:canRun,
     can_view_backtests:canRun,
     backtest_asset_limit:canRun?Number(value("backtest_asset_limit")?.value||1):0,
     backtest_daily_limit:canRun?Number(value("backtest_daily_limit")?.value||1):0,
+    backtest_strategy_limit:canRun?Number(value("backtest_strategy_limit")?.value||1):0,
+    backtest_cooldown_seconds:60,
   };
   try{await api(`/access/users/${encodeURIComponent(email)}`,{method:"PUT",body:JSON.stringify(payload)});toast("Permissões atualizadas.","success");loadAdmin();}
   catch(error){toast(error.message,"error");}
@@ -1132,6 +1354,7 @@ function loadCurrentView() {
   if(state.view==="dashboard") { renderDashboardTab(); if(!state.market) loadMarket(); }
   else if(state.view==="analysis") loadAnalysis();
   else if(state.view==="portfolio") loadPortfolios();
+  else if(state.view==="finances") loadFinances();
   else if(state.view==="backtests") loadBacktests();
   else if(state.view==="admin") loadAdmin();
 }
@@ -1170,13 +1393,21 @@ function bindEvents() {
     const refreshGroupsButton=event.target.closest("[data-refresh-groups]");if(refreshGroupsButton){refreshMarketGroups(refreshGroupsButton.dataset.refreshGroups);return;}
     const portfolioNewsButton=event.target.closest("[data-portfolio-news-refresh]");if(portfolioNewsButton){refreshPortfolioNews(portfolioNewsButton.dataset.portfolioNewsRefresh);return;}
     const portfolioPricesButton=event.target.closest("[data-portfolio-prices-refresh]");if(portfolioPricesButton){refreshPortfolioPrices(portfolioPricesButton.dataset.portfolioPricesRefresh);return;}
+    const updateCustom=event.target.closest("[data-update-custom-investment]");if(updateCustom){updateCustomInvestmentValue(updateCustom);return;}
+    const deleteCustom=event.target.closest("[data-delete-custom-investment]");if(deleteCustom){deleteCustomInvestment(deleteCustom);return;}
+    const deletePosition=event.target.closest("[data-delete-position]");if(deletePosition){deletePortfolioPosition(deletePosition);return;}
+    if(event.target.closest("[data-close-custom-value]")){$("#custom-value-dialog").close();return;}
+    const setFinance=event.target.closest("[data-set-finance-status]");if(setFinance){setFinanceStatus(setFinance);return;}
+    const deleteFinance=event.target.closest("[data-delete-finance]");if(deleteFinance){archiveFinanceTransaction(deleteFinance);return;}
     const result=event.target.closest("[data-search-item]"); if(result){try{chooseSearchResult(JSON.parse(result.dataset.searchItem));}catch(_){}}
     const ticker=event.target.closest("tr[data-ticker]")?.dataset.ticker;if(ticker)openAsset(ticker);
     const retry=event.target.closest("[data-retry]")?.dataset.retry;if(retry){if(retry==="market")loadMarket(true);else loadCurrentView();}
     const linked=event.target.closest("[data-view-link]");if(linked)setView(linked.dataset.viewLink,linked.dataset.tabLink||null);
     const curve=event.target.closest("[data-curve-years]");if(curve){state.curveYears=Number(curve.dataset.curveYears);renderDashboardTab();}
+    const curveHistory=event.target.closest("[data-curve-history-count]");if(curveHistory){state.curveHistoryCount=Number(curveHistory.dataset.curveHistoryCount);renderDashboardTab();}
     const comparisonPeriod=event.target.closest("[data-comparison-years]");if(comparisonPeriod){state.comparisonYears=Number(comparisonPeriod.dataset.comparisonYears);state.comparisonCustom=false;renderComparison();}
     const comparisonCustom=event.target.closest("[data-comparison-custom]");if(comparisonCustom){state.comparisonCustom=true;ensureComparisonCustomDates();renderComparison();}
+    const comparisonBase=event.target.closest("[data-comparison-base]");if(comparisonBase){state.comparisonBaseMode=comparisonBase.dataset.comparisonBase;renderComparison();}
     const comparisonRefresh=event.target.closest("[data-comparison-refresh]");if(comparisonRefresh){state.comparison=null;loadComparison(true);}
     const saveUser=event.target.closest("[data-save-user]");if(saveUser)saveUserAccess(saveUser.dataset.saveUser);
     const marketSync=event.target.closest("[data-market-sync]");if(marketSync)syncMarketCatalog(marketSync.dataset.marketSync,marketSync.dataset.technicals==="true");
@@ -1193,7 +1424,23 @@ function bindEvents() {
   $("#save-custom-filter").addEventListener("click",saveCustomFilter);
   $("#delete-custom-filter").addEventListener("click",deleteCustomFilter);
   document.addEventListener("change",event=>{
+    if(event.target.matches('#finance-transaction-form [name="kind"]')){
+      const kind=event.target.value,form=event.target.form;
+      form.querySelectorAll("[data-finance-category-kind]").forEach(option=>{const active=option.dataset.financeCategoryKind===kind;option.hidden=!active;option.disabled=!active;});
+      form.querySelector('[name="category"]').value=form.querySelector(`[data-finance-category-kind="${kind}"]`)?.value||"";
+      form.querySelectorAll("[data-finance-status-kind]").forEach(option=>{const active=option.dataset.financeStatusKind===kind;option.hidden=!active;option.disabled=!active;});
+      form.querySelector('[name="status"]').value="planned";
+    }
+    if(event.target.matches('#backtest-form [name="execution_mode"]')){
+      const combined=event.target.value==="combined";
+      const field=event.target.form?.querySelector("[data-combination-rule]");if(field)field.hidden=!combined;
+    }
+    if(event.target.matches('#backtest-form [name="period"]')){
+      const custom=event.target.value==="custom";
+      event.target.form?.querySelectorAll("[data-backtest-custom-date]").forEach(field=>field.hidden=!custom);
+    }
     if(event.target.id==="portfolio-selector"){state.portfolioId=event.target.value;renderPortfolioTab();}
+    if(event.target.id==="finance-month"){state.financeMonth=event.target.value;loadFinances();}
     if(event.target.id==="analysis-limit"){state.analysisLimit=Number(event.target.value);$("#analysis-limit-label").textContent=state.analysisLimit;}
     if(event.target.matches("[data-comparison-series]")){
       state.comparisonSelected=$$("[data-comparison-series]:checked").map(input=>input.dataset.comparisonSeries);
@@ -1210,7 +1457,7 @@ function bindEvents() {
       localStorage.setItem("fdi-visible-columns",JSON.stringify(state.visibleColumns));renderAnalysisRows(state.analysisRows);
     }
   });
-  document.addEventListener("submit",event=>{if(event.target.id==="backtest-form"){event.preventDefault();runBacktest(event.target);}});
+  document.addEventListener("submit",event=>{if(event.target.id==="backtest-form"){event.preventDefault();runBacktest(event.target);}if(event.target.id==="portfolio-position-form"){event.preventDefault();savePortfolioPosition(event.target);}if(event.target.id==="custom-investment-form"){event.preventDefault();saveCustomInvestment(event.target);}if(event.target.id==="custom-value-form"){event.preventDefault();saveCustomInvestmentValue(event.target);}if(event.target.id==="finance-transaction-form"){event.preventDefault();saveFinanceTransaction(event.target);}if(event.target.id==="finance-budget-form"){event.preventDefault();saveFinanceBudget(event.target);}});
 }
 
 async function initialize() {

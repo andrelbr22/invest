@@ -13,6 +13,8 @@ PERMISSION_FIELDS = (
     "can_use_advanced_filters",
     "can_view_portfolio",
     "can_write_portfolio",
+    "can_view_finances",
+    "can_write_finances",
     "can_view_backtests",
     "can_run_backtests",
     "can_refresh_backtest_signals",
@@ -41,8 +43,10 @@ def full_owner_policy(email: str, display_name: str | None = None) -> dict:
         **{field: True for field in PERMISSION_FIELDS},
         "custom_filter_limit": 3,
         "alert_asset_limit": 10,
-        "backtest_asset_limit": 30,
-        "backtest_daily_limit": 30,
+        "backtest_asset_limit": 10,
+        "backtest_daily_limit": 20,
+        "backtest_strategy_limit": 5,
+        "backtest_cooldown_seconds": 60,
         "is_owner": True,
     }
 
@@ -61,6 +65,8 @@ def policy_dict(row: UserAccessPolicyORM, *, is_owner: bool = False) -> dict:
         "alert_asset_limit": 0 if blocked else int(row.alert_asset_limit or 0),
         "backtest_asset_limit": 0 if blocked else int(row.backtest_asset_limit or 0),
         "backtest_daily_limit": 0 if blocked else int(row.backtest_daily_limit or 0),
+        "backtest_strategy_limit": 0 if blocked else int(row.backtest_strategy_limit or 0),
+        "backtest_cooldown_seconds": max(60, int(row.backtest_cooldown_seconds or 60)),
         "is_owner": False,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -97,8 +103,10 @@ class AccessPolicyRepository:
                 setattr(row, field, True)
             row.custom_filter_limit = 3
             row.alert_asset_limit = 10
-            row.backtest_asset_limit = 30
-            row.backtest_daily_limit = 30
+            row.backtest_asset_limit = 10
+            row.backtest_daily_limit = 20
+            row.backtest_strategy_limit = 5
+            row.backtest_cooldown_seconds = 60
         self.session.flush()
         return row
 
@@ -111,7 +119,8 @@ class AccessPolicyRepository:
             return None
         for field in (
             "display_name", "role", "status", "custom_filter_limit", "alert_asset_limit",
-            "backtest_asset_limit", "backtest_daily_limit", *PERMISSION_FIELDS,
+            "backtest_asset_limit", "backtest_daily_limit", "backtest_strategy_limit",
+            "backtest_cooldown_seconds", *PERMISSION_FIELDS,
         ):
             if field in changes and changes[field] is not None:
                 if field == "custom_filter_limit":
@@ -119,9 +128,13 @@ class AccessPolicyRepository:
                 elif field == "alert_asset_limit":
                     value = int(changes[field]) if int(changes[field]) in {0, 1, 3, 5, 10} else 0
                 elif field == "backtest_asset_limit":
-                    value = int(changes[field]) if int(changes[field]) in {0, 1, 3, 5, 10, 20, 30} else 0
+                    value = int(changes[field]) if int(changes[field]) in {0, 1, 3, 5, 10} else 0
                 elif field == "backtest_daily_limit":
-                    value = int(changes[field]) if int(changes[field]) in {0, 1, 5, 10, 20, 30} else 0
+                    value = int(changes[field]) if int(changes[field]) in {0, 1, 5, 10, 20} else 0
+                elif field == "backtest_strategy_limit":
+                    value = int(changes[field]) if int(changes[field]) in {0, 1, 2, 3, 5} else 0
+                elif field == "backtest_cooldown_seconds":
+                    value = max(60, min(3600, int(changes[field])))
                 else:
                     value = changes[field]
                 setattr(row, field, value)

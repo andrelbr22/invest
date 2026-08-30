@@ -1,0 +1,7 @@
+# NÃO ative antes de concluir as regras de rede privada descritas no guia.
+# FDI_PRIVATE_DB_BIND deve ser o IP PRIVADO da primeira instância, nunca 0.0.0.0.
+services:
+  postgres:
+    ports:
+      - "${FDI_PRIVATE_DB_BIND:?Informe o IP privado da primeira instancia}:5432:5432"
+

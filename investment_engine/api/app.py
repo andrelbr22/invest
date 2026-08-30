@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from decimal import Decimal
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from secrets import compare_digest, token_urlsafe
 from pathlib import Path
+import csv
+import io
 import logging
+import math
 import re
 import threading
 from time import monotonic
@@ -13,7 +16,7 @@ from uuid import UUID, uuid4
 from typing import Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from authlib.integrations.starlette_client import OAuth, OAuthError
@@ -35,7 +38,7 @@ from ..core.repositories.access import AccessPolicyRepository, PERMISSION_FIELDS
 from ..core.repositories.news_cache import NewsCacheRepository, news_cache_dict, news_market_date
 from ..core.repositories.alerts import AlertRepository, alert_dict, event_dict
 from ..core.repositories.background_jobs import BackgroundJobRepository, background_job_dict
-from ..core.repositories.economic_series import SharedSnapshotRepository
+from ..core.repositories.economic_series import InterestCurveHistoryRepository, SharedSnapshotRepository
 from ..core.jobs.schedules import (
     REFRESH_SCHEDULES,
     all_refresh_statuses,
@@ -44,6 +47,12 @@ from ..core.jobs.schedules import (
 )
 from ..core.jobs.worker import BackgroundWorker
 from ..core.portfolio.service import build_portfolio_snapshot, classification_for, localize_classification
+from ..core.portfolio.custom_investments import (
+    CUSTOM_INVESTMENT_CATEGORIES,
+    CustomInvestmentRepository,
+    custom_investment_dict,
+)
+from ..core.finance.service import FINANCE_CATEGORIES, FinanceRepository, month_start, transaction_dict
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
 from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
 from ..core.backtesting.batch import BacktestBatchService, OFFICIAL_OWNER
@@ -380,6 +389,79 @@ class PortfolioPurchaseRequest(BaseModel):
     notes: str | None = None
 
 
+class PortfolioCustomInvestmentCreateRequest(BaseModel):
+    category: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=200)
+    institution: str | None = Field(default=None, max_length=160)
+    application_date: date
+    maturity_date: date | None = None
+    invested_value: float = Field(gt=0)
+    current_value: float = Field(ge=0)
+    current_value_as_of: date = Field(default_factory=date.today)
+    benchmark: str | None = Field(default=None, max_length=80)
+    liquidity: str | None = Field(default=None, max_length=120)
+    notes: str | None = None
+
+    @field_validator("category")
+    @classmethod
+    def valid_category(cls, value):
+        if value not in CUSTOM_INVESTMENT_CATEGORIES:
+            raise ValueError("invalid_custom_investment_category")
+        return value
+
+
+class PortfolioCustomInvestmentUpdateRequest(BaseModel):
+    category: str | None = Field(default=None, max_length=40)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    institution: str | None = Field(default=None, max_length=160)
+    application_date: date | None = None
+    maturity_date: date | None = None
+    invested_value: float | None = Field(default=None, gt=0)
+    current_value: float | None = Field(default=None, ge=0)
+    current_value_as_of: date | None = None
+    benchmark: str | None = Field(default=None, max_length=80)
+    liquidity: str | None = Field(default=None, max_length=120)
+    notes: str | None = None
+
+    @field_validator("category")
+    @classmethod
+    def valid_category(cls, value):
+        if value is not None and value not in CUSTOM_INVESTMENT_CATEGORIES:
+            raise ValueError("invalid_custom_investment_category")
+        return value
+
+
+class FinanceTransactionCreateRequest(BaseModel):
+    transaction_date: date
+    competence_month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    kind: Literal["income", "expense"]
+    category: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=200)
+    amount: float = Field(gt=0)
+    status: Literal["planned", "paid", "received", "overdue"] = "planned"
+    institution: str | None = Field(default=None, max_length=120)
+    payment_method: str | None = Field(default=None, max_length=80)
+    notes: str | None = None
+
+
+class FinanceTransactionUpdateRequest(BaseModel):
+    transaction_date: date | None = None
+    competence_month: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+    kind: Literal["income", "expense"] | None = None
+    category: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, min_length=1, max_length=200)
+    amount: float | None = Field(default=None, gt=0)
+    status: Literal["planned", "paid", "received", "overdue"] | None = None
+    institution: str | None = Field(default=None, max_length=120)
+    payment_method: str | None = Field(default=None, max_length=80)
+    notes: str | None = None
+
+
+class FinanceBudgetRequest(BaseModel):
+    competence_month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    values: dict[str, float] = Field(default_factory=dict)
+
+
 class BacktestNumericRangeRequest(BaseModel):
     min: float | None = None
     max: float | None = None
@@ -433,7 +515,7 @@ class BacktestRequest(BaseModel):
 class BacktestCompareRequest(BaseModel):
     ticker: str
     asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other)$")
-    strategy_ids: list[str] = Field(min_length=1, max_length=3)
+    strategy_ids: list[str] = Field(min_length=1, max_length=5)
     period: str = Field(default="1y", pattern="^(6m|1y|2y|3y|5y|10y|15y|20y|custom)$")
     start: datetime | None = None
     end: datetime | None = None
@@ -464,8 +546,10 @@ class BacktestBasketRequest(BaseModel):
 
 
 class BacktestMatrixRequest(BaseModel):
-    tickers: list[str] = Field(min_length=1, max_length=30)
-    strategy_ids: list[str] = Field(min_length=1, max_length=3)
+    tickers: list[str] = Field(min_length=1, max_length=10)
+    strategy_ids: list[str] = Field(min_length=1, max_length=5)
+    execution_mode: Literal["compare", "combined"] = "compare"
+    combination_rule: Literal["all", "any", "majority"] = "all"
     asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other)$")
     period: str = Field(default="5y", pattern="^(6m|1y|2y|3y|5y|10y|15y|20y|custom)$")
     start: datetime | None = None
@@ -574,6 +658,8 @@ class AccessPolicyUpdateRequest(BaseModel):
     can_use_advanced_filters: bool | None = None
     can_view_portfolio: bool | None = None
     can_write_portfolio: bool | None = None
+    can_view_finances: bool | None = None
+    can_write_finances: bool | None = None
     can_view_backtests: bool | None = None
     can_run_backtests: bool | None = None
     can_refresh_backtest_signals: bool | None = None
@@ -589,6 +675,8 @@ class AccessPolicyUpdateRequest(BaseModel):
     alert_asset_limit: int | None = Field(default=None)
     backtest_asset_limit: int | None = Field(default=None)
     backtest_daily_limit: int | None = Field(default=None)
+    backtest_strategy_limit: int | None = Field(default=None)
+    backtest_cooldown_seconds: int | None = Field(default=None, ge=60, le=3600)
 
 
 class AlertPreferenceRequest(BaseModel):
@@ -774,7 +862,7 @@ def retry_background_job(
 
 @app.get("/debug/db-counts")
 def debug_db_counts(_access=Depends(require_owner), db: Session = Depends(get_db)):
-    names = ["assets", "fundamental_snapshots", "technical_snapshots", "score_snapshots", "valuation_snapshots", "price_bars", "portfolios", "portfolio_positions", "backtest_runs", "backtest_trades", "backtest_batch_jobs"]
+    names = ["assets", "fundamental_snapshots", "technical_snapshots", "score_snapshots", "valuation_snapshots", "price_bars", "portfolios", "portfolio_positions", "portfolio_custom_investments", "finance_transactions", "finance_monthly_budgets", "interest_curve_snapshots", "backtest_runs", "backtest_trades", "backtest_batch_jobs"]
     counts = {}
     for name in names:
         counts[name] = db.execute(text(f"SELECT COUNT(*) FROM {name}")).scalar_one()
@@ -822,11 +910,15 @@ def update_access_user(
         changes["can_view_market"] = True
     if changes.get("can_write_portfolio") or changes.get("can_view_news_insights") or changes.get("can_use_price_alerts"):
         changes["can_view_portfolio"] = True
+    if changes.get("can_write_finances"):
+        changes["can_view_finances"] = True
     if changes.get("can_run_backtests") or changes.get("can_refresh_backtest_signals") or changes.get("can_view_backtest_studies"):
         changes["can_view_backtests"] = True
     if changes.get("can_run_backtests"):
         changes.setdefault("backtest_asset_limit", 1)
         changes.setdefault("backtest_daily_limit", 1)
+        changes.setdefault("backtest_strategy_limit", 1)
+        changes.setdefault("backtest_cooldown_seconds", 60)
     if changes.get("can_view_market") is False:
         changes["can_use_advanced_filters"] = False
         changes["can_sync_market"] = False
@@ -836,6 +928,8 @@ def update_access_user(
         changes["can_view_news_insights"] = False
         changes["can_use_price_alerts"] = False
         changes["alert_asset_limit"] = 0
+    if changes.get("can_view_finances") is False:
+        changes["can_write_finances"] = False
     if (
         changes.get("can_use_price_alerts") is False
         or ("alert_asset_limit" in changes and int(changes.get("alert_asset_limit") or 0) == 0)
@@ -854,13 +948,17 @@ def update_access_user(
         changes["can_view_backtest_studies"] = False
         changes["backtest_asset_limit"] = 0
         changes["backtest_daily_limit"] = 0
+        changes["backtest_strategy_limit"] = 0
     if changes.get("can_run_backtests") is False:
         changes["backtest_asset_limit"] = 0
         changes["backtest_daily_limit"] = 0
-    if changes.get("backtest_asset_limit") is not None and int(changes["backtest_asset_limit"]) not in {0, 1, 3, 5, 10, 20, 30}:
+        changes["backtest_strategy_limit"] = 0
+    if changes.get("backtest_asset_limit") is not None and int(changes["backtest_asset_limit"]) not in {0, 1, 3, 5, 10}:
         raise HTTPException(422, "invalid_backtest_asset_limit")
-    if changes.get("backtest_daily_limit") is not None and int(changes["backtest_daily_limit"]) not in {0, 1, 5, 10, 20, 30}:
+    if changes.get("backtest_daily_limit") is not None and int(changes["backtest_daily_limit"]) not in {0, 1, 5, 10, 20}:
         raise HTTPException(422, "invalid_backtest_daily_limit")
+    if changes.get("backtest_strategy_limit") is not None and int(changes["backtest_strategy_limit"]) not in {0, 1, 2, 3, 5}:
+        raise HTTPException(422, "invalid_backtest_strategy_limit")
     row = AccessPolicyRepository(db).update(clean, **changes)
     if row is None:
         raise HTTPException(404, "user_not_found")
@@ -1651,6 +1749,37 @@ def _portfolio_snapshot(db: Session, portfolio):
             "current_price": price_info["price"], "current_price_as_of": price_info["as_of"], "price_source": price_info["source"],
         })
     snap = build_portfolio_snapshot(raw, cash_balance=_num(portfolio.cash_balance), target_cash_pct=_num(portfolio.target_cash_pct))
+    custom_repository = CustomInvestmentRepository(db)
+    custom_rows = custom_repository.list(portfolio.id)
+    custom = [custom_investment_dict(row) for row in custom_rows]
+    custom_total = sum(float(row.current_value) for row in custom_rows)
+    custom_invested = sum(float(row.invested_value) for row in custom_rows)
+    base_known = float((snap.get("summary") or {}).get("known_market_value") or 0)
+    consolidated_known = base_known + custom_total
+    allocation_values: dict[str, float] = {}
+    for item in snap.get("class_allocation") or []:
+        value = float(item.get("known_current_value") or 0)
+        if value > 0:
+            allocation_values[item.get("asset_class_label") or item.get("asset_class") or "Outros"] = value
+    for row in custom:
+        allocation_values[row["allocation_group"]] = allocation_values.get(row["allocation_group"], 0.0) + float(row["current_value"])
+    consolidated_allocation = [{
+        "label": label, "value": round(value, 2),
+        "weight_pct": round(value / consolidated_known * 100, 4) if consolidated_known > 0 else None,
+    } for label, value in sorted(allocation_values.items(), key=lambda item: item[1], reverse=True)]
+    snap["custom_investments"] = custom
+    snap["custom_summary"] = {
+        "count": len(custom), "invested_value": round(custom_invested, 2),
+        "current_value": round(custom_total, 2),
+        "variation_pct": round((custom_total / custom_invested - 1) * 100, 4) if custom_invested > 0 else None,
+    }
+    snap["consolidated_summary"] = {
+        "known_total_value": round(consolidated_known, 2),
+        "total_value": round(consolidated_known, 2) if (snap.get("summary") or {}).get("allocation_complete") else None,
+        "allocation_complete": bool((snap.get("summary") or {}).get("allocation_complete")),
+        "custom_value": round(custom_total, 2),
+    }
+    snap["consolidated_allocation"] = consolidated_allocation
     return {
         "portfolio": _portfolio_header(portfolio), **snap,
         "price_update": refresh_status(db, "technical_intraday"),
@@ -1684,6 +1813,179 @@ def portfolio_detail(portfolio_id: UUID, access=Depends(require_permission("can_
     p = PortfolioRepository(db).get_portfolio(portfolio_id, access["email"])
     if p is None: raise HTTPException(404, "portfolio_not_found")
     return _portfolio_snapshot(db, p)
+
+
+@app.get("/portfolios/{portfolio_id}/custom-investments/catalog")
+def custom_investment_catalog(
+    portfolio_id: UUID,
+    access=Depends(require_permission("can_view_portfolio")),
+    db: Session = Depends(get_db),
+):
+    portfolio = PortfolioRepository(db).get_portfolio(portfolio_id, access["email"])
+    if portfolio is None:
+        raise HTTPException(404, "portfolio_not_found")
+    return [{"id": key, "label": value[0], "group": value[1]} for key, value in CUSTOM_INVESTMENT_CATEGORIES.items()]
+
+
+@app.get("/portfolios/{portfolio_id}/custom-investments")
+def list_custom_investments(
+    portfolio_id: UUID,
+    access=Depends(require_permission("can_view_portfolio")),
+    db: Session = Depends(get_db),
+):
+    portfolio = PortfolioRepository(db).get_portfolio(portfolio_id, access["email"])
+    if portfolio is None:
+        raise HTTPException(404, "portfolio_not_found")
+    repository = CustomInvestmentRepository(db)
+    return [custom_investment_dict(row, history=repository.history(row.id)) for row in repository.list(portfolio.id)]
+
+
+@app.post("/portfolios/{portfolio_id}/custom-investments")
+def create_custom_investment(
+    portfolio_id: UUID, request: PortfolioCustomInvestmentCreateRequest,
+    access=Depends(require_permission("can_write_portfolio")),
+    db: Session = Depends(get_db),
+):
+    portfolio = PortfolioRepository(db).get_portfolio(portfolio_id, access["email"])
+    if portfolio is None:
+        raise HTTPException(404, "portfolio_not_found")
+    if request.maturity_date is not None and request.maturity_date < request.application_date:
+        raise HTTPException(422, "maturity_before_application")
+    row = CustomInvestmentRepository(db).create(portfolio.id, **request.model_dump())
+    db.commit()
+    return custom_investment_dict(row)
+
+
+@app.patch("/portfolios/{portfolio_id}/custom-investments/{investment_id}")
+def update_custom_investment(
+    portfolio_id: UUID, investment_id: UUID, request: PortfolioCustomInvestmentUpdateRequest,
+    access=Depends(require_permission("can_write_portfolio")),
+    db: Session = Depends(get_db),
+):
+    portfolio = PortfolioRepository(db).get_portfolio(portfolio_id, access["email"])
+    if portfolio is None:
+        raise HTTPException(404, "portfolio_not_found")
+    repository = CustomInvestmentRepository(db)
+    row = repository.get(investment_id, portfolio.id)
+    if row is None or not row.is_active:
+        raise HTTPException(404, "custom_investment_not_found")
+    changes = request.model_dump(exclude_unset=True)
+    application_date = changes.get("application_date", row.application_date)
+    maturity_date = changes.get("maturity_date", row.maturity_date)
+    if maturity_date is not None and maturity_date < application_date:
+        raise HTTPException(422, "maturity_before_application")
+    repository.update(row, **changes)
+    db.commit()
+    return custom_investment_dict(row, history=repository.history(row.id))
+
+
+@app.delete("/portfolios/{portfolio_id}/custom-investments/{investment_id}")
+def delete_custom_investment(
+    portfolio_id: UUID, investment_id: UUID,
+    access=Depends(require_permission("can_write_portfolio")),
+    db: Session = Depends(get_db),
+):
+    portfolio = PortfolioRepository(db).get_portfolio(portfolio_id, access["email"])
+    if portfolio is None:
+        raise HTTPException(404, "portfolio_not_found")
+    repository = CustomInvestmentRepository(db)
+    row = repository.get(investment_id, portfolio.id)
+    if row is None or not row.is_active:
+        raise HTTPException(404, "custom_investment_not_found")
+    repository.deactivate(row)
+    db.commit()
+    return {"status": "archived", "id": str(row.id)}
+
+
+# -----------------------------
+# V1.20 Personal finances
+# -----------------------------
+
+@app.get("/finances/catalog")
+def finance_catalog(_access=Depends(require_permission("can_view_finances"))):
+    return {
+        "categories": {key: list(values) for key, values in FINANCE_CATEGORIES.items()},
+        "statuses": {
+            "planned": "Previsto", "paid": "Pago", "received": "Recebido", "overdue": "Atrasado",
+        },
+    }
+
+
+@app.get("/finances/summary")
+def finance_summary(
+    month: str = Query(pattern=r"^\d{4}-\d{2}$"),
+    access=Depends(require_permission("can_view_finances")),
+    db: Session = Depends(get_db),
+):
+    try:
+        return FinanceRepository(db, access["email"]).summary(month)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@app.post("/finances/transactions")
+def create_finance_transaction(
+    request: FinanceTransactionCreateRequest,
+    access=Depends(require_permission("can_write_finances")),
+    db: Session = Depends(get_db),
+):
+    try:
+        row = FinanceRepository(db, access["email"]).create_transaction(**request.model_dump())
+        db.commit()
+        return transaction_dict(row)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc))
+
+
+@app.patch("/finances/transactions/{transaction_id}")
+def update_finance_transaction(
+    transaction_id: UUID, request: FinanceTransactionUpdateRequest,
+    access=Depends(require_permission("can_write_finances")),
+    db: Session = Depends(get_db),
+):
+    repository = FinanceRepository(db, access["email"])
+    row = repository.get_transaction(transaction_id)
+    if row is None or not row.is_active:
+        raise HTTPException(404, "finance_transaction_not_found")
+    try:
+        repository.update_transaction(row, **request.model_dump(exclude_unset=True))
+        db.commit()
+        return transaction_dict(row)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc))
+
+
+@app.delete("/finances/transactions/{transaction_id}")
+def archive_finance_transaction(
+    transaction_id: UUID,
+    access=Depends(require_permission("can_write_finances")),
+    db: Session = Depends(get_db),
+):
+    repository = FinanceRepository(db, access["email"])
+    row = repository.get_transaction(transaction_id)
+    if row is None or not row.is_active:
+        raise HTTPException(404, "finance_transaction_not_found")
+    repository.archive_transaction(row)
+    db.commit()
+    return {"status": "archived", "id": str(row.id)}
+
+
+@app.put("/finances/budgets")
+def update_finance_budgets(
+    request: FinanceBudgetRequest,
+    access=Depends(require_permission("can_write_finances")),
+    db: Session = Depends(get_db),
+):
+    repository = FinanceRepository(db, access["email"])
+    try:
+        repository.replace_budgets(request.competence_month, request.values)
+        db.commit()
+        return repository.summary(request.competence_month)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc))
 
 
 # -----------------------------
@@ -1875,6 +2177,9 @@ def upsert_portfolio_position(portfolio_id: UUID, ticker: str, req: PortfolioPos
     prepo = PortfolioRepository(db); p = prepo.get_portfolio(portfolio_id, access["email"])
     if p is None: raise HTTPException(404, "portfolio_not_found")
     arepo = AssetRepository(db); asset = arepo.get_by_ticker(ticker.upper())
+    target_type = asset.asset_type if asset is not None else req.asset_type
+    if not is_supported_ticker(ticker, target_type):
+        raise HTTPException(422, "unsupported_or_duplicate_ticker")
     if asset is None:
         asset = arepo.upsert_asset(ticker=ticker.upper(), asset_type=req.asset_type)
     prepo.upsert_position(p, asset, stage=req.stage, quantity=req.quantity, average_price=req.average_price,
@@ -1888,6 +2193,9 @@ def add_portfolio_purchase(portfolio_id: UUID, ticker: str, req: PortfolioPurcha
     prepo = PortfolioRepository(db); p = prepo.get_portfolio(portfolio_id, access["email"])
     if p is None: raise HTTPException(404, "portfolio_not_found")
     arepo = AssetRepository(db); asset = arepo.get_by_ticker(ticker.upper())
+    target_type = asset.asset_type if asset is not None else req.asset_type
+    if not is_supported_ticker(ticker, target_type):
+        raise HTTPException(422, "unsupported_or_duplicate_ticker")
     if asset is None:
         asset = arepo.upsert_asset(ticker=ticker.upper(), asset_type=req.asset_type)
     try:
@@ -2044,6 +2352,23 @@ def market_dashboard_updates(
     db: Session = Depends(get_db),
 ):
     return {"updates": all_refresh_statuses(db), "timezone": "America/Sao_Paulo"}
+
+
+@app.get("/market-dashboard/interest-curve/history")
+def interest_curve_history(
+    limit: int = Query(default=12, ge=1, le=60),
+    _access=Depends(require_permission("can_view_market")),
+    db: Session = Depends(get_db),
+):
+    return [{
+        "reference_date": row.reference_date,
+        "curve_type": row.curve_type,
+        "title": row.title,
+        "source": row.source,
+        "url": row.source_url,
+        "points": row.points_json or [],
+        "retrieved_at": row.retrieved_at,
+    } for row in InterestCurveHistoryRepository(db).list_recent(limit)]
 
 
 @app.post("/market-dashboard/groups/{group_key}/refresh")
@@ -2394,7 +2719,7 @@ def backtest_matrix(
     access=Depends(require_permission("can_run_backtests")),
     db: Session = Depends(get_db),
 ):
-    """Compare up to three strategies across the user's authorized asset set."""
+    """Validate limits and enqueue a private backtest without blocking the browser."""
     tickers = list(dict.fromkeys(str(value).strip().upper() for value in req.tickers if str(value).strip()))
     strategies = list(dict.fromkeys(req.strategy_ids))
     unknown = [strategy for strategy in strategies if strategy not in STRATEGIES]
@@ -2402,10 +2727,51 @@ def backtest_matrix(
         raise HTTPException(404, detail={"strategies_not_found": unknown})
     asset_limit = int(access.get("backtest_asset_limit") or 0)
     daily_limit = int(access.get("backtest_daily_limit") or 0)
+    strategy_limit = int(access.get("backtest_strategy_limit") or 0)
+    cooldown_seconds = max(60, int(access.get("backtest_cooldown_seconds") or 60))
     if len(tickers) > asset_limit:
         raise HTTPException(403, detail={"backtest_asset_limit": asset_limit})
-    if not asset_limit or not daily_limit:
+    if len(strategies) > strategy_limit:
+        raise HTTPException(403, detail={"backtest_strategy_limit": strategy_limit})
+    if not asset_limit or not daily_limit or not strategy_limit:
         raise HTTPException(403, "backtest_execution_limit_not_authorized")
+    if req.execution_mode == "combined" and len(strategies) < 2:
+        raise HTTPException(422, "combined_backtest_requires_two_strategies")
+
+    active = db.scalar(
+        select(BacktestRequestUsageORM)
+        .where(
+            BacktestRequestUsageORM.owner_email == access["email"],
+            BacktestRequestUsageORM.status.in_(("queued", "running")),
+        )
+        .order_by(BacktestRequestUsageORM.created_at.desc())
+        .limit(1)
+    )
+    if active is not None:
+        raise HTTPException(409, detail={
+            "backtest_request_active": str(active.id),
+            "message": "Aguarde a análise em andamento terminar.",
+        })
+
+    now = datetime.now(timezone.utc)
+    last_finished = db.scalar(
+        select(BacktestRequestUsageORM)
+        .where(
+            BacktestRequestUsageORM.owner_email == access["email"],
+            BacktestRequestUsageORM.finished_at.is_not(None),
+        )
+        .order_by(BacktestRequestUsageORM.finished_at.desc())
+        .limit(1)
+    )
+    if last_finished is not None and last_finished.finished_at is not None:
+        allowed_at = last_finished.finished_at + timedelta(seconds=cooldown_seconds)
+        if now < allowed_at:
+            raise HTTPException(429, detail={
+                "backtest_cooldown_seconds": cooldown_seconds,
+                "retry_after_seconds": max(1, math.ceil((allowed_at - now).total_seconds())),
+                "message": "A próxima análise poderá começar um minuto após a conclusão da anterior.",
+            })
+
     market_day = backtest_market_date()
     used = db.scalar(select(func.count(BacktestRequestUsageORM.id)).where(
         BacktestRequestUsageORM.owner_email == access["email"],
@@ -2414,41 +2780,125 @@ def backtest_matrix(
     if used >= daily_limit:
         raise HTTPException(429, detail={"backtest_daily_limit": daily_limit, "used_today": used})
 
+    configuration = req.model_dump(mode="json")
     usage = BacktestRequestUsageORM(
         owner_email=access["email"], market_date=market_day,
-        asset_count=len(tickers), strategy_count=len(strategies), status="running",
+        asset_count=len(tickers), strategy_count=len(strategies), status="queued",
+        execution_mode=req.execution_mode,
+        combination_rule=req.combination_rule if req.execution_mode == "combined" else None,
+        configuration_json=configuration,
     )
     db.add(usage)
+    db.flush()
+    payload = {
+        **configuration,
+        "usage_id": str(usage.id), "owner_email": access["email"],
+        "tickers": tickers, "strategy_ids": strategies,
+        "filters": req.filters.model_dump(exclude_none=True, mode="json"),
+    }
+    job, _created = BackgroundJobRepository(db).enqueue(
+        "personal_backtest_matrix", payload,
+        requested_by=access["email"], priority=40, max_attempts=2,
+        deduplication_key=f"personal-backtest:{access['email']}",
+    )
+    usage.background_job_id = job.id
     db.commit()
-    usage_id = usage.id
-    rows, failures = [], []
-    for ticker in tickers:
-        try:
-            values = BacktestService(db).compare(
-                ticker=ticker, asset_type=req.asset_type, strategy_ids=strategies, period=req.period,
-                start=req.start, end=req.end, initial_capital=req.initial_capital,
-                fee_pct=req.fee_pct, slippage_pct=req.slippage_pct,
-                risk_free_rate_pct=req.risk_free_rate_pct,
-                cash_yield_rate_pct=req.cash_yield_rate_pct, apply_cash_yield=req.apply_cash_yield,
-                filters=req.filters.model_dump(exclude_none=True), owner_email=access["email"],
-            )
-            rows.extend(values)
-            db.commit()
-        except Exception as exc:
-            db.rollback()
-            failures.append({"ticker": ticker, "error": str(exc)[:500]})
-    usage = db.get(BacktestRequestUsageORM, usage_id)
-    if usage is not None:
-        usage.status = "completed" if rows and not failures else "completed_with_errors" if rows else "failed"
-        usage.finished_at = datetime.now(timezone.utc)
-        db.commit()
-    if not rows:
-        raise HTTPException(502, detail={"backtest_matrix_failed": failures})
     return {
-        "request_id": str(usage_id), "results": rows, "failures": failures,
+        "request_id": str(usage.id), "job_id": str(job.id), "status": job.status,
         "assets_requested": len(tickers), "strategies_requested": len(strategies),
         "daily_used": used + 1, "daily_limit": daily_limit,
+        "strategy_limit": strategy_limit, "cooldown_seconds": cooldown_seconds,
+        "execution_mode": req.execution_mode,
+        "combination_rule": req.combination_rule if req.execution_mode == "combined" else None,
     }
+
+
+@app.get("/backtests/jobs")
+def personal_backtest_jobs(
+    limit: int = Query(default=20, ge=1, le=100),
+    access=Depends(require_permission("can_view_backtests")),
+    db: Session = Depends(get_db),
+):
+    rows = BackgroundJobRepository(db).list_for_requester(
+        access["email"], job_type="personal_backtest_matrix", limit=limit,
+    )
+    return [background_job_dict(row) for row in rows]
+
+
+@app.get("/backtests/jobs/{job_id}")
+def personal_backtest_job(
+    job_id: UUID,
+    access=Depends(require_permission("can_view_backtests")),
+    db: Session = Depends(get_db),
+):
+    row = BackgroundJobRepository(db).get(job_id)
+    if row is None or (not access.get("is_owner") and row.requested_by != access["email"]):
+        raise HTTPException(404, "background_job_not_found")
+    result = background_job_dict(row)
+    result["result"] = dict(row.result_json or {}) if row.status == "succeeded" else {}
+    return result
+
+
+@app.get("/backtests/jobs/{job_id}/export.csv")
+def export_personal_backtest_job(
+    job_id: UUID,
+    access=Depends(require_permission("can_view_backtests")),
+    db: Session = Depends(get_db),
+):
+    job = BackgroundJobRepository(db).get(job_id)
+    if job is None or (not access.get("is_owner") and job.requested_by != access["email"]):
+        raise HTTPException(404, "background_job_not_found")
+    if job.status != "succeeded":
+        raise HTTPException(409, "backtest_job_not_completed")
+
+    output = io.StringIO(newline="")
+    columns = (
+        "registro", "ativo", "estrategia", "regra_combinacao", "data_entrada",
+        "preco_entrada", "data_saida", "preco_saida", "retorno_percentual",
+        "resultado_financeiro", "dias_na_posicao", "retorno_total_percentual",
+        "cagr_percentual", "sharpe", "drawdown_maximo_percentual",
+    )
+    writer = csv.DictWriter(output, fieldnames=columns, delimiter=";")
+    writer.writeheader()
+    repository = BacktestRepository(db)
+    for item in (job.result_json or {}).get("results", []):
+        run_id = item.get("run_id")
+        if not run_id:
+            continue
+        run = repository.get_run(
+            UUID(str(run_id)), owner_email=access["email"], is_owner=bool(access.get("is_owner")),
+        )
+        if run is None:
+            continue
+        metrics = run.metrics_json or {}
+        trades = repository.trades(run.id)
+        common = {
+            "ativo": item.get("ticker") or item.get("requested_ticker"),
+            "estrategia": run.strategy_name,
+            "regra_combinacao": (run.parameters_json or {}).get("combination", {}).get("rule"),
+            "retorno_total_percentual": metrics.get("total_return_pct"),
+            "cagr_percentual": metrics.get("cagr_pct"),
+            "sharpe": metrics.get("sharpe_ratio"),
+            "drawdown_maximo_percentual": metrics.get("max_drawdown_pct"),
+        }
+        if not trades:
+            writer.writerow({**common, "registro": "resumo"})
+        for trade in trades:
+            writer.writerow({
+                **common, "registro": "operacao",
+                "data_entrada": trade.entry_date.isoformat(),
+                "preco_entrada": trade.entry_price,
+                "data_saida": trade.exit_date.isoformat() if trade.exit_date else "",
+                "preco_saida": trade.exit_price if trade.exit_price is not None else "",
+                "retorno_percentual": trade.return_pct if trade.return_pct is not None else "",
+                "resultado_financeiro": trade.pnl_value if trade.pnl_value is not None else "",
+                "dias_na_posicao": trade.holding_days if trade.holding_days is not None else "",
+            })
+    content = "\ufeff" + output.getvalue()
+    return Response(
+        content=content, media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="backtest-{job_id}.csv"'},
+    )
 
 
 @app.post("/backtests/basket")

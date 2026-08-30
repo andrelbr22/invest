@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ...infrastructure.db.models import (
     EconomicSeriesORM,
     EconomicSeriesPointORM,
+    InterestCurveSnapshotORM,
     SharedSnapshotORM,
 )
 
@@ -167,3 +168,41 @@ class SharedSnapshotRepository:
         row.updated_at = utcnow()
         self.session.flush()
         return row
+
+
+class InterestCurveHistoryRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def save(self, curve: dict) -> InterestCurveSnapshotORM | None:
+        points = list(curve.get("points") or [])
+        if not points:
+            return None
+        raw_date = str(curve.get("as_of") or "").strip()[:10]
+        try:
+            reference_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+        except ValueError:
+            reference_date = utcnow().date()
+        curve_type = str(curve.get("curve_type") or "unknown")[:40]
+        row = self.session.scalar(select(InterestCurveSnapshotORM).where(
+            InterestCurveSnapshotORM.reference_date == reference_date,
+            InterestCurveSnapshotORM.curve_type == curve_type,
+        ))
+        if row is None:
+            row = InterestCurveSnapshotORM(
+                reference_date=reference_date, curve_type=curve_type,
+                title=str(curve.get("title") or "Curva de juros")[:160],
+            )
+            self.session.add(row)
+        row.title = str(curve.get("title") or row.title)[:160]
+        row.source = str(curve.get("source") or "")[:160] or None
+        row.source_url = str(curve.get("url") or "")[:500] or None
+        row.points_json = points
+        row.retrieved_at = utcnow()
+        self.session.flush()
+        return row
+
+    def list_recent(self, limit: int = 12):
+        return list(self.session.scalars(select(InterestCurveSnapshotORM).order_by(
+            InterestCurveSnapshotORM.reference_date.desc(),
+        ).limit(max(1, min(60, int(limit))))))

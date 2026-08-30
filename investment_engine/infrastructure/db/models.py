@@ -214,6 +214,8 @@ class UserAccessPolicyORM(Base):
     can_use_advanced_filters: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_view_portfolio: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_write_portfolio: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_view_finances: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_write_finances: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_view_backtests: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_run_backtests: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_refresh_backtest_signals: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -230,6 +232,8 @@ class UserAccessPolicyORM(Base):
     alert_asset_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     backtest_asset_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     backtest_daily_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backtest_strategy_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backtest_cooldown_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -246,8 +250,16 @@ class BacktestRequestUsageORM(Base):
     asset_count: Mapped[int] = mapped_column(Integer, nullable=False)
     strategy_count: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="running")
+    background_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("background_jobs.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    execution_mode: Mapped[str] = mapped_column(String(24), nullable=False, default="compare")
+    combination_rule: Mapped[str | None] = mapped_column(String(24))
+    configuration_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    error_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class PortfolioORM(Base):
@@ -304,6 +316,97 @@ class PortfolioPositionORM(Base):
 
     portfolio: Mapped[PortfolioORM] = relationship(back_populates="positions")
     asset: Mapped[AssetORM] = relationship()
+
+
+class PortfolioCustomInvestmentORM(Base):
+    """A manually valued investment that does not depend on a market ticker."""
+
+    __tablename__ = "portfolio_custom_investments"
+    __table_args__ = (
+        Index("ix_portfolio_custom_investments_portfolio_active", "portfolio_id", "is_active"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    category: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    institution: Mapped[str | None] = mapped_column(String(160))
+    application_date: Mapped[date] = mapped_column(Date, nullable=False)
+    maturity_date: Mapped[date | None] = mapped_column(Date)
+    invested_value: Mapped[Decimal] = mapped_column(Numeric(22, 2), nullable=False)
+    current_value: Mapped[Decimal] = mapped_column(Numeric(22, 2), nullable=False)
+    current_value_as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    benchmark: Mapped[str | None] = mapped_column(String(80))
+    liquidity: Mapped[str | None] = mapped_column(String(120))
+    notes: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PortfolioCustomInvestmentValueORM(Base):
+    """Value history used to show evolution without overwriting prior manual values."""
+
+    __tablename__ = "portfolio_custom_investment_values"
+    __table_args__ = (
+        UniqueConstraint("investment_id", "reference_date", name="uq_custom_investment_value_date"),
+        Index("ix_custom_investment_values_history", "investment_id", "reference_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    investment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("portfolio_custom_investments.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    reference_date: Mapped[date] = mapped_column(Date, nullable=False)
+    value: Mapped[Decimal] = mapped_column(Numeric(22, 2), nullable=False)
+    source: Mapped[str] = mapped_column(String(24), nullable=False, default="manual")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class FinanceTransactionORM(Base):
+    """A private monthly income or expense entry owned by one account."""
+
+    __tablename__ = "finance_transactions"
+    __table_args__ = (
+        Index("ix_finance_transactions_owner_month", "owner_email", "competence_month"),
+        Index("ix_finance_transactions_owner_date", "owner_email", "transaction_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    transaction_date: Mapped[date] = mapped_column(Date, nullable=False)
+    competence_month: Mapped[date] = mapped_column(Date, nullable=False)
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)  # income | expense
+    category: Mapped[str] = mapped_column(String(80), nullable=False)
+    description: Mapped[str] = mapped_column(String(200), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(22, 2), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned")
+    institution: Mapped[str | None] = mapped_column(String(120))
+    payment_method: Mapped[str | None] = mapped_column(String(80))
+    notes: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class FinanceMonthlyBudgetORM(Base):
+    """Optional monthly spending ceiling per category and account."""
+
+    __tablename__ = "finance_monthly_budgets"
+    __table_args__ = (
+        UniqueConstraint("owner_email", "competence_month", "category", name="uq_finance_budget_owner_month_category"),
+        Index("ix_finance_budgets_owner_month", "owner_email", "competence_month"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    competence_month: Mapped[date] = mapped_column(Date, nullable=False)
+    category: Mapped[str] = mapped_column(String(80), nullable=False)
+    limit_value: Mapped[Decimal] = mapped_column(Numeric(22, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class UserNewsCacheORM(Base):
@@ -602,6 +705,25 @@ class SharedSnapshotORM(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
     )
+
+
+class InterestCurveSnapshotORM(Base):
+    """One official daily interest-curve snapshot for historical overlays."""
+
+    __tablename__ = "interest_curve_snapshots"
+    __table_args__ = (
+        UniqueConstraint("reference_date", "curve_type", name="uq_interest_curve_reference_type"),
+        Index("ix_interest_curve_reference", "reference_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    reference_date: Mapped[date] = mapped_column(Date, nullable=False)
+    curve_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    source: Mapped[str | None] = mapped_column(String(160))
+    source_url: Mapped[str | None] = mapped_column(String(500))
+    points_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class EconomicSeriesORM(Base):

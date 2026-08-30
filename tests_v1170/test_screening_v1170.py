@@ -85,14 +85,14 @@ def test_alb_shortlist_relaxes_only_when_needed_and_caps_at_twenty():
     assert repo.calls == 2
 
 
-def test_backtest_comparison_accepts_three_strategies_and_thirty_assets_only():
+def test_backtest_comparison_respects_current_strategy_and_asset_ceiling():
     valid = BacktestMatrixRequest(
-        tickers=[f"TEST{index}" for index in range(30)],
-        strategy_ids=["ema9_sma50", "rsi14_sma200", "custom_ma_cross"],
+        tickers=[f"TEST{index}" for index in range(10)],
+        strategy_ids=["ema9_sma50", "rsi14_sma200", "custom_ma_cross", "momentum_12m", "ema9_sma40"],
     )
-    assert len(valid.tickers) == 30
+    assert len(valid.tickers) == 10
     with pytest.raises(ValidationError):
         BacktestCompareRequest(
             ticker="BBAS3",
-            strategy_ids=["ema9_sma50", "rsi14_sma200", "custom_ma_cross", "momentum_12m"],
+            strategy_ids=["ema9_sma50", "rsi14_sma200", "custom_ma_cross", "momentum_12m", "ema9_sma40", "sma50_sma200"],
         )

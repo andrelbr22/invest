@@ -96,7 +96,11 @@ class BackgroundWorker:
         try:
             if handler is None:
                 raise LookupError("background_job_handler_not_registered")
-            result = handler(dict(row.payload_json or {}))
+            handler_payload = dict(row.payload_json or {})
+            handler_payload["_background_job_id"] = str(row.id)
+            handler_payload["_background_job_attempt"] = int(row.attempts)
+            handler_payload["_background_job_max_attempts"] = int(row.max_attempts)
+            result = handler(handler_payload)
             session = get_session_factory()()
             try:
                 current = BackgroundJobRepository(session).get(row.id)

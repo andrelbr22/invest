@@ -296,6 +296,117 @@ class BacktestService:
             })
         return out
 
+    def run_combined(
+        self, *, ticker: str, strategy_ids: list[str], combination_rule: str,
+        period: str, asset_type: str = "stock", start: datetime | None = None,
+        end: datetime | None = None, initial_capital: float = 10000.0,
+        fee_pct: float = 0.03, slippage_pct: float = 0.05,
+        risk_free_rate_pct: float = 0.0, cash_yield_rate_pct: float = 0.0,
+        apply_cash_yield: bool = False, filters: dict | None = None,
+        owner_email: str = "local-owner@localhost",
+    ) -> dict:
+        """Execute one position whose state is derived from several strategies."""
+        component_ids = list(dict.fromkeys(strategy_ids))
+        if len(component_ids) < 2:
+            raise ValueError("combined_backtest_requires_two_strategies")
+        if combination_rule not in {"all", "any", "majority"}:
+            raise ValueError("invalid_strategy_combination_rule")
+        if any(component_id not in STRATEGIES for component_id in component_ids):
+            raise ValueError("strategy_not_found")
+
+        requested_start, requested_end = resolve_period(period, start=start, end=end)
+        max_warm = max(warmup_bars(component_id) for component_id in component_ids)
+        filter_warm_days = filter_warmup_calendar_days(filters)
+        warmup_start = requested_start - timedelta(days=max(60, max_warm * 2, filter_warm_days))
+        requested_ticker = ticker.upper().strip()
+        resolved_ticker, alias = resolve_ticker_alias(requested_ticker)
+        combination_key = build_config_hash({
+            "rule": combination_rule,
+            "components": component_ids,
+        })[:12]
+        stored_strategy_id = f"combined_{combination_rule}_{combination_key}"
+        config_hash = self._configuration_hash(
+            ticker=resolved_ticker, asset_type=asset_type, strategy_id=stored_strategy_id,
+            period=period, requested_start=requested_start, requested_end=requested_end,
+            initial_capital=initial_capital, fee_pct=fee_pct, slippage_pct=slippage_pct,
+            risk_free_rate_pct=risk_free_rate_pct, cash_yield_rate_pct=cash_yield_rate_pct,
+            apply_cash_yield=apply_cash_yield,
+            params={"components": component_ids, "combination_rule": combination_rule},
+            filters=filters,
+        )
+        cached = self.runs.find_daily_cached(
+            owner_email=owner_email, scope="personal", config_hash=config_hash,
+        )
+        if cached is not None:
+            restored = self.restore(cached)
+            return {
+                "run_id": str(cached.id), "strategy_id": stored_strategy_id,
+                "strategy_name": cached.strategy_name,
+                "requested_ticker": requested_ticker, "ticker": cached.asset.ticker,
+                "ticker_alias": alias, "cached": True,
+                "strategy_components": component_ids, "combination_rule": combination_rule,
+                **(restored.get("metrics") or {}),
+            }
+
+        asset, rows = self.ensure_history(
+            resolved_ticker, asset_type=asset_type, start=warmup_start, end=requested_end,
+        )
+        bars = [_bar_dict(row) for row in rows]
+        fundamentals = [
+            _fundamental_dict(row)
+            for row in self.assets.fundamental_history_until(asset.id, end=requested_end)
+        ]
+        result = run_backtest(
+            bars, strategy_id=component_ids[0],
+            combination_strategy_ids=component_ids, combination_rule=combination_rule,
+            requested_start=requested_start, requested_end=requested_end,
+            initial_capital=initial_capital, fee_pct=fee_pct, slippage_pct=slippage_pct,
+            risk_free_rate_pct=risk_free_rate_pct, cash_yield_rate_pct=cash_yield_rate_pct,
+            apply_cash_yield=apply_cash_yield, filters=filters,
+            fundamental_snapshots=fundamentals,
+        )
+        result.update({
+            "ticker": asset.ticker, "requested_ticker": requested_ticker,
+            "ticker_alias": alias, "asset_name": asset.name, "asset_type": asset.asset_type,
+            "period": period, "period_label": PERIOD_LABELS.get(period, "Personalizado"),
+            "warmup_bars": max_warm, "engine_version": ENGINE_VERSION,
+            "scope": "personal", "config_hash": config_hash,
+        })
+        enrich_result(result)
+        rule_labels = {"all": "Todas (E)", "any": "Qualquer uma (OU)", "majority": "Maioria"}
+        strategy_name = f"{rule_labels[combination_rule]}: " + " + ".join(
+            STRATEGIES[component_id].name for component_id in component_ids
+        )
+        run = self.runs.save_run(
+            asset=asset, owner_email=owner_email, scope="personal", config_hash=config_hash,
+            strategy_id=stored_strategy_id, strategy_name=strategy_name,
+            requested_start=requested_start, requested_end=requested_end,
+            actual_start=datetime.fromisoformat(result["actual_start"]),
+            actual_end=datetime.fromisoformat(result["actual_end"]),
+            initial_capital=initial_capital, fee_pct=fee_pct, slippage_pct=slippage_pct,
+            risk_free_rate_pct=risk_free_rate_pct,
+            parameters={
+                "strategy": result["parameters"], "filters": result.get("filters") or {},
+                "combination": {"rule": combination_rule, "components": component_ids},
+                "financial": {
+                    "apply_cash_yield": bool(apply_cash_yield),
+                    "cash_yield_rate_pct": float(cash_yield_rate_pct),
+                },
+            },
+            metrics=result["metrics"], snapshot=result, equity_curve=result["equity_curve"],
+            trades=result["trades"], data_source="yahoo", status="valid",
+            ranking_score=result.get("ranking_score"),
+            sample_status=result.get("sample_status", "insufficient"),
+            current_signal=result.get("current_signal"), engine_version=ENGINE_VERSION,
+        )
+        return {
+            "run_id": str(run.id), "strategy_id": stored_strategy_id,
+            "strategy_name": strategy_name, "requested_ticker": requested_ticker,
+            "ticker": asset.ticker, "ticker_alias": alias, "cached": False,
+            "strategy_components": component_ids, "combination_rule": combination_rule,
+            **result["metrics"],
+        }
+
     def basket(self, *, tickers: list[str], strategy_id: str, period: str, asset_type: str = "stock",
                start: datetime | None = None, end: datetime | None = None, initial_capital: float = 100000.0,
                fee_pct: float = 0.03, slippage_pct: float = 0.05, risk_free_rate_pct: float = 0.0,

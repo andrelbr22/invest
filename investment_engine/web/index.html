@@ -35,6 +35,7 @@
         <button class="nav-item active" data-view="dashboard"><span class="nav-icon">◈</span><span class="nav-label">Painel de Mercado</span></button>
         <button class="nav-item" data-view="analysis"><span class="nav-icon">◫</span><span class="nav-label">Mercado e Análises</span></button>
         <button class="nav-item" data-view="portfolio"><span class="nav-icon">▣</span><span class="nav-label">Minha Carteira</span></button>
+        <button class="nav-item" data-view="finances"><span class="nav-icon">▤</span><span class="nav-label">Minhas Finanças</span></button>
         <button class="nav-item" data-view="backtests"><span class="nav-icon">◎</span><span class="nav-label">Backtests</span></button>
         <button class="nav-item owner-only hidden" data-view="admin"><span class="nav-icon">⚙</span><span class="nav-label">Administração</span></button>
       </nav>
@@ -135,6 +136,7 @@
           </div>
           <div class="tabs" data-tabs="portfolio">
             <button class="tab active" data-tab="positions">Posições</button>
+            <button class="tab" data-tab="allocation">Investimentos e alocação</button>
             <button class="tab" data-tab="news">Notícias</button>
             <button class="tab" data-tab="alerts">Alertas</button>
           </div>
@@ -154,6 +156,19 @@
           <div id="backtests-tab-content" class="tab-content"></div>
         </section>
 
+        <section id="view-finances" class="view">
+          <div class="page-heading">
+            <div><p class="eyebrow">Organização pessoal</p><h1>Minhas Finanças</h1><p>Receitas, despesas e orçamento mensal com dados privados para cada usuário.</p></div>
+            <div class="heading-actions"><label class="field compact-field"><span>Mês</span><input id="finance-month" type="month"></label></div>
+          </div>
+          <div class="tabs" data-tabs="finances">
+            <button class="tab active" data-tab="monthly">Visão mensal</button>
+            <button class="tab" data-tab="transactions">Lançamentos</button>
+            <button class="tab" data-tab="budget">Orçamento</button>
+          </div>
+          <div id="finances-tab-content" class="tab-content"></div>
+        </section>
+
         <section id="view-admin" class="view">
           <div class="page-heading"><div><p class="eyebrow">Controle de acesso</p><h1>Administração</h1><p>Usuários, permissões e situação dos serviços.</p></div></div>
           <div class="tabs" data-tabs="admin"><button class="tab active" data-tab="users">Usuários</button><button class="tab" data-tab="data">Dados de mercado</button><button class="tab" data-tab="system">Sistema</button></div>
@@ -165,6 +180,13 @@
 
   <div id="toast-region" class="toast-region" aria-live="polite"></div>
   <dialog id="asset-dialog" class="asset-dialog"><button id="close-asset-dialog" class="icon-button dialog-close" aria-label="Fechar">×</button><div id="asset-dialog-content" class="asset-dialog-content"></div></dialog>
+  <dialog id="custom-value-dialog" class="compact-dialog">
+    <form id="custom-value-form" class="data-card">
+      <div class="card-heading"><div><p class="eyebrow">Atualização manual</p><h2>Valor atual do investimento</h2></div><button type="button" class="icon-button" data-close-custom-value aria-label="Fechar">×</button></div>
+      <input type="hidden" name="investment_id">
+      <div class="filter-grid"><div class="field"><label>Valor atual</label><input type="number" name="current_value" min="0" step="0.01" required></div><div class="field"><label>Data de referência</label><input type="date" name="current_value_as_of" required></div><button class="button primary wide-action" type="submit">Salvar no histórico</button></div>
+    </form>
+  </dialog>
   <script src="./ui-assets/app.js" defer></script>
 </body>
 </html>

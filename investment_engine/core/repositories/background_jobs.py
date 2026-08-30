@@ -163,6 +163,21 @@ class BackgroundJobRepository:
             row.message = _safe_message(message)
         self.session.flush()
 
+    def report_progress(
+        self, job_id: UUID | str, *, current: int, total: int, message: str,
+    ) -> BackgroundJobORM | None:
+        """Persist user-visible progress without taking ownership of the worker lease."""
+        row = self.get(job_id)
+        if row is None or row.status != "running":
+            return row
+        row.progress_current = max(0, int(current))
+        row.progress_total = max(0, int(total))
+        row.message = _safe_message(message)
+        row.heartbeat_at = utcnow()
+        row.updated_at = utcnow()
+        self.session.flush()
+        return row
+
     def complete(self, row: BackgroundJobORM, result: dict | None = None) -> None:
         now = utcnow()
         row.status = "succeeded"
@@ -248,6 +263,18 @@ class BackgroundJobRepository:
             select(BackgroundJobORM)
             .order_by(BackgroundJobORM.created_at.desc())
             .limit(max(1, min(200, int(limit))))
+        ))
+
+    def list_for_requester(
+        self, requested_by: str, *, job_type: str | None = None, limit: int = 30,
+    ) -> list[BackgroundJobORM]:
+        statement = select(BackgroundJobORM).where(
+            BackgroundJobORM.requested_by == str(requested_by or "").strip().lower(),
+        )
+        if job_type:
+            statement = statement.where(BackgroundJobORM.job_type == str(job_type).strip().lower())
+        return list(self.session.scalars(
+            statement.order_by(BackgroundJobORM.created_at.desc()).limit(max(1, min(100, int(limit))))
         ))
 
     def latest_for_deduplication(self, key: str) -> BackgroundJobORM | None:

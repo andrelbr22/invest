@@ -17,9 +17,14 @@ from ...core.repositories.portfolio import PortfolioRepository
 from ...core.repositories.news_cache import NewsCacheRepository
 from ...core.services_v14 import calculate_asset_intelligence
 from ...core.instruments import is_supported_ticker
-from ...infrastructure.db.models import AssetORM, PortfolioPositionORM, PriceAlertORM, UserNewsCacheORM
+from ...infrastructure.db.models import (
+    AssetORM, BacktestRequestUsageORM, PortfolioPositionORM, PriceAlertORM,
+    UserNewsCacheORM,
+)
 from ...infrastructure.db.session import get_session_factory
-from ..repositories.economic_series import SharedSnapshotRepository, utcnow
+from ..repositories.economic_series import InterestCurveHistoryRepository, SharedSnapshotRepository, utcnow
+from ..repositories.background_jobs import BackgroundJobRepository
+from ..backtesting.service import BacktestService
 
 
 def handle_noop(payload: dict) -> dict:
@@ -134,6 +139,18 @@ def _previous_snapshot_payload(snapshot_key: str) -> dict:
         session.close()
 
 
+def _save_interest_curve_history(curve: dict) -> None:
+    session = get_session_factory()()
+    try:
+        InterestCurveHistoryRepository(session).save(curve)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 def handle_market_group_refresh(payload: dict) -> dict:
     group = str(payload.get("group") or "").strip().lower()
     snapshot_key = str(payload.get("snapshot_key") or f"market:{group}")
@@ -164,6 +181,11 @@ def handle_market_group_refresh(payload: dict) -> dict:
                 if field in previous:
                     result[field] = previous[field]
                 warnings.append({"field": field, "error": type(exc).__name__})
+        if group == "rates_calendar" and "curve" in refreshed:
+            try:
+                _save_interest_curve_history(dict(result.get("curve") or {}))
+            except Exception as exc:
+                warnings.append({"field": "curve_history", "error": type(exc).__name__})
         if not refreshed and not any(field in result for field in operation_names[group]):
             raise RuntimeError("market_refresh_group_all_sources_failed")
         result["refresh"] = {
@@ -438,6 +460,102 @@ def handle_user_news_refresh(payload: dict) -> dict:
         session.close()
 
 
+def _payload_datetime(value):
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=utcnow().tzinfo)
+
+
+def handle_personal_backtest_matrix(payload: dict) -> dict:
+    """Run a private comparison or a true multi-strategy combination off-request."""
+    job_id = UUID(str(payload["_background_job_id"]))
+    usage_id = UUID(str(payload["usage_id"]))
+    owner_email = str(payload["owner_email"]).strip().lower()
+    tickers = list(dict.fromkeys(str(item).strip().upper() for item in payload.get("tickers", []) if str(item).strip()))
+    strategy_ids = list(dict.fromkeys(str(item).strip() for item in payload.get("strategy_ids", []) if str(item).strip()))
+    execution_mode = str(payload.get("execution_mode") or "compare")
+    combination_rule = str(payload.get("combination_rule") or "all")
+    final_attempt = int(payload.get("_background_job_attempt") or 1) >= int(payload.get("_background_job_max_attempts") or 1)
+    total = len(tickers)
+    rows: list[dict] = []
+    failures: list[dict] = []
+    session = get_session_factory()()
+    try:
+        usage = session.get(BacktestRequestUsageORM, usage_id)
+        if usage is None or usage.owner_email != owner_email:
+            raise ValueError("backtest_usage_not_found")
+        usage.status = "running"
+        usage.updated_at = utcnow()
+        BackgroundJobRepository(session).report_progress(
+            job_id, current=0, total=total, message="Preparando históricos e estratégias.",
+        )
+        session.commit()
+
+        for index, ticker in enumerate(tickers, start=1):
+            try:
+                service = BacktestService(session)
+                common = {
+                    "ticker": ticker,
+                    "asset_type": str(payload.get("asset_type") or "stock"),
+                    "period": str(payload.get("period") or "5y"),
+                    "start": _payload_datetime(payload.get("start")),
+                    "end": _payload_datetime(payload.get("end")),
+                    "initial_capital": float(payload.get("initial_capital") or 10000.0),
+                    "fee_pct": float(payload.get("fee_pct") or 0.03),
+                    "slippage_pct": float(payload.get("slippage_pct") or 0.05),
+                    "risk_free_rate_pct": float(payload.get("risk_free_rate_pct") or 0.0),
+                    "cash_yield_rate_pct": float(payload.get("cash_yield_rate_pct") or 0.0),
+                    "apply_cash_yield": bool(payload.get("apply_cash_yield")),
+                    "filters": dict(payload.get("filters") or {}),
+                    "owner_email": owner_email,
+                }
+                if execution_mode == "combined":
+                    rows.append(service.run_combined(
+                        strategy_ids=strategy_ids, combination_rule=combination_rule, **common,
+                    ))
+                else:
+                    rows.extend(service.compare(strategy_ids=strategy_ids, **common))
+                session.commit()
+            except Exception as exc:
+                session.rollback()
+                failures.append({
+                    "ticker": ticker,
+                    "error_code": type(exc).__name__,
+                    "message": str(exc)[:300],
+                })
+            BackgroundJobRepository(session).report_progress(
+                job_id, current=index, total=total,
+                message=f"{index} de {total} ativo(s) processado(s).",
+            )
+            session.commit()
+
+        usage = session.get(BacktestRequestUsageORM, usage_id)
+        usage.status = "completed" if rows and not failures else "completed_with_errors" if rows else "failed" if final_attempt else "queued"
+        usage.error_json = failures
+        usage.finished_at = utcnow() if rows or final_attempt else None
+        usage.updated_at = utcnow()
+        session.commit()
+        if not rows:
+            raise ValueError("personal_backtest_all_assets_failed")
+        return {
+            "request_id": str(usage_id), "results": rows, "failures": failures,
+            "assets_requested": total, "strategies_requested": len(strategy_ids),
+            "execution_mode": execution_mode, "combination_rule": combination_rule if execution_mode == "combined" else None,
+        }
+    except Exception:
+        session.rollback()
+        usage = session.get(BacktestRequestUsageORM, usage_id)
+        if usage is not None and usage.finished_at is None:
+            usage.status = "failed" if final_attempt else "queued"
+            usage.finished_at = utcnow() if final_attempt else None
+            usage.updated_at = utcnow()
+            session.commit()
+        raise
+    finally:
+        session.close()
+
+
 DEFAULT_JOB_HANDLERS = {
     "noop": handle_noop,
     "market_dashboard_refresh": handle_market_dashboard_refresh,
@@ -450,4 +568,5 @@ DEFAULT_JOB_HANDLERS = {
     "market_intraday_refresh": handle_market_intraday_refresh,
     "portfolio_prices_refresh": handle_portfolio_prices_refresh,
     "user_news_refresh": handle_user_news_refresh,
+    "personal_backtest_matrix": handle_personal_backtest_matrix,
 }

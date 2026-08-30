@@ -87,7 +87,7 @@ def test_ibov_provider_failure_does_not_interrupt_the_complete_screen(monkeypatc
 
 
 def test_presets_endpoint_and_new_analysis_experience_are_packaged():
-    assert __version__ == "1.20.3"
+    assert __version__.startswith("1.20.")
     paths = {route.path for route in app.routes}
     assert "/screen/presets" in paths
     html = (ROOT / "investment_engine/web/index.html").read_text(encoding="utf-8")
