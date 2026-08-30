@@ -49,3 +49,21 @@
 9. Confira que `docker compose -f docker-compose.oracle-web.yml ps` apresenta `app`, `worker`, `postgres`, `proxy` e `staging`; `app` e `worker` devem estar `healthy`.
 
 Esta revisão cria somente a tabela de controle das partes entregues. Ela não altera nem exclui resultados existentes. Não altere o banco de produção manualmente.
+# Complemento R8 — rede do worker e scripts executáveis
+
+A R8 corrige a saída de rede do worker permanente. O serviço passa a participar da rede `frontend`, usada para DNS e HTTPS das fontes externas, e da rede `backend`, mantida como rede interna para acesso isolado ao PostgreSQL.
+
+Depois da atualização do ambiente de teste, confirme:
+
+```bash
+docker compose -f docker-compose.oracle-web.yml exec -T staging python -m pytest -q -p no:cacheprovider
+```
+
+Na promoção, o publicador preserva no Git a permissão executável de todos os arquivos `.sh`, mesmo quando o pacote é enviado pelo Windows. Após a promoção, valide o worker:
+
+```bash
+docker compose -f docker-compose.oracle-web.yml exec -T worker python -c 'import socket; print(socket.gethostbyname("api.bcb.gov.br"))'
+docker compose -f docker-compose.oracle-web.yml ps
+```
+
+O worker deve estar `healthy` e a resolução deve retornar um endereço IP. O banco continua restrito à rede interna e não publica a porta 5432 na internet.

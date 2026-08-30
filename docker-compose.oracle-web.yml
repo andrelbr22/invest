@@ -116,6 +116,9 @@ services:
     volumes:
       - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
     networks:
+      # A rede frontend fornece DNS e saída HTTPS para as fontes externas.
+      # A backend permanece necessária para o PostgreSQL isolado.
+      - frontend
       - backend
     depends_on:
       postgres:

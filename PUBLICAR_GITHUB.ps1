@@ -111,6 +111,19 @@ try {
         Stop-Publication "nao foi possivel preparar os novos arquivos."
     }
 
+    # O Windows não conserva o bit executável do Unix ao copiar o pacote.
+    # Registre os scripts de implantação como executáveis no índice do Git
+    # para que a Oracle possa chamá-los diretamente após o próximo pull.
+    $shellScripts = Get-ChildItem -LiteralPath $publicationRoot -File -Filter "*.sh" -Recurse
+    foreach ($shellScript in $shellScripts) {
+        # Compatível com o Windows PowerShell 5.1, que não possui Path.GetRelativePath.
+        $relativeShellPath = $shellScript.FullName.Substring($publicationRoot.Length).TrimStart("\", "/").Replace("\", "/")
+        & $gitPath update-index --chmod=+x -- $relativeShellPath
+        if ($LASTEXITCODE -ne 0) {
+            Stop-Publication "nao foi possivel preservar a permissao de execucao de $relativeShellPath."
+        }
+    }
+
     $configuredName = & $gitPath config user.name
     if (-not $configuredName) {
         & $gitPath config user.name "andrelbr22"
@@ -126,7 +139,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Implanta atualizações persistentes e não bloqueantes na V1.20.3 R7 em teste"
+    & $gitPath commit -m "Corrige rede e permissões operacionais da V1.20.3 R8 em teste"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
@@ -143,4 +156,4 @@ try {
 Write-Host ""
 Write-Host "PUBLICACAO CONCLUIDA." -ForegroundColor Green
 Write-Host "A versao foi enviada ao ambiente de teste. A producao depende de aprovacao manual."
-Write-Host "Depois da atualização automática, valide a V1.20.3 R7 no endereço /testefdi antes de promover."
+Write-Host "Depois da atualização automática, valide a V1.20.3 R8 no endereço /testefdi antes de promover."

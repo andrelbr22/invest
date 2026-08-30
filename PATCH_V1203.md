@@ -37,3 +37,8 @@ O agendador separa as fontes por necessidade: cripto a cada 30 minutos, câmbio 
 Cada painel mostra fonte, estado, última atualização e próxima rodada. Falhas parciais preservam o campo anterior e são identificadas sem apagar as demais fontes. Todos os botões manuais respeitam intervalo mínimo de cinco minutos.
 
 Em produção, o worker passa a ser permanente e também executa o monitor de alertas. Ele tem concorrência unitária, pool de uma conexão e limite de memória. O processo web não executa esses monitores. Em staging, um worker interno processa apenas os pedidos de homologação, sem manter outro contêiner. A promoção verifica aplicação e worker e restaura ambos em caso de falha.
+# R8 — correção operacional do worker
+
+- conecta o worker às redes `frontend` e `backend`, preservando o acesso isolado ao PostgreSQL e liberando DNS/HTTPS para Banco Central, Yahoo Finance, TradingView, Fundamentus e demais fontes;
+- preserva no Git o bit executável dos scripts `.sh` mesmo quando a publicação é feita no Windows;
+- mantém a produção disponível e os dados anteriores quando uma fonte externa estiver temporariamente indisponível.
