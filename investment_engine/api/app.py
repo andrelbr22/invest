@@ -2530,9 +2530,24 @@ def refresh_market_dashboard_comparison(
     access=Depends(require_permission("can_view_market")),
     db: Session = Depends(get_db),
 ):
-    row, scheduled = enqueue_refresh(db, "comparison", trigger="manual", requested_by=access.get("email"), force=True)
+    job, scheduled = enqueue_refresh(
+        db, "comparison", trigger="manual",
+        requested_by=access.get("email"), force=True,
+    )
     db.commit()
-    return {"scheduled": scheduled, "refreshing": scheduled, "job": background_job_dict(row)}
+    # A manual request can legitimately reuse a job that is already inside the
+    # cooldown window.  Always return the last valid snapshot and the real job
+    # status so the browser keeps useful data visible while the refresh runs.
+    snapshot = SharedSnapshotRepository(db).get(REFRESH_SCHEDULES["comparison"].snapshot_key)
+    update = all_refresh_statuses(db)["comparison"]
+    return {
+        "data": dict(snapshot.payload_json or {}) if snapshot is not None else {},
+        "scheduled": scheduled,
+        "refreshing": update["status"] in {"queued", "running"},
+        "error": update.get("last_error_code"),
+        "job": background_job_dict(job) if job is not None else None,
+        "update": update,
+    }
 
 
 # -----------------------------

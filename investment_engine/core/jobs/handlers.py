@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import math
 
 from sqlalchemy import select
 
@@ -37,6 +38,8 @@ def _json_safe(value):
         return value.isoformat()
     if isinstance(value, Decimal):
         return float(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     if isinstance(value, dict):
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):

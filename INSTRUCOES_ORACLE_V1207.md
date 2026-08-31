@@ -1,6 +1,6 @@
 # Homologação da V1.20.7 na Oracle
 
-> Use a revisão R2 do pacote. Ela contém as melhorias de mercado, permissões, carteira e filtros de backtests solicitadas nesta etapa.
+> Use a revisão R3 do pacote. Ela contém as melhorias da R2 e a correção de resiliência do Comparador Histórico.
 
 ## 1. Publicação inicial
 
@@ -51,6 +51,8 @@ docker compose -f docker-compose.oracle-web.yml exec -T staging python -m pytest
 15. Entre com uma conta sem essas permissões: os botões FDI e ALB devem permanecer visíveis e desativados, e as colunas protegidas não devem aparecer.
 16. Na carteira, grave Setor e Segmento em uma posição e em um investimento sem ticker.
 17. Em Backtests, execute uma estratégia com tendência diária MMS 8, outra com MME 9, e combine RSI/ADX/volume sem bloquear a navegação.
+18. No Comparador Histórico, clique em `Atualizar séries`: o gráfico anterior deve permanecer visível enquanto o trabalho é executado e BTC/ETH devem aparecer como opções assim que o novo snapshot terminar.
+19. Se uma fonte estiver indisponível, confirme que somente a série afetada fica desabilitada e que as demais continuam utilizáveis.
 
 ## 5. Segunda instância
 

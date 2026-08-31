@@ -992,7 +992,11 @@ class MarketDashboardService:
                         }
                 except Exception as exc:
                     last_error = f"{type(exc).__name__}: {str(exc)[:100]}"
-            return {"code": code, "label": label, "points": [], "source": "Yahoo Finance", "error": last_error or "history_unavailable"}
+            return {
+                "code": code, "label": label, "points": [],
+                "source": "Yahoo Finance",
+                "error": last_error or "history_unavailable",
+            }
 
         def rate_history(spec):
             code, label, series, first_only, source = spec
@@ -1022,13 +1026,30 @@ class MarketDashboardService:
         # with HTTP 200, which used to leave several indicators without data.
         for spec in rate_specs:
             series.append(rate_history(spec))
-        series.sort(key=lambda item: order.index(item["code"]))
+        # Keep a stable catalog even when one upstream source is unavailable.
+        # The browser can then display BTC/ETH (and every other option) as
+        # temporarily unavailable instead of silently removing the selector.
+        by_code = {str(item.get("code")): item for item in series}
+        series = [
+            by_code.get(code, {
+                "code": code,
+                "label": code,
+                "points": [],
+                "source": "Fonte temporariamente indisponível",
+                "error": "series_not_returned",
+            })
+            for code in order
+        ]
+        available = sum(bool(item.get("points")) for item in series)
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "base": 100,
             "max_years": years,
             "periods": [0.5, 1, 2, 3, 5, 10, 15, 20],
             "series": series,
+            "status": "complete" if available == len(series) else "partial",
+            "available_series": available,
+            "total_series": len(series),
             "note": "Cada linha é rebaseada em R$ 100 no primeiro ponto visível do período escolhido.",
         }
 

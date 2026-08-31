@@ -430,18 +430,31 @@ function renderComparison() {
   root.innerHTML=marketUpdatePanel(["comparison"])+sectionCard("Comparador histórico",`${selectors}<div class="chart comparison-chart-wrap">${svg}</div><div class="chart-legend">${legend}</div>${sectionCard("Retorno e risco no período",metrics,"Volatilidade anualizada conforme a frequência de cada série")}${unavailable.length?`<div class="notice">Sem dados nesta atualização: ${esc(unavailable.join(", "))}.</div>`:""}<div class="notice info">${esc(payload.note||"Base 100 no início do período selecionado.")} ${state.comparisonBaseMode==="common"?"Todas as linhas começam na primeira data disponível em comum.":"Cada linha usa seu próprio primeiro dado disponível."}</div>`,`Desempenho acumulado • base R$ 100 • ${periodLabel}`);
 }
 
-async function loadComparison(force=false,attempt=0) {
+async function loadComparison(force=false,attempt=0,baselineGeneratedAt=null) {
   if(state.comparisonLoading&&attempt===0)return;
+  if(attempt===0&&baselineGeneratedAt===null)baselineGeneratedAt=state.comparison?.generated_at||null;
   state.comparisonLoading=true;
   const root=$("#dashboard-tab-content");
   if(!state.comparison)root.innerHTML=`${loadingCards(6)}<div class="notice info" style="margin-top:14px">Preparando as séries históricas em segundo plano. Você pode continuar usando os outros painéis.</div>`;
   try{
     let payload=await api(force?"/market-dashboard/comparison/refresh":"/market-dashboard/comparison",{method:force?"POST":"GET",requestKey:"comparison"});
     if(payload.update){state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),comparison:payload.update};}
-    if(payload.data?.series?.length){state.comparison=payload.data;renderComparison();state.comparisonLoading=false;return;}
-    if((payload.refreshing||payload.scheduled)&&attempt<40){state.comparisonLoading=false;setTimeout(()=>loadComparison(false,attempt+1),3000);return;}
-    root.innerHTML=errorState(payload.error||"As fontes históricas não responderam nesta atualização.");
-  }catch(error){if(error.name!=="AbortError")root.innerHTML=errorState(error);}
+    const hasSnapshot=Boolean(payload.data?.series?.length);
+    if(hasSnapshot){state.comparison=payload.data;renderComparison();}
+    if((payload.refreshing||payload.scheduled)&&attempt<120){
+      state.comparisonLoading=false;
+      setTimeout(()=>loadComparison(false,attempt+1,baselineGeneratedAt),3000);
+      return;
+    }
+    if(hasSnapshot){state.comparisonLoading=false;return;}
+    if(state.comparison){renderComparison();state.comparisonLoading=false;return;}
+    root.innerHTML=errorState(payload.error||"As séries históricas ainda não possuem uma atualização válida.");
+  }catch(error){
+    if(error.name!=="AbortError"){
+      if(state.comparison)renderComparison();
+      else root.innerHTML=errorState(error);
+    }
+  }
   state.comparisonLoading=false;
 }
 
@@ -1437,7 +1450,7 @@ function bindEvents() {
     const comparisonPeriod=event.target.closest("[data-comparison-years]");if(comparisonPeriod){state.comparisonYears=Number(comparisonPeriod.dataset.comparisonYears);state.comparisonCustom=false;renderComparison();}
     const comparisonCustom=event.target.closest("[data-comparison-custom]");if(comparisonCustom){state.comparisonCustom=true;ensureComparisonCustomDates();renderComparison();}
     const comparisonBase=event.target.closest("[data-comparison-base]");if(comparisonBase){state.comparisonBaseMode=comparisonBase.dataset.comparisonBase;renderComparison();}
-    const comparisonRefresh=event.target.closest("[data-comparison-refresh]");if(comparisonRefresh){state.comparison=null;loadComparison(true);}
+    const comparisonRefresh=event.target.closest("[data-comparison-refresh]");if(comparisonRefresh){loadComparison(true);}
     const saveUser=event.target.closest("[data-save-user]");if(saveUser)saveUserAccess(saveUser.dataset.saveUser);
     const marketSync=event.target.closest("[data-market-sync]");if(marketSync)syncMarketCatalog(marketSync.dataset.marketSync,marketSync.dataset.technicals==="true");
     const preset=event.target.closest("[data-preset-id]");if(preset)selectSystemPreset(preset.dataset.presetId);

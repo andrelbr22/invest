@@ -32,3 +32,7 @@ O teste de enfileiramento usava implicitamente o proprietário local, disponíve
 ## R2 — regras de acesso e dados adicionais
 
 A R2 mantém o mesmo número semântico `1.20.7`, mas acrescenta a migração aditiva `0019`. Nenhuma autorização antiga é ampliada silenciosamente. O proprietário conserva acesso integral; os demais usuários recebem FDI, ALB, Graham e preço-teto somente por seleção individual no painel Administração. A permissão ALB ativa automaticamente as duas permissões de valuation.
+
+## R3 — atualização histórica sem tela vazia
+
+A R3 não acrescenta migração. Ela corrige a comunicação entre navegador, API e worker no Comparador Histórico. O botão de atualização não apaga mais o snapshot anterior, a API devolve os dados válidos junto do estado real do trabalho e a interface continua consultando a fila até a conclusão. O `head` do Alembic permanece `0019_v1_20_access_rules`.
