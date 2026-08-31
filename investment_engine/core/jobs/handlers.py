@@ -86,7 +86,7 @@ def handle_market_dashboard_refresh(payload: dict) -> dict:
 def handle_economy_headlines_refresh(payload: dict) -> dict:
     snapshot_key = str(payload.get("snapshot_key") or "economy-headlines:main")
     try:
-        result = MarketDashboardService().economy_headlines(limit=max(1, min(10, int(payload.get("limit") or 5))))
+        result = MarketDashboardService().economy_headlines(limit=max(1, min(10, int(payload.get("limit") or 10))))
     except Exception as exc:
         _record_refresh_failure(snapshot_key, exc)
         raise
