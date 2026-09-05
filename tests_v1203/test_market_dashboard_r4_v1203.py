@@ -39,7 +39,7 @@ def test_comparison_has_the_approved_order_without_duplicates(monkeypatch):
     codes = [item["code"] for item in payload["series"]]
 
     assert codes == HISTORICAL_COMPARISON_ORDER
-    assert len(codes) == len(set(codes)) == 28
+    assert len(codes) == len(set(codes)) == 26
     by_code = {item["code"]: item for item in payload["series"]}
     assert by_code["IMAB"]["proxy"] is True
     assert "IMAB11" in by_code["IMAB"]["note"]

@@ -11,10 +11,6 @@ from ...infrastructure.db.models import UserAccessPolicyORM
 PERMISSION_FIELDS = (
     "can_view_market",
     "can_use_advanced_filters",
-    "can_use_fdi_analysis",
-    "can_use_alb_analysis",
-    "can_use_graham_valuation",
-    "can_use_dividend_ceiling",
     "can_view_portfolio",
     "can_write_portfolio",
     "can_view_finances",
@@ -59,7 +55,7 @@ def policy_dict(row: UserAccessPolicyORM, *, is_owner: bool = False) -> dict:
     if is_owner:
         return full_owner_policy(row.email, row.display_name)
     blocked = row.status == "blocked"
-    result = {
+    return {
         "email": row.email,
         "display_name": row.display_name,
         "role": row.role,
@@ -76,10 +72,6 @@ def policy_dict(row: UserAccessPolicyORM, *, is_owner: bool = False) -> dict:
         "updated_at": row.updated_at,
         "last_seen_at": row.last_seen_at,
     }
-    if result["can_use_alb_analysis"]:
-        result["can_use_graham_valuation"] = True
-        result["can_use_dividend_ceiling"] = True
-    return result
 
 
 class AccessPolicyRepository:
@@ -147,8 +139,5 @@ class AccessPolicyRepository:
                     value = changes[field]
                 setattr(row, field, value)
         row.updated_at = datetime.now(timezone.utc)
-        if row.can_use_alb_analysis:
-            row.can_use_graham_valuation = True
-            row.can_use_dividend_ceiling = True
         self.session.flush()
         return row

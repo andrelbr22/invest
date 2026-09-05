@@ -261,9 +261,6 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .headline-number { color: var(--brand); font-size: 1.3rem; font-weight: 800; }
 .headline strong { display: block; line-height: 1.4; }
 .headline small { color: var(--muted); }
-.headline-header { color: var(--muted); font-size: .78rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
-.headline-header:hover { background: transparent; }
-.permission-grid { display: grid; grid-template-columns: repeat(2,minmax(90px,1fr)); gap: 4px 10px; margin-top: 9px; }
 
 .pill { display: inline-flex; align-items: center; min-height: 23px; padding: 3px 8px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); font-size: .68rem; font-weight: 700; }
 .pill.warning { background: #fff4d9; }

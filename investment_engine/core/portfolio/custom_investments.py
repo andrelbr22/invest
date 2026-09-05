@@ -42,7 +42,6 @@ def custom_investment_dict(row: PortfolioCustomInvestmentORM, *, history: list |
         "id": str(row.id), "portfolio_id": str(row.portfolio_id),
         "category": row.category, "category_label": label, "allocation_group": group,
         "name": row.name, "institution": row.institution,
-        "sector": row.sector, "segment": row.segment,
         "application_date": row.application_date, "maturity_date": row.maturity_date,
         "invested_value": invested, "current_value": current,
         "current_value_as_of": row.current_value_as_of,
@@ -103,8 +102,6 @@ class CustomInvestmentRepository:
             portfolio_id=portfolio_id, category=category,
             name=str(values["name"]).strip(),
             institution=str(values.get("institution") or "").strip() or None,
-            sector=str(values.get("sector") or "").strip() or None,
-            segment=str(values.get("segment") or "").strip() or None,
             application_date=values["application_date"],
             maturity_date=values.get("maturity_date"),
             invested_value=_decimal(values["invested_value"]),
@@ -122,12 +119,12 @@ class CustomInvestmentRepository:
 
     def update(self, row, **changes):
         for field in (
-            "name", "institution", "sector", "segment", "application_date", "maturity_date", "benchmark",
+            "name", "institution", "application_date", "maturity_date", "benchmark",
             "liquidity", "notes",
         ):
             if field in changes:
                 value = changes[field]
-                if field in {"name", "institution", "sector", "segment", "benchmark", "liquidity"} and isinstance(value, str):
+                if field in {"name", "institution", "benchmark", "liquidity"} and isinstance(value, str):
                     value = value.strip() or None
                 setattr(row, field, value)
         if "category" in changes:

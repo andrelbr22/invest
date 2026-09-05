@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from authlib.integrations.starlette_client import OAuth, OAuthError
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
@@ -376,8 +376,6 @@ class PortfolioPositionRequest(BaseModel):
     average_price: float | None = Field(default=None, ge=0)
     target_weight_pct: float = Field(default=0.0, ge=0, le=100)
     classification_override: str | None = Field(default=None, max_length=120)
-    sector_override: str | None = Field(default=None, max_length=120)
-    segment_override: str | None = Field(default=None, max_length=120)
     notes: str | None = None
 
 
@@ -388,8 +386,6 @@ class PortfolioPurchaseRequest(BaseModel):
     stage: str = Field(default="position", pattern="^(position|target|analysis)$")
     target_weight_pct: float | None = Field(default=None, ge=0, le=100)
     classification_override: str | None = Field(default=None, max_length=120)
-    sector_override: str | None = Field(default=None, max_length=120)
-    segment_override: str | None = Field(default=None, max_length=120)
     notes: str | None = None
 
 
@@ -397,8 +393,6 @@ class PortfolioCustomInvestmentCreateRequest(BaseModel):
     category: str = Field(min_length=1, max_length=40)
     name: str = Field(min_length=1, max_length=200)
     institution: str | None = Field(default=None, max_length=160)
-    sector: str | None = Field(default=None, max_length=120)
-    segment: str | None = Field(default=None, max_length=120)
     application_date: date
     maturity_date: date | None = None
     invested_value: float = Field(gt=0)
@@ -420,8 +414,6 @@ class PortfolioCustomInvestmentUpdateRequest(BaseModel):
     category: str | None = Field(default=None, max_length=40)
     name: str | None = Field(default=None, min_length=1, max_length=200)
     institution: str | None = Field(default=None, max_length=160)
-    sector: str | None = Field(default=None, max_length=120)
-    segment: str | None = Field(default=None, max_length=120)
     application_date: date | None = None
     maturity_date: date | None = None
     invested_value: float | None = Field(default=None, gt=0)
@@ -478,18 +470,9 @@ class BacktestNumericRangeRequest(BaseModel):
 class BacktestTrendFilterRequest(BaseModel):
     enabled: bool = False
     direction: str = Field(default="up", pattern="^(up|down)$")
-    ma_type: Literal["sma", "ema"] = "sma"
-    period: Literal[8, 9, 21, 50, 200] = 21
+    period: Literal[21, 50] = 21
     mode: str = Field(default="price_above", pattern="^(price_above|sma_rising|price_above_or_sma_rising|price_above_and_sma_rising)$")
     slope_lookback: int = Field(default=5, ge=1, le=100)
-
-    @model_validator(mode="after")
-    def valid_moving_average(self):
-        if (self.ma_type, self.period) not in {
-            ("sma", 8), ("ema", 9), ("sma", 21), ("sma", 50), ("sma", 200),
-        }:
-            raise ValueError("unsupported_trend_moving_average")
-        return self
 
 
 class BacktestFiltersRequest(BaseModel):
@@ -673,10 +656,6 @@ class AccessPolicyUpdateRequest(BaseModel):
     status: str | None = Field(default=None, pattern="^(pending|approved|blocked)$")
     can_view_market: bool | None = None
     can_use_advanced_filters: bool | None = None
-    can_use_fdi_analysis: bool | None = None
-    can_use_alb_analysis: bool | None = None
-    can_use_graham_valuation: bool | None = None
-    can_use_dividend_ceiling: bool | None = None
     can_view_portfolio: bool | None = None
     can_write_portfolio: bool | None = None
     can_view_finances: bool | None = None
@@ -927,14 +906,8 @@ def update_access_user(
     if clean in settings.owner_emails:
         raise HTTPException(400, "owner_permissions_are_permanent")
     changes = req.model_dump(exclude_none=True)
-    if any(changes.get(field) for field in (
-        "can_use_advanced_filters", "can_use_fdi_analysis", "can_use_alb_analysis",
-        "can_use_graham_valuation", "can_use_dividend_ceiling", "can_sync_market",
-    )) or int(changes.get("custom_filter_limit") or 0)>0:
+    if changes.get("can_use_advanced_filters") or changes.get("can_sync_market") or int(changes.get("custom_filter_limit") or 0)>0:
         changes["can_view_market"] = True
-    if changes.get("can_use_alb_analysis"):
-        changes["can_use_graham_valuation"] = True
-        changes["can_use_dividend_ceiling"] = True
     if changes.get("can_write_portfolio") or changes.get("can_view_news_insights") or changes.get("can_use_price_alerts"):
         changes["can_view_portfolio"] = True
     if changes.get("can_write_finances"):
@@ -948,10 +921,6 @@ def update_access_user(
         changes.setdefault("backtest_cooldown_seconds", 60)
     if changes.get("can_view_market") is False:
         changes["can_use_advanced_filters"] = False
-        changes["can_use_fdi_analysis"] = False
-        changes["can_use_alb_analysis"] = False
-        changes["can_use_graham_valuation"] = False
-        changes["can_use_dividend_ceiling"] = False
         changes["can_sync_market"] = False
         changes["custom_filter_limit"] = 0
     if changes.get("can_view_portfolio") is False:
@@ -1533,33 +1502,8 @@ def _stock_screen_row(asset, fundamental, score):
     }
 
 
-def _authorized_stock_row(row: dict, access: dict | None) -> dict:
-    access = access or {}
-    if not (access.get("can_use_graham_valuation") or access.get("can_use_alb_analysis")):
-        row.pop("graham_number", None)
-        row.pop("graham_upside_pct", None)
-    if not (access.get("can_use_dividend_ceiling") or access.get("can_use_alb_analysis")):
-        row.pop("barsi_ceiling_price", None)
-        row.pop("barsi_upside_pct", None)
-    return row
-
-
-def _stock_screen_result(rows, access: dict | None = None):
-    return [_authorized_stock_row(_stock_screen_row(asset, fundamental, score), access) for asset, fundamental, score in rows]
-
-
-def _require_system_analysis_access(strategy_id: str, access: dict) -> None:
-    permission = {"cnpi": "can_use_fdi_analysis", "alb": "can_use_alb_analysis"}.get(strategy_id)
-    if permission and not access.get(permission):
-        raise HTTPException(403, detail={"permission_required": permission})
-
-
-def _require_valuation_access(flags: dict[str, bool], access: dict) -> None:
-    alb = bool(access.get("can_use_alb_analysis"))
-    if flags.get("below_graham") and not (alb or access.get("can_use_graham_valuation")):
-        raise HTTPException(403, detail={"permission_required": "can_use_graham_valuation"})
-    if flags.get("below_barsi_6pct") and not (alb or access.get("can_use_dividend_ceiling")):
-        raise HTTPException(403, detail={"permission_required": "can_use_dividend_ceiling"})
+def _stock_screen_result(rows):
+    return [_stock_screen_row(asset, fundamental, score) for asset, fundamental, score in rows]
 
 
 def _fii_screen_row(asset, fundamental, score):
@@ -1599,9 +1543,9 @@ def _other_b3_screen_row(asset, technical, score):
     }
 
 
-def _universe_screen_result(rows, asset_type: str, access: dict | None = None):
+def _universe_screen_result(rows, asset_type: str):
     if asset_type == "stock":
-        return [_authorized_stock_row(_stock_screen_row(asset, fundamental, score), access) for asset, fundamental, _technical, score in rows]
+        return [_stock_screen_row(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
     if asset_type == "fii":
         return [_fii_screen_row(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
     return [_other_b3_screen_row(asset, technical, score) for asset, _fundamental, technical, score in rows]
@@ -1642,20 +1586,18 @@ def _alb_stock_rows(repo: AssetRepository, *, limit: int, offset: int = 0):
     return selected[max(0, int(offset)):max(0, int(offset)) + maximum]
 
 @app.get("/screen/db/stocks/{strategy_id}")
-def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, access=Depends(require_permission("can_view_market")), db: Session=Depends(get_db)):
+def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, _access=Depends(require_permission("can_view_market")), db: Session=Depends(get_db)):
     strategy=STOCK_STRATEGIES.get(strategy_id)
     if not strategy: raise HTTPException(404,"strategy_not_found")
-    _require_system_analysis_access(strategy_id, access)
     repo = AssetRepository(db)
     rows = _alb_stock_rows(repo, limit=limit, offset=offset) if strategy_id == "alb" else repo.screen_latest_stocks(strategy.filters,limit=limit,offset=offset)
-    return _stock_screen_result(rows, access)
+    return _stock_screen_result(rows)
 
 @app.get("/screen/db/fiis/{strategy_id}")
-def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
+def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, _access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
     strategy = FII_STRATEGIES.get(strategy_id)
     if not strategy:
         raise HTTPException(404, "strategy_not_found")
-    _require_system_analysis_access(strategy_id, access)
     rows = AssetRepository(db).screen_latest_fiis(strategy.filters, limit=limit, offset=offset)
     return _fii_screen_result(rows)
 
@@ -1664,13 +1606,13 @@ def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, access=De
 def screen_db_universe(
     asset_type: str,
     limit: int = Query(default=500, ge=1, le=1200),
-    access=Depends(require_permission("can_view_market")),
+    _access=Depends(require_permission("can_view_market")),
     db: Session = Depends(get_db),
 ):
     if asset_type not in {"stock", "fii", "other_b3"}:
         raise HTTPException(422, "invalid_asset_type")
     rows = AssetRepository(db).latest_universe(asset_type=asset_type, limit=limit)
-    return _universe_screen_result(rows, asset_type, access)
+    return _universe_screen_result(rows, asset_type)
 
 
 @app.get("/screen/db/custom/{filter_id}")
@@ -1690,18 +1632,13 @@ def screen_db_custom(
     repo = AssetRepository(db)
     if row.asset_type == "stock":
         filters = StockFilterSet(**stored)
-        _require_valuation_access({
-            "below_graham": bool(stored.get("require_below_graham")),
-            "below_barsi_6pct": bool(stored.get("require_below_dividend_target")),
-        }, access)
-        return _stock_screen_result(repo.screen_latest_stocks(filters, limit=limit, offset=offset), access)
+        return _stock_screen_result(repo.screen_latest_stocks(filters, limit=limit, offset=offset))
     filters = FiiFilterSet(**stored)
     return _fii_screen_result(repo.screen_latest_fiis(filters, limit=limit, offset=offset))
 
 @app.post("/screen/advanced")
-def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
+def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permission("can_use_advanced_filters")), db: Session = Depends(get_db)):
     try:
-        _require_valuation_access(req.valuation_flags, _access)
         fundamental_filters = {k: v.model_dump(exclude_none=True) for k, v in req.fundamental_filters.items()}
         score_filters = {k: v.model_dump(exclude_none=True) for k, v in req.score_filters.items()}
         ibov_tickers = None
@@ -1730,8 +1667,6 @@ def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permissi
         result.setdefault("meta", {})["warnings"] = warnings
         result["meta"]["requested_ibov_membership"] = req.ibov_membership
         result["meta"]["effective_ibov_membership"] = effective_ibov_membership
-        if req.asset_type == "stock":
-            result["rows"] = [_authorized_stock_row(dict(row), _access) for row in result.get("rows", [])]
         return result
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
@@ -1807,12 +1742,10 @@ def _portfolio_snapshot(db: Session, portfolio):
             }
         raw.append({
             "position_id": str(pos.id), "asset_id": str(asset.id), "ticker": asset.ticker, "name": asset.name,
-            "asset_type": asset.asset_type, "sector": pos.sector_override or asset.sector,
-            "industry": asset.industry, "segment": pos.segment_override or asset.segment,
+            "asset_type": asset.asset_type, "sector": asset.sector, "industry": asset.industry, "segment": asset.segment,
             "market_cap_category": asset.market_cap_category,
             "stage": pos.stage, "quantity": _num(pos.quantity), "average_price": _num(pos.average_price),
-            "target_weight_pct": _num(pos.target_weight_pct), "classification_override": pos.classification_override,
-            "sector_override": pos.sector_override, "segment_override": pos.segment_override, "notes": pos.notes,
+            "target_weight_pct": _num(pos.target_weight_pct), "classification_override": pos.classification_override, "notes": pos.notes,
             "current_price": price_info["price"], "current_price_as_of": price_info["as_of"], "price_source": price_info["source"],
         })
     snap = build_portfolio_snapshot(raw, cash_balance=_num(portfolio.cash_balance), target_cash_pct=_num(portfolio.target_cash_pct))
@@ -2250,8 +2183,7 @@ def upsert_portfolio_position(portfolio_id: UUID, ticker: str, req: PortfolioPos
     if asset is None:
         asset = arepo.upsert_asset(ticker=ticker.upper(), asset_type=req.asset_type)
     prepo.upsert_position(p, asset, stage=req.stage, quantity=req.quantity, average_price=req.average_price,
-                          target_weight_pct=req.target_weight_pct, classification_override=req.classification_override,
-                          sector_override=req.sector_override, segment_override=req.segment_override, notes=req.notes)
+                          target_weight_pct=req.target_weight_pct, classification_override=req.classification_override, notes=req.notes)
     db.commit(); return _portfolio_snapshot(db, p)
 
 
@@ -2270,8 +2202,7 @@ def add_portfolio_purchase(portfolio_id: UUID, ticker: str, req: PortfolioPurcha
         row = prepo.add_purchase(
             p, asset, quantity=req.quantity, unit_price=req.unit_price, stage=req.stage,
             target_weight_pct=req.target_weight_pct,
-            classification_override=req.classification_override, sector_override=req.sector_override,
-            segment_override=req.segment_override, notes=req.notes,
+            classification_override=req.classification_override, notes=req.notes,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc))
@@ -2530,24 +2461,9 @@ def refresh_market_dashboard_comparison(
     access=Depends(require_permission("can_view_market")),
     db: Session = Depends(get_db),
 ):
-    job, scheduled = enqueue_refresh(
-        db, "comparison", trigger="manual",
-        requested_by=access.get("email"), force=True,
-    )
+    row, scheduled = enqueue_refresh(db, "comparison", trigger="manual", requested_by=access.get("email"), force=True)
     db.commit()
-    # A manual request can legitimately reuse a job that is already inside the
-    # cooldown window.  Always return the last valid snapshot and the real job
-    # status so the browser keeps useful data visible while the refresh runs.
-    snapshot = SharedSnapshotRepository(db).get(REFRESH_SCHEDULES["comparison"].snapshot_key)
-    update = all_refresh_statuses(db)["comparison"]
-    return {
-        "data": dict(snapshot.payload_json or {}) if snapshot is not None else {},
-        "scheduled": scheduled,
-        "refreshing": update["status"] in {"queued", "running"},
-        "error": update.get("last_error_code"),
-        "job": background_job_dict(job) if job is not None else None,
-        "update": update,
-    }
+    return {"scheduled": scheduled, "refreshing": scheduled, "job": background_job_dict(row)}
 
 
 # -----------------------------

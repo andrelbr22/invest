@@ -1,7 +1,5 @@
 # Homologação da V1.20.7 na Oracle
 
-> Use a revisão R3 do pacote. Ela contém as melhorias da R2 e a correção de resiliência do Comparador Histórico.
-
 ## 1. Publicação inicial
 
 1. No Windows, extraia o ZIP em uma pasta nova.
@@ -24,7 +22,7 @@ O retorno deve informar:
 - `version: 1.20.7`;
 - `environment: staging`;
 - `database: reachable`;
-- `migration: 0019_v1_20_access_rules`.
+- `migration: 0018_v1_20_curve_history`.
 
 ## 3. Testes automatizados
 
@@ -44,15 +42,6 @@ docker compose -f docker-compose.oracle-web.yml exec -T staging python -m pytest
 8. No Comparador Histórico, alterne `Início comum` e `Histórico próprio`; confira retorno, volatilidade, datas e observações.
 9. Force uma validação inválida e confirme mensagem compreensível, sem traceback, JSON ou detalhe de banco.
 10. Confirme os painéis em computador e celular.
-11. Confirme IFIX, IBrX 100, IBrX 50, IDIV e SMLL; fontes alternativas devem aparecer identificadas como proxy.
-12. Confirme Bitcoin, Ethereum, Solana, Ripple (XRP) e BNB, além de BTC/ETH no Comparador Histórico.
-13. Na curva DI, confirme títulos nos dois eixos e ausência da opção de 30 anos.
-14. Em Administração, libere FDI, ALB, Graham e preço-teto separadamente para uma conta de teste. Confirme que ALB libera os dois filtros de valuation.
-15. Entre com uma conta sem essas permissões: os botões FDI e ALB devem permanecer visíveis e desativados, e as colunas protegidas não devem aparecer.
-16. Na carteira, grave Setor e Segmento em uma posição e em um investimento sem ticker.
-17. Em Backtests, execute uma estratégia com tendência diária MMS 8, outra com MME 9, e combine RSI/ADX/volume sem bloquear a navegação.
-18. No Comparador Histórico, clique em `Atualizar séries`: o gráfico anterior deve permanecer visível enquanto o trabalho é executado e BTC/ETH devem aparecer como opções assim que o novo snapshot terminar.
-19. Se uma fonte estiver indisponível, confirme que somente a série afetada fica desabilitada e que as demais continuam utilizáveis.
 
 ## 5. Segunda instância
 

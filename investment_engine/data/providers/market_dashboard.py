@@ -9,7 +9,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from io import StringIO
-from email.utils import parsedate_to_datetime
 import math
 import re
 from threading import Lock
@@ -57,14 +56,14 @@ FEC_ELECTION_CALENDAR_URL = (
 HISTORICAL_COMPARISON_ORDER = [
     "CDI", "IBOV", "IFIX", "SP500", "NYSE", "NASDAQ", "DOW_JONES",
     "NIKKEI225", "SHANGHAI_SSE", "EURO_STOXX50", "STOXX_EUROPE600",
-    "MSCI_EUROPE", "USD_BRL", "BTC", "ETH", "IMAB", "IRFM", "POUPANCA", "OURO",
+    "MSCI_EUROPE", "USD_BRL", "IMAB", "IRFM", "POUPANCA", "OURO",
     "PRATA", "IPCA", "INPC", "IGPM", "IGPDI", "INCC", "IPCFIPE",
     "VIX", "DXY",
 ]
 
 HISTORICAL_PRICE_SPECS = [
     ("IBOV", "Ibovespa", ["^BVSP"], False, None),
-    ("IFIX", "IFIX", ["^IFIX", "XFIX11"], False, None),
+    ("IFIX", "IFIX", ["^IFIX", "IFIX.SA", "XFIX11"], False, None),
     ("SP500", "S&P 500", ["^GSPC"], False, None),
     ("NYSE", "NYSE", ["^NYA"], False, None),
     ("NASDAQ", "NASDAQ", ["^IXIC"], False, None),
@@ -81,8 +80,6 @@ HISTORICAL_PRICE_SPECS = [
         "ETF IEUR usado como proxy transparente do MSCI Europe.",
     ),
     ("USD_BRL", "Dólar", ["BRL=X"], False, None),
-    ("BTC", "Bitcoin", ["BTC-USD"], False, None),
-    ("ETH", "Ethereum", ["ETH-USD"], False, None),
     (
         "IMAB", "IMA-B", ["IMAB11"], True,
         "ETF IMAB11 usado como proxy transparente do índice IMA-B.",
@@ -493,19 +490,14 @@ class MarketDashboardService:
         last_error = None
         fallback_proxies = {
             "XFIX11": "ETF XFIX11, referência líquida do segmento imobiliário (acompanha o IFIX L)",
-            "BRAX11": "ETF BRAX11, referência do IBrX 100",
-            "PIBB11": "ETF PIBB11, referência do IBrX 50",
-            "DIVO11": "ETF DIVO11, referência do IDIV",
-            "SMAL11": "ETF SMAL11, referência do SMLL",
             "EXSA.DE": "ETF iShares STOXX Europe 600 (EXSA)",
         }
-        partial = None
         for symbol in symbols:
             try:
                 snapshot = series_snapshot(self.prices.fetch(symbol, range_="2y"))
                 if snapshot["current"] is not None:
                     effective_proxy = proxy or symbol in fallback_proxies
-                    candidate = {
+                    return {
                         "label": label, "ticker": symbol, "unit": unit, "currency": currency,
                         "proxy": effective_proxy,
                         "proxy_label": proxy_label or fallback_proxies.get(symbol),
@@ -513,27 +505,8 @@ class MarketDashboardService:
                         "url": f"https://finance.yahoo.com/quote/{YahooPriceProvider.symbol(symbol)}",
                         **snapshot,
                     }
-                    variations = candidate.get("variations") or {}
-                    if partial is not None and effective_proxy:
-                        # Preserve the official index level when available, but complete
-                        # missing returns with the explicitly identified liquid proxy.
-                        partial_variations = dict(partial.get("variations") or {})
-                        partial_variations.update({
-                            key: partial_variations.get(key) if partial_variations.get(key) is not None else variations.get(key)
-                            for key in ("1d", "1w", "1m", "1y")
-                        })
-                        partial["variations"] = partial_variations
-                        partial["proxy"] = True
-                        partial["proxy_label"] = f"Variações complementadas por {fallback_proxies.get(symbol, proxy_label or symbol)}"
-                        return partial
-                    if all(variations.get(key) is not None for key in ("1d", "1w", "1m", "1y")):
-                        return candidate
-                    if partial is None:
-                        partial = candidate
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {str(exc)[:120]}"
-        if partial is not None:
-            return partial
         return {
             "label": label, "ticker": symbols[0], "unit": unit, "currency": currency,
             "proxy": proxy, "proxy_label": proxy_label, "source": "Yahoo Finance",
@@ -545,11 +518,7 @@ class MarketDashboardService:
         specifications = {
             "brazil": [
                 ("IBOV", ["^BVSP"], "pontos", None, False, None),
-                ("IFIX", ["^IFIX", "XFIX11"], "pontos", None, False, None),
-                ("IBrX 100", ["^IBXX", "BRAX11"], "pontos", None, False, None),
-                ("IBrX 50", ["^IBXL", "PIBB11"], "pontos", None, False, None),
-                ("IDIV", ["^IDIV", "DIVO11"], "pontos", None, False, None),
-                ("SMLL", ["^SMLL", "SMAL11"], "pontos", None, False, None),
+                ("IFIX", ["^IFIX", "IFIX.SA", "XFIX11"], "pontos", None, False, None),
             ],
             "global": [
                 ("NYSE Composite", ["^NYA"], "pontos", None, False, None),
@@ -635,10 +604,7 @@ class MarketDashboardService:
         usd_brl = self._yahoo_metric("Dólar / Real", ["BRL=X"], unit="R$", currency="BRL")
         conversion = parse_number(usd_brl.get("current"))
         out = []
-        for label, base in (
-            ("Bitcoin", "BTC"), ("Ethereum", "ETH"), ("Solana", "SOL"),
-            ("Ripple (XRP)", "XRP"), ("BNB", "BNB"),
-        ):
+        for label, base in (("Bitcoin", "BTC"), ("Ethereum", "ETH")):
             usd = self._yahoo_metric(label, [f"{base}-USD"], unit="USD", currency="USD")
             brl = self._yahoo_metric(label, [f"{base}-BRL"], unit="R$", currency="BRL")
             value_brl = brl.get("current")
@@ -992,11 +958,7 @@ class MarketDashboardService:
                         }
                 except Exception as exc:
                     last_error = f"{type(exc).__name__}: {str(exc)[:100]}"
-            return {
-                "code": code, "label": label, "points": [],
-                "source": "Yahoo Finance",
-                "error": last_error or "history_unavailable",
-            }
+            return {"code": code, "label": label, "points": [], "source": "Yahoo Finance", "error": last_error or "history_unavailable"}
 
         def rate_history(spec):
             code, label, series, first_only, source = spec
@@ -1026,34 +988,17 @@ class MarketDashboardService:
         # with HTTP 200, which used to leave several indicators without data.
         for spec in rate_specs:
             series.append(rate_history(spec))
-        # Keep a stable catalog even when one upstream source is unavailable.
-        # The browser can then display BTC/ETH (and every other option) as
-        # temporarily unavailable instead of silently removing the selector.
-        by_code = {str(item.get("code")): item for item in series}
-        series = [
-            by_code.get(code, {
-                "code": code,
-                "label": code,
-                "points": [],
-                "source": "Fonte temporariamente indisponível",
-                "error": "series_not_returned",
-            })
-            for code in order
-        ]
-        available = sum(bool(item.get("points")) for item in series)
+        series.sort(key=lambda item: order.index(item["code"]))
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "base": 100,
             "max_years": years,
             "periods": [0.5, 1, 2, 3, 5, 10, 15, 20],
             "series": series,
-            "status": "complete" if available == len(series) else "partial",
-            "available_series": available,
-            "total_series": len(series),
             "note": "Cada linha é rebaseada em R$ 100 no primeiro ponto visível do período escolhido.",
         }
 
-    def economy_headlines(self, limit: int = 10) -> dict:
+    def economy_headlines(self, limit: int = 5) -> dict:
         """Return linked headlines only; article content is never reproduced."""
         items: list[dict] = []
         errors: list[str] = []
@@ -1067,7 +1012,7 @@ class MarketDashboardService:
                     items.append({
                         "title": title.get_text(" ", strip=True),
                         "url": link.get_text(strip=True), "source": "Agência Brasil",
-                        "published_at": self._normalize_published_at(published.get_text(strip=True) if published else None),
+                        "published_at": published.get_text(strip=True) if published else None,
                     })
         except Exception as exc:
             errors.append(f"Agência Brasil: {type(exc).__name__}")
@@ -1083,9 +1028,7 @@ class MarketDashboardService:
                     continue
                 if href.startswith("/"):
                     href = "https://br.advfn.com" + href
-                time_node = heading.find("time") or (heading.parent.find("time") if heading.parent else None)
-                published = (time_node.get("datetime") or time_node.get_text(" ", strip=True)) if time_node else None
-                items.append({"title": title, "url": href, "source": "ADVFN", "published_at": self._normalize_published_at(published)})
+                items.append({"title": title, "url": href, "source": "ADVFN", "published_at": None})
         except Exception as exc:
             errors.append(f"ADVFN: {type(exc).__name__}")
         unique: dict[str, dict] = {}
@@ -1098,22 +1041,6 @@ class MarketDashboardService:
             "items": selected, "updated_at": datetime.now(timezone.utc).isoformat(),
             "ttl_seconds": 3600, "errors": errors,
         }
-
-    @staticmethod
-    def _normalize_published_at(value: object) -> str | None:
-        clean = str(value or "").strip()
-        if not clean:
-            return None
-        try:
-            return parsedate_to_datetime(clean).astimezone(timezone.utc).isoformat()
-        except (TypeError, ValueError, OverflowError):
-            try:
-                parsed = datetime.fromisoformat(clean.replace("Z", "+00:00"))
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                return parsed.astimezone(timezone.utc).isoformat()
-            except ValueError:
-                return None
 
     @staticmethod
     def _bls_release_date(value: object) -> date | None:
@@ -1174,33 +1101,19 @@ class MarketDashboardService:
         return events
 
     @staticmethod
-    def _merge_super_wednesday(events: list[dict]) -> list[dict]:
-        """Merge coincident Copom/Fed decisions into one unambiguous event."""
-        by_date: dict[str, list[dict]] = {}
+    def _annotate_super_wednesday(events: list[dict]) -> list[dict]:
+        """Keep Copom and Fed rows separate and highlight coincident decisions."""
+        by_date: dict[str, set[str]] = {}
         for event in events:
-            by_date.setdefault(str(event.get("date") or ""), []).append(event)
-        merged: list[dict] = []
-        for event_date, rows in by_date.items():
-            copom = next((row for row in rows if row.get("category") == "Decisão do Copom"), None)
-            fed = next((row for row in rows if row.get("category") == "Decisão do Fed"), None)
-            if copom and fed:
-                merged.append({
-                    "category": "Super Quarta",
-                    "event": "Decisões de juros do Copom e do Fed",
-                    "date": event_date,
-                    "time": " • ".join([
-                        f"Copom: {copom.get('time') or 'após o fechamento'}",
-                        f"Fed: {fed.get('time') or 'horário a confirmar'}",
-                    ]),
-                    "region": "Brasil e Estados Unidos",
-                    "source": "Banco Central do Brasil e Federal Reserve",
-                    "url": copom.get("url"),
-                    "highlight": "super_wednesday",
-                    "observation": "Super Quarta: as duas decisões de juros ocorrem no mesmo dia.",
-                })
-                rows = [row for row in rows if row is not copom and row is not fed]
-            merged.extend(rows)
-        return merged
+            by_date.setdefault(str(event.get("date") or ""), set()).add(str(event.get("category") or ""))
+        for event in events:
+            categories = by_date.get(str(event.get("date") or ""), set())
+            if {"Decisão do Copom", "Decisão do Fed"}.issubset(categories) and event.get("category") in {
+                "Decisão do Copom", "Decisão do Fed",
+            }:
+                event["observation"] = "SUPER QUARTA • Copom e Fed decidem juros no mesmo dia"
+                event["highlight"] = "super_wednesday"
+        return events
 
     def _bls_calendar(self) -> list[dict]:
         events = []
@@ -1348,7 +1261,7 @@ class MarketDashboardService:
             },
         ]
         events.extend(item for item in election_events if item["date"] >= today.isoformat())
-        return sorted(self._merge_super_wednesday(events), key=lambda item: (item["date"], item["category"]))
+        return sorted(self._annotate_super_wednesday(events), key=lambda item: (item["date"], item["category"]))
 
     def build(self) -> dict:
         tasks = {

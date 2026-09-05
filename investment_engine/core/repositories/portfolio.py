@@ -85,7 +85,7 @@ class PortfolioRepository:
             )
         )
 
-    def upsert_position(self, portfolio: PortfolioORM, asset: AssetORM, *, stage="position", quantity=0, average_price=None, target_weight_pct=0, classification_override=None, sector_override=None, segment_override=None, notes=None) -> PortfolioPositionORM:
+    def upsert_position(self, portfolio: PortfolioORM, asset: AssetORM, *, stage="position", quantity=0, average_price=None, target_weight_pct=0, classification_override=None, notes=None) -> PortfolioPositionORM:
         row = self.get_position(portfolio.id, asset.id)
         if row is None:
             row = PortfolioPositionORM(portfolio_id=portfolio.id, asset_id=asset.id)
@@ -95,16 +95,13 @@ class PortfolioRepository:
         row.average_price = _d(average_price)
         row.target_weight_pct = _d(target_weight_pct) or Decimal("0")
         row.classification_override = classification_override.strip() if isinstance(classification_override, str) and classification_override.strip() else None
-        row.sector_override = sector_override.strip() if isinstance(sector_override, str) and sector_override.strip() else None
-        row.segment_override = segment_override.strip() if isinstance(segment_override, str) and segment_override.strip() else None
         row.notes = notes
         row.updated_at = datetime.now(timezone.utc)
         self.session.flush()
         return row
 
     def add_purchase(self, portfolio: PortfolioORM, asset: AssetORM, *, quantity, unit_price,
-                     stage="position", target_weight_pct=None, classification_override=None,
-                     sector_override=None, segment_override=None, notes=None) -> PortfolioPositionORM:
+                     stage="position", target_weight_pct=None, classification_override=None, notes=None) -> PortfolioPositionORM:
         """Add a purchase and preserve a weighted average acquisition price."""
         purchase_qty = _d(quantity) or Decimal("0")
         purchase_price = _d(unit_price)
@@ -131,10 +128,6 @@ class PortfolioRepository:
             row.target_weight_pct = Decimal("0")
         if classification_override is not None:
             row.classification_override = classification_override.strip() or None
-        if sector_override is not None:
-            row.sector_override = sector_override.strip() or None
-        if segment_override is not None:
-            row.segment_override = segment_override.strip() or None
         if notes is not None:
             row.notes = notes
         row.updated_at = datetime.now(timezone.utc)
