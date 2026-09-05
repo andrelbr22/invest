@@ -15,21 +15,29 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
-        "interest_curve_snapshots",
-        sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column("reference_date", sa.Date(), nullable=False),
-        sa.Column("curve_type", sa.String(length=40), nullable=False),
-        sa.Column("title", sa.String(length=160), nullable=False),
-        sa.Column("source", sa.String(length=160)),
-        sa.Column("source_url", sa.String(length=500)),
-        sa.Column("points_json", sa.JSON(), nullable=False),
-        sa.Column("retrieved_at", sa.DateTime(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("reference_date", "curve_type", name="uq_interest_curve_reference_type"),
-    )
-    op.create_index("ix_interest_curve_reference", "interest_curve_snapshots", ["reference_date"])
+    inspector = sa.inspect(op.get_bind())
+    tables = set(inspector.get_table_names())
+    if "interest_curve_snapshots" not in tables:
+        op.create_table(
+            "interest_curve_snapshots",
+            sa.Column("id", sa.Uuid(), nullable=False),
+            sa.Column("reference_date", sa.Date(), nullable=False),
+            sa.Column("curve_type", sa.String(length=40), nullable=False),
+            sa.Column("title", sa.String(length=160), nullable=False),
+            sa.Column("source", sa.String(length=160)),
+            sa.Column("source_url", sa.String(length=500)),
+            sa.Column("points_json", sa.JSON(), nullable=False),
+            sa.Column("retrieved_at", sa.DateTime(timezone=True), nullable=False),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("reference_date", "curve_type", name="uq_interest_curve_reference_type"),
+        )
+        op.create_index("ix_interest_curve_reference", "interest_curve_snapshots", ["reference_date"])
+        return
+    indexes = {index["name"] for index in inspector.get_indexes("interest_curve_snapshots")}
+    if "ix_interest_curve_reference" not in indexes:
+        op.create_index("ix_interest_curve_reference", "interest_curve_snapshots", ["reference_date"])
 
 
 def downgrade():
-    op.drop_table("interest_curve_snapshots")
+    if "interest_curve_snapshots" in set(sa.inspect(op.get_bind()).get_table_names()):
+        op.drop_table("interest_curve_snapshots")

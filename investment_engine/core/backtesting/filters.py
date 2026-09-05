@@ -17,9 +17,9 @@ FUNDAMENTAL_FIELDS = {
 
 def default_filter_config() -> dict:
     return {
-        "daily_trend": {"enabled": False, "direction": "up", "period": 21, "mode": "price_above", "slope_lookback": 5},
-        "weekly_trend": {"enabled": False, "direction": "up", "period": 21, "mode": "price_above", "slope_lookback": 4},
-        "monthly_trend": {"enabled": False, "direction": "up", "period": 21, "mode": "price_above", "slope_lookback": 3},
+        "daily_trend": {"enabled": False, "direction": "up", "ma_type": "sma", "period": 21, "mode": "price_above", "slope_lookback": 5},
+        "weekly_trend": {"enabled": False, "direction": "up", "ma_type": "sma", "period": 21, "mode": "price_above", "slope_lookback": 4},
+        "monthly_trend": {"enabled": False, "direction": "up", "ma_type": "sma", "period": 21, "mode": "price_above", "slope_lookback": 3},
         "trend_combination": "all",
         "adx_min": None,
         "volume_ratio_min": None,
@@ -44,8 +44,12 @@ def normalize_filter_config(config: dict | None) -> dict:
             base = dict(out[key]); base.update(value or {})
             base["enabled"] = bool(base.get("enabled", False))
             base["direction"] = "down" if str(base.get("direction", "up")).lower() == "down" else "up"
+            ma_type = "ema" if str(base.get("ma_type", "sma")).lower() == "ema" else "sma"
             period = int(base.get("period", 21))
-            base["period"] = 50 if period == 50 else 21
+            allowed_pairs = {("sma", 8), ("ema", 9), ("sma", 21), ("sma", 50), ("sma", 200)}
+            if (ma_type, period) not in allowed_pairs:
+                ma_type, period = "sma", 21
+            base["ma_type"], base["period"] = ma_type, period
             mode = str(base.get("mode", "price_above")).lower()
             allowed_modes = {"price_above", "sma_rising", "price_above_or_sma_rising", "price_above_and_sma_rising"}
             base["mode"] = mode if mode in allowed_modes else "price_above"
@@ -72,29 +76,35 @@ def filters_active(config: dict | None) -> bool:
     return bool(cfg["fundamental_entry"] or cfg["fundamental_exit"])
 
 
-def _completed_period_sma(price: pd.Series, period: int, kind: str) -> pd.Series:
+def _moving_average(price: pd.Series, period: int, ma_type: str) -> pd.Series:
+    if ma_type == "ema":
+        return price.ewm(span=period, adjust=False, min_periods=period).mean()
+    return price.rolling(period, min_periods=period).mean()
+
+
+def _completed_period_ma(price: pd.Series, period: int, kind: str, ma_type: str) -> pd.Series:
     if kind == "daily":
-        return price.rolling(period, min_periods=period).mean()
+        return _moving_average(price, period, ma_type)
     naive_index = price.index.tz_convert(None) if getattr(price.index, "tz", None) is not None else price.index
     labels = naive_index.to_period("W-FRI" if kind == "weekly" else "M")
     grouped = price.groupby(labels)
     closes = grouped.last()
     last_dates = grouped.apply(lambda s: s.index.max())
-    sma = closes.rolling(period, min_periods=period).mean()
-    anchors = pd.Series(sma.to_numpy(), index=pd.DatetimeIndex(list(last_dates)))
+    average = _moving_average(closes, period, ma_type)
+    anchors = pd.Series(average.to_numpy(), index=pd.DatetimeIndex(list(last_dates)))
     union = price.index.union(anchors.index).sort_values()
     return anchors.reindex(union).ffill().reindex(price.index)
 
 
-def _completed_period_sma_previous(price: pd.Series, period: int, kind: str, lookback: int) -> pd.Series:
+def _completed_period_ma_previous(price: pd.Series, period: int, kind: str, lookback: int, ma_type: str) -> pd.Series:
     if kind == "daily":
-        return _completed_period_sma(price, period, kind).shift(lookback)
+        return _completed_period_ma(price, period, kind, ma_type).shift(lookback)
     naive_index = price.index.tz_convert(None) if getattr(price.index, "tz", None) is not None else price.index
     labels = naive_index.to_period("W-FRI" if kind == "weekly" else "M")
     grouped = price.groupby(labels)
     closes = grouped.last()
     last_dates = grouped.apply(lambda s: s.index.max())
-    previous = closes.rolling(period, min_periods=period).mean().shift(lookback)
+    previous = _moving_average(closes, period, ma_type).shift(lookback)
     anchors = pd.Series(previous.to_numpy(), index=pd.DatetimeIndex(list(last_dates)))
     union = price.index.union(anchors.index).sort_values()
     return anchors.reindex(union).ffill().reindex(price.index)
@@ -245,9 +255,10 @@ def apply_backtest_filters(
         rule = cfg[key]
         if not rule["enabled"]:
             continue
-        ma = _completed_period_sma(price, int(rule["period"]), kind)
-        previous_ma = _completed_period_sma_previous(price, int(rule["period"]), kind, int(rule["slope_lookback"]))
-        col = f"Filtro SMA {rule['period']} {kind}"
+        ma_type = str(rule.get("ma_type") or "sma")
+        ma = _completed_period_ma(price, int(rule["period"]), kind, ma_type)
+        previous_ma = _completed_period_ma_previous(price, int(rule["period"]), kind, int(rule["slope_lookback"]), ma_type)
+        col = f"Filtro {ma_type.upper()} {rule['period']} {kind}"
         indicators[col] = ma
         passed, valid, slope = _trend_condition(
             price, ma, previous_ma, mode=rule["mode"], direction=rule["direction"]
@@ -256,7 +267,7 @@ def apply_backtest_filters(
         trend_conditions.append(passed)
         trend_labels.append(label)
         diagnostics["conditions"][label] = {
-            "period": int(rule["period"]), "direction": rule["direction"], "mode": rule["mode"],
+            "ma_type": ma_type, "period": int(rule["period"]), "direction": rule["direction"], "mode": rule["mode"],
             "slope_lookback": int(rule["slope_lookback"]), "bars_pass": int(passed.sum()),
             "bars_valid": int(valid.sum()), "candidate_signals": int(raw_candidates.sum()),
             "signals_blocked": int((raw_candidates & ~passed).sum()),

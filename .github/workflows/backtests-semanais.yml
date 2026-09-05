@@ -28,6 +28,9 @@ on:
           - staging
           - production
 
+permissions:
+  contents: read
+
 concurrency:
   group: backtests-oficiais
   cancel-in-progress: false
@@ -57,10 +60,11 @@ jobs:
       # execução manual iniciada no ambiente de teste volta para /testefdi.
       BACKTEST_CALLBACK_URL: ${{ github.event_name == 'schedule' && 'https://formacaodoinvestidor.com.br' || (inputs.environment == 'staging' && 'https://formacaodoinvestidor.com.br/testefdi' || 'https://formacaodoinvestidor.com.br') }}
       BACKTEST_CALLBACK_TOKEN: ${{ secrets.BACKTEST_CALLBACK_TOKEN }}
+      BACKTEST_EPHEMERAL_DATABASE: "true"
       APP_AUTH_REQUIRED: "false"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip

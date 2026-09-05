@@ -46,8 +46,13 @@ def upgrade():
                 "backtest_request_usage",
                 sa.Column(name, column_type, nullable=nullable, server_default=default),
             )
-    foreign_keys = {item.get("name") for item in sa.inspect(op.get_bind()).get_foreign_keys("backtest_request_usage")}
-    if "fk_backtest_request_usage_background_job" not in foreign_keys:
+    foreign_keys = sa.inspect(op.get_bind()).get_foreign_keys("backtest_request_usage")
+    background_job_fk_exists = any(
+        set(item.get("constrained_columns") or []) == {"background_job_id"}
+        and item.get("referred_table") == "background_jobs"
+        for item in foreign_keys
+    )
+    if not background_job_fk_exists:
         op.create_foreign_key(
             "fk_backtest_request_usage_background_job",
             "backtest_request_usage", "background_jobs",

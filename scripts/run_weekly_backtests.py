@@ -40,6 +40,36 @@ def resolve_database_url(environment: dict | None = None) -> str:
     raise SystemExit("O PostgreSQL temporário do GitHub Actions não foi iniciado corretamente.")
 
 
+def prepare_calculation_database(database_url: str, environment: dict | None = None):
+    """Create the disposable CI schema without replaying production history.
+
+    The weekly calculation database contains no user data and exists only for
+    the duration of one GitHub Actions job.  Building the current SQLAlchemy
+    schema directly avoids coupling this worker to old production migrations.
+    The explicit flag and local database checks prevent accidental use against
+    a persistent database.
+    """
+
+    values = environment if environment is not None else os.environ
+    ephemeral = str(values.get("BACKTEST_EPHEMERAL_DATABASE") or "").strip().lower()
+    if ephemeral not in {"1", "true", "yes", "on"}:
+        raise SystemExit("O banco descartável dos backtests não foi confirmado pelo workflow.")
+
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(database_url)
+    if parsed.host not in {"127.0.0.1", "localhost"} or parsed.database != "backtests_ci":
+        raise SystemExit("O banco informado não é o PostgreSQL descartável dos backtests.")
+
+    from investment_engine.infrastructure.db import models  # noqa: F401
+    from investment_engine.infrastructure.db.base import Base
+    from investment_engine.infrastructure.db.session import make_engine
+
+    engine = make_engine(database_url)
+    Base.metadata.create_all(bind=engine)
+    return engine
+
+
 def _tickers(value: str) -> list[str]:
     clean = []
     for item in str(value or "").replace(";", ",").split(","):
@@ -57,18 +87,17 @@ def main():
     parser.add_argument("--job-id", default="", help="Pedido já registrado pelo painel administrativo.")
     args = parser.parse_args()
 
-    from alembic import command
-    from alembic.config import Config
     from sqlalchemy.orm import Session
 
     from investment_engine.core.backtesting.batch import BacktestBatchService
-    from investment_engine.infrastructure.db.session import make_engine
     from investment_engine.integrations.backtest_delivery import (
         BacktestDeliveryClient,
         BacktestDeliveryError,
     )
 
     database_url = resolve_database_url()
+    failure_stage = "start_callback"
+    failure_ticker: str | None = None
     callback = BacktestDeliveryClient(
         base_url=os.getenv("BACKTEST_CALLBACK_URL", ""),
         token=os.getenv("BACKTEST_CALLBACK_TOKEN", ""),
@@ -94,12 +123,11 @@ def main():
             print(f"Pedido {remote_job_id[:8]} concluído sem ativos pendentes.")
             return
 
-        config = Config(str(PROJECT_ROOT / "alembic.ini"))
-        config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
-        config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
-        command.upgrade(config, "head")
+        failure_stage = "prepare_temporary_database"
+        engine = prepare_calculation_database(database_url)
 
-        with Session(make_engine(database_url)) as session:
+        failure_stage = "prepare_local_job"
+        with Session(engine) as session:
             service = BacktestBatchService(session)
             local_job = service.create_job(
                 requested_by="github-actions@system.local",
@@ -111,6 +139,9 @@ def main():
             session.commit()
 
             def deliver(payload: dict):
+                nonlocal failure_stage, failure_ticker
+                failure_stage = "deliver_asset"
+                failure_ticker = str(payload.get("ticker") or "").strip().upper() or None
                 result = callback.deliver_asset(remote_job_id, payload)
                 imported = result.get("imported_runs", 0)
                 skipped = result.get("skipped_runs", 0)
@@ -121,7 +152,9 @@ def main():
                     f"({imported} novo(s), {skipped} já existente(s))."
                 )
 
+            failure_stage = "calculate_assets"
             service.run_job(local_job, asset_callback=deliver)
+        failure_stage = "finish_callback"
         final = callback.finish_job(remote_job_id)
         print(
             f"Pedido {remote_job_id[:8]} finalizado: "
@@ -137,6 +170,8 @@ def main():
                     message="A execução no GitHub foi interrompida antes da conclusão.",
                     details={
                         "exception_type": type(exc).__name__,
+                        "failure_stage": failure_stage,
+                        "ticker": failure_ticker,
                         "safe_message": str(exc)[:240],
                     },
                 )
@@ -144,7 +179,9 @@ def main():
                 pass
         if isinstance(exc, (BacktestDeliveryError, SystemExit)):
             raise
-        raise SystemExit(f"Falha segura no processamento: {type(exc).__name__}") from exc
+        raise SystemExit(
+            f"Falha segura na etapa {failure_stage}: {type(exc).__name__}"
+        ) from exc
 
 
 if __name__ == "__main__":

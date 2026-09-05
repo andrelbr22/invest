@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -12,14 +15,56 @@ jobs:
       APP_AUTH_REQUIRED: "false"
       ALERT_MONITOR_ENABLED: "false"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
       - name: Instalar dependências
         run: python -m pip install -r requirements.txt
       - name: Validar sintaxe
-        run: python -m compileall -q app.py investment_engine scripts tests_v1160 tests_v1170
+        run: python -m compileall -q app.py investment_engine scripts tests_v1160 tests_v1170 tests_v1200 tests_v1202 tests_v1203 tests_v1204 tests_v1205 tests_v1206 tests_v1207
       - name: Executar testes
-        run: python -m pytest -q tests_v1160 tests_v1170
+        run: python -m pytest -q tests_v1160 tests_v1170 tests_v1200 tests_v1202 tests_v1203 tests_v1204 tests_v1205 tests_v1206 tests_v1207
+
+  migrations-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: migration_ci
+          POSTGRES_USER: migration_ci
+          POSTGRES_PASSWORD: temporary-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U migration_ci -d migration_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://migration_ci:temporary-ci-password@127.0.0.1:5432/migration_ci
+      DATABASE_ADMIN_URL: postgresql+psycopg://migration_ci:temporary-ci-password@127.0.0.1:5432/migration_ci
+      APP_AUTH_REQUIRED: "false"
+      ALERT_MONITOR_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Instalar dependências
+        run: python -m pip install -r requirements.txt
+      - name: Validar migrações em PostgreSQL vazio
+        run: |
+          alembic upgrade head
+          python - <<'PY'
+          from sqlalchemy import create_engine, text
+          from investment_engine.infrastructure.config import settings
+
+          with create_engine(settings.database_url).connect() as connection:
+              revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+          assert revision == "0019_v1_20_access_rules", revision
+          print("Migrações validadas até", revision)
+          PY
