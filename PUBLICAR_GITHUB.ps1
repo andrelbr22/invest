@@ -140,7 +140,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Audita valuation, filtros e backtests na V1.21.0 em teste"
+    & $gitPath commit -m "Corrige cenarios, filtros multiativos e desempenho na V1.21.1 em teste"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
@@ -157,4 +157,4 @@ try {
 Write-Host ""
 Write-Host "PUBLICACAO CONCLUIDA." -ForegroundColor Green
 Write-Host "A versao foi enviada ao ambiente de teste. A producao depende de aprovacao manual."
-Write-Host "Depois da atualizacao automatica, valide a V1.21.0 no endereco /testefdi antes de promover."
+Write-Host "Depois da atualizacao automatica, valide a V1.21.1 no endereco /testefdi antes de promover."

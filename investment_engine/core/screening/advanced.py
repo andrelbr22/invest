@@ -607,25 +607,39 @@ def _enrich_valuation_rows(
         fund = row["fundamentals"]
         asset_class = _asset_valuation_class(asset)
         target = {**row["asset"], **fund, "asset_class": asset_class}
-        relative = relative_valuation(
-            target,
-            peers,
-            asset_type=asset.asset_type,
-            asset_class=asset_class,
-            min_peers=min_peers,
-            winsor_limits=winsor_limits,
-        )
-        _set_valuation_result(fund, "relative_peers", _scenario_family_result(relative))
+        # Only stocks and FIIs currently have the accounting inputs and peer
+        # taxonomy required by this engine.  For ETFs, BDRs and futures keep
+        # the more informative class-specific data requirement or
+        # ``not_applicable`` result
+        # produced by the applicability catalog instead of overwriting it
+        # with a generic unsupported-type response.
+        if asset.asset_type in {"stock", "fii"}:
+            relative = relative_valuation(
+                target,
+                peers,
+                asset_type=asset.asset_type,
+                asset_class=asset_class,
+                min_peers=min_peers,
+                winsor_limits=winsor_limits,
+            )
+            _set_valuation_result(fund, "relative_peers", _scenario_family_result(relative))
 
         if asset.asset_type == "stock":
-            dividend = _f(fund.get("normalized_dividend_per_share"))
-            dividend_source = "normalized_provider_dividend"
-            if dividend is None:
-                dividend = _f(dividend_by_ticker.get(str(asset.ticker).upper()))
-                dividend_source = "user_normalized_dividend" if dividend is not None else None
-            if dividend is None and bool(economic_options.get("use_ttm_dividend")):
+            use_ttm = bool(economic_options.get("use_ttm_dividend"))
+            dividend = None
+            dividend_source = None
+            # This is an explicit opt-in.  When selected, the TTM amount must
+            # actually be used rather than silently falling back behind a
+            # different provider field.
+            if use_ttm:
                 dividend = _f(fund.get("dividend_per_share_ttm"))
                 dividend_source = "trailing_12_month_dividend" if dividend is not None else None
+            if dividend is None and not use_ttm:
+                dividend = _f(dividend_by_ticker.get(str(asset.ticker).upper()))
+                dividend_source = "user_normalized_dividend" if dividend is not None else None
+            if dividend is None and not use_ttm:
+                dividend = _f(fund.get("normalized_dividend_per_share"))
+                dividend_source = "normalized_provider_dividend" if dividend is not None else None
             economic = gordon_growth_scenarios(
                 dividend,
                 assumptions=economic_scenarios,

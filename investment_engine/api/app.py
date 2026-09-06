@@ -868,7 +868,7 @@ class PriceAlertStatusRequest(BaseModel):
 
 
 class SavedScreeningFilterCreateRequest(BaseModel):
-    asset_type: Literal["stock", "fii"]
+    asset_type: Literal["stock", "fii", "etf", "bdr", "future"]
     name: str | None = Field(default=None, max_length=120)
     filters: dict = Field(default_factory=dict)
 
@@ -1174,9 +1174,18 @@ def _validated_saved_filters(asset_type: str, payload: dict) -> dict:
         "valuation_assumptions", "company_sizes", "ibov_membership", "pivot_timeframe", "trend_period",
     )):
         raw_configuration = payload
-    else:
+    elif asset_type in {"stock", "fii"}:
         model = StockFilterSet if asset_type == "stock" else FiiFilterSet
         return model(**payload).model_dump()
+    else:
+        # ETF, BDR and futures were added after the legacy filter schema. They
+        # are always stored with the explicit advanced schema, preventing an
+        # old FII filter model from being applied to another asset class.
+        validated = AdvancedScreenRequest(asset_type=asset_type)
+        return {
+            "schema_version": 2,
+            "configuration": validated.model_dump(mode="json"),
+        }
 
     configuration = dict(raw_configuration)
     configuration["asset_type"] = asset_type
@@ -1226,11 +1235,66 @@ def _preset_screen_configuration(asset_type: str, strategy) -> dict:
     ).model_dump(mode="json")
 
 
+_TECHNICAL_PRESET_RULES = {
+    "default": {
+        "name": "Padrão técnico",
+        "description": "Universo da classe com indicadores técnicos disponíveis para refinamento.",
+        "technical_filters": {},
+    },
+    "cnpi": {
+        "name": "FDI técnico",
+        "description": "Tendência diária positiva e RSI entre 35 e 75, sem inventar fundamentos ausentes.",
+        "technical_filters": {
+            "daily_trend": "up",
+            "rsi14": {"min": 35.0, "max": 75.0},
+        },
+    },
+    "alb": {
+        "name": "ALB técnico",
+        "description": "Confirma tendência diária e semanal positiva com RSI entre 40 e 70.",
+        "technical_filters": {
+            "daily_trend": "up",
+            "weekly_trend": "up",
+            "rsi14": {"min": 40.0, "max": 70.0},
+        },
+    },
+}
+
+
+def _technical_preset_configuration(asset_type: str, preset_id: str) -> dict:
+    rule = _TECHNICAL_PRESET_RULES[preset_id]
+    return AdvancedScreenRequest(
+        asset_type=asset_type,
+        technical_filters=rule["technical_filters"],
+        # The wider B3 snapshot already exposes SMA20. Complete local history
+        # remains the preferred source whenever it is available.
+        trend_period=20,
+        include_technical_columns=True,
+        limit=50,
+    ).model_dump(mode="json")
+
+
 @app.get("/screen/presets")
 def screening_presets(
-    asset_type: Literal["stock", "fii"] = "stock",
+    asset_type: Literal["stock", "fii", "etf", "bdr", "future"] = "stock",
     _access=Depends(require_permission("can_view_market")),
 ):
+    if asset_type not in {"stock", "fii"}:
+        return {
+            "asset_type": asset_type,
+            "basis": "technical",
+            "items": [
+                {
+                    "id": preset_id,
+                    "name": rule["name"],
+                    "description": rule["description"],
+                    "system": True,
+                    "configuration": _technical_preset_configuration(asset_type, preset_id),
+                    "weights": None,
+                }
+                for preset_id, rule in _TECHNICAL_PRESET_RULES.items()
+            ],
+        }
     strategies = STOCK_STRATEGIES if asset_type == "stock" else FII_STRATEGIES
     return {
         "asset_type": asset_type,
@@ -1254,7 +1318,7 @@ def _require_custom_filter_access(access: dict):
 
 @app.get("/screen/custom-filters")
 def list_saved_filters(
-    asset_type: Literal["stock", "fii"] | None = None,
+    asset_type: Literal["stock", "fii", "etf", "bdr", "future"] | None = None,
     access=Depends(require_permission("can_view_market")),
     db: Session = Depends(get_db),
 ):
@@ -1910,7 +1974,7 @@ def screen_db_universe(
     access=Depends(require_permission("can_view_market")),
     db: Session = Depends(get_db),
 ):
-    if asset_type not in {"stock", "fii", "other_b3"}:
+    if asset_type not in {"stock", "fii", "etf", "bdr", "future", "other_b3"}:
         raise HTTPException(422, "invalid_asset_type")
     rows = AssetRepository(db).latest_universe(asset_type=asset_type, limit=limit)
     return _universe_screen_result(rows, asset_type, access)
@@ -1938,8 +2002,16 @@ def screen_db_custom(
             "below_barsi_6pct": bool(stored.get("require_below_dividend_target")),
         }, access)
         return _stock_screen_result(repo.screen_latest_stocks(filters, limit=limit, offset=offset), access)
-    filters = FiiFilterSet(**stored)
-    return _fii_screen_result(repo.screen_latest_fiis(filters, limit=limit, offset=offset))
+    if row.asset_type == "fii":
+        filters = FiiFilterSet(**stored)
+        return _fii_screen_result(repo.screen_latest_fiis(filters, limit=limit, offset=offset))
+    # Defensive compatibility for a manually inserted legacy row. New filters
+    # for these classes are always written with schema_version=2 above.
+    return screen_advanced(
+        AdvancedScreenRequest(asset_type=row.asset_type, limit=limit),
+        _access=access,
+        db=db,
+    )
 
 @app.post("/screen/advanced")
 def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):

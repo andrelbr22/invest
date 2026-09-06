@@ -1,10 +1,10 @@
-# Formação do Investidor • V1.21.0
+# Formação do Investidor • V1.21.1
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
 
 ## Valoração e backtests V1.21
 
-A V1.21.0 preserva os módulos homologados da V1.20.7 e acrescenta controles auditáveis, sem preencher lacunas de dados com estimativas silenciosas:
+A V1.21.1 preserva os módulos homologados da V1.20.7 e acrescenta controles auditáveis, sem preencher lacunas de dados com estimativas silenciosas. Esta revisão também torna os cenários visíveis, libera presets técnicos honestos nas cinco classes e reduz consultas repetidas ao trocar de painel:
 
 - quatro famílias combináveis de valoração: Número de Graham, preço-teto por dividend yield-alvo, valuation relativo por pares e valor econômico por classe;
 - cenários conservador, base e otimista, qualidade da amostra, premissas visíveis e estado `N/D` quando faltarem dados;
@@ -76,7 +76,7 @@ manualmente para:
 `https://formacaodoinvestidor.com.br/`
 
 As credenciais, o banco e os backups permanecem somente no servidor. Consulte
-`INSTRUCOES_ORACLE_V1210.md` para a homologação desta versão.
+`INSTRUCOES_ORACLE_V1211.md` para a homologação desta versão.
 
 ## Segurança e escopo
 

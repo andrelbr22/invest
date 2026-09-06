@@ -430,6 +430,36 @@ class BacktestBatchService:
         asset, price_rows = self.service.ensure_history(ticker, asset_type="stock", start=warmup_start, end=requested_end)
         bars = [_bar_dict(row) for row in price_rows]
         fundamentals = [_fundamental_dict(row) for row in self.assets.fundamental_history_until(asset.id, end=requested_end)]
+        strategy_ids = list(dict.fromkeys(row["strategy_id"] for row in configurations))
+        benchmark_required = any(
+            self.service._needs_benchmark([row["strategy_id"]], row.get("filters"))
+            for row in configurations
+        )
+        benchmark_bars = None
+        benchmark_ticker = None
+        benchmark_failure = None
+        if benchmark_required:
+            # One reference-series request per asset is enough for the entire
+            # official grid.  Without it, dual momentum and relative-strength
+            # filter rows would all fail even though their market data exists.
+            try:
+                benchmark_bars, benchmark_ticker = self.service._benchmark_history(
+                    asset_type="stock", start=warmup_start, end=requested_end,
+                    strategy_ids=strategy_ids,
+                    params_by_strategy={
+                        row["strategy_id"]: row.get("params") or {}
+                        for row in configurations
+                    },
+                    filters={"relative_strength_min": 0.0} if any(
+                        (row.get("filters") or {}).get("relative_strength_min") is not None
+                        for row in configurations
+                    ) else None,
+                )
+            except Exception as exc:
+                # A reference-index outage must not discard the independent
+                # strategy rows for the asset.  Only configurations that
+                # actually require the reference fail closed below.
+                benchmark_failure = exc
         completed = failed = 0
         errors = []
         for configuration in configurations:
@@ -447,16 +477,24 @@ class BacktestBatchService:
                 continue
             try:
                 with self.session.begin_nested():
+                    if (
+                        self.service._needs_benchmark([sid], filters)
+                        and benchmark_bars is None
+                    ):
+                        raise ValueError(
+                            "benchmark_history_unavailable: histórico do índice de referência indisponível"
+                        ) from benchmark_failure
                     result = run_backtest(
                         bars, strategy_id=sid, requested_start=requested_start, requested_end=requested_end,
                         initial_capital=10000.0, fee_pct=0.03, slippage_pct=0.05,
                         risk_free_rate_pct=0.0, params=params, filters=filters,
-                        fundamental_snapshots=fundamentals,
+                        fundamental_snapshots=fundamentals, benchmark_bars=benchmark_bars,
                     )
                     result.update({
                         "ticker": asset.ticker, "asset_name": asset.name, "asset_type": asset.asset_type,
                         "period": "5y", "period_label": "5 anos", "engine_version": ENGINE_VERSION,
                         "scope": "official", "config_hash": config_hash,
+                        "benchmark_ticker": benchmark_ticker,
                     })
                     enrich_result(result)
                     run = self.backtests.save_run(

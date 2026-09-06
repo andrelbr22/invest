@@ -1,4 +1,7 @@
+from contextlib import nullcontext
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pandas as pd
 import pytest
@@ -11,7 +14,8 @@ from investment_engine.api.app import (
     _require_owner_inline_backtest,
 )
 from investment_engine.core.backtesting.engine import _performance_metrics, run_backtest
-from investment_engine.core.backtesting.filters import _classic_pivots
+from investment_engine.core.backtesting.batch import BacktestBatchService
+from investment_engine.core.backtesting.filters import _classic_pivots, apply_backtest_filters
 from investment_engine.core.backtesting.grid import (
     DEFAULT_MAX_COMBINATIONS,
     OFFICIAL_GRID_VERSION,
@@ -105,6 +109,36 @@ def test_rsi_flat_series_is_neutral_instead_of_missing_or_extreme():
     assert result.iloc[-1] == pytest.approx(50.0)
 
 
+def test_donchian_uses_adjusted_highs_and_lows_instead_of_unadjusted_split_prices():
+    frame = _price_frame(80)
+    frame["high"] = frame["adj_high"] * 10.0
+    frame["low"] = frame["adj_low"] * 10.0
+    _signal, indicators, _params = build_signal(frame, "donchian_20_10")
+    expected_upper = frame["adj_high"].rolling(20, min_periods=20).max().shift(1)
+    expected_lower = frame["adj_low"].rolling(10, min_periods=10).min().shift(1)
+    pd.testing.assert_series_equal(
+        indicators["Donchian 20 máx."], expected_upper, check_names=False,
+    )
+    pd.testing.assert_series_equal(
+        indicators["Donchian 10 mín."], expected_lower, check_names=False,
+    )
+
+
+def test_legacy_adjusted_close_only_history_remains_supported():
+    frame = _price_frame(300)
+    bars = [
+        {"timestamp": timestamp.to_pydatetime(), "adjusted_close": float(row["adjusted_close"])}
+        for timestamp, row in frame.iterrows()
+    ]
+    result = run_backtest(
+        bars,
+        strategy_id="ema9_sma50",
+        requested_start=frame.index[100].to_pydatetime(),
+        requested_end=frame.index[-1].to_pydatetime(),
+    )
+    assert result["metrics"]["bars"] == 200
+
+
 def test_dual_momentum_requires_and_uses_a_point_in_time_benchmark():
     frame = _price_frame()
     with pytest.raises(ValueError, match="benchmark_history_required"):
@@ -182,6 +216,31 @@ def test_all_supported_trend_averages_and_extended_filters_are_validated():
         BacktestFiltersRequest(rsi_min=70, rsi_max=30)
 
 
+def test_relative_strength_filter_fails_closed_without_reference_and_exposes_diagnostics():
+    frame = _price_frame(300)
+    base_signal = pd.Series(1.0, index=frame.index)
+    config = {"relative_strength_min": 0.0, "relative_strength_lookback": 63}
+    with pytest.raises(ValueError, match="benchmark_history_required_for_relative_strength"):
+        apply_backtest_filters(
+            frame, base_signal, config,
+            requested_start=frame.index[100].to_pydatetime(),
+            requested_end=frame.index[-1].to_pydatetime(),
+        )
+    benchmark = pd.Series(
+        [100.0 + position * 0.01 for position in range(len(frame))],
+        index=frame.index,
+    )
+    filtered, indicators, effective, diagnostics = apply_backtest_filters(
+        frame, base_signal, config, benchmark_price=benchmark,
+        requested_start=frame.index[100].to_pydatetime(),
+        requested_end=frame.index[-1].to_pydatetime(),
+    )
+    assert effective["relative_strength_lookback"] == 63
+    assert "Força relativa 63 pregões %" in indicators
+    assert diagnostics["conditions"]["Força relativa"]["bars_valid"] > 0
+    assert filtered.notna().sum() > 0
+
+
 def test_matrix_request_carries_separate_parameters_for_each_strategy():
     request = BacktestMatrixRequest(
         tickers=["PETR4", "VALE3"],
@@ -217,6 +276,92 @@ def test_official_grid_is_balanced_deterministic_unique_and_covers_every_strateg
         assert validate_strategy_params(row["strategy_id"], row["params"])
 
 
+def _official_batch_harness(monkeypatch, reference_history):
+    frame = _price_frame(300)
+    price_rows = [
+        SimpleNamespace(
+            timestamp=timestamp.to_pydatetime(), open=row["close"], high=row["high"],
+            low=row["low"], close=row["close"], volume=row["volume"],
+            adjusted_close=row["adjusted_close"],
+        )
+        for timestamp, row in frame.iterrows()
+    ]
+    service = BacktestBatchService.__new__(BacktestBatchService)
+    service.session = SimpleNamespace(begin_nested=lambda: nullcontext())
+    service.assets = SimpleNamespace(fundamental_history_until=lambda *_args, **_kwargs: [])
+    service.service = SimpleNamespace(
+        ensure_history=lambda *_args, **_kwargs: (
+            SimpleNamespace(id=uuid4(), ticker="PETR4", name="Petrobras", asset_type="stock"),
+            price_rows,
+        ),
+    )
+    # The production object delegates these two helpers to BacktestService.
+    from investment_engine.core.backtesting.service import BacktestService
+    service.service._needs_benchmark = BacktestService._needs_benchmark
+    service.service._benchmark_history = reference_history
+    service.service._configuration_hash = lambda **_kwargs: "configuration"
+    service.backtests = SimpleNamespace(
+        find_daily_cached=lambda **_kwargs: None,
+        save_run=lambda **_kwargs: SimpleNamespace(id=uuid4()),
+    )
+    captured = []
+    def fake_run(_bars_value, **kwargs):
+        captured.append(kwargs)
+        return {
+            "parameters": kwargs["params"], "filters": kwargs["filters"],
+            "actual_start": frame.index[100].isoformat(),
+            "actual_end": frame.index[-1].isoformat(), "metrics": {},
+            "equity_curve": [], "trades": [],
+            "current_signal": {"status": "neutral", "as_of": frame.index[-1].isoformat()},
+            "ranking_score": 0.0, "sample_status": "insufficient",
+        }
+    monkeypatch.setattr("investment_engine.core.backtesting.batch.run_backtest", fake_run)
+    monkeypatch.setattr("investment_engine.core.backtesting.batch.enrich_result", lambda _result: None)
+    return service, captured, frame
+
+
+def test_official_batch_supplies_one_benchmark_to_relative_rows(monkeypatch):
+    reference = _bars(_price_frame(300))
+    benchmark_calls = []
+    def reference_history(**kwargs):
+        benchmark_calls.append(kwargs)
+        return reference, "^BVSP"
+    service, captured, _frame = _official_batch_harness(monkeypatch, reference_history)
+    configuration = {
+        "strategy_id": "dual_momentum_relative",
+        "params": validate_strategy_params("dual_momentum_relative", {"lookback": 126}),
+        "filters": {"relative_strength_min": 0.0},
+    }
+    completed, failed, errors = service._run_asset("PETR4", [configuration], uuid4())
+    assert (completed, failed, errors) == (1, 0, [])
+    assert len(benchmark_calls) == 1
+    assert captured[0]["benchmark_bars"] is reference
+
+
+def test_official_batch_keeps_independent_rows_when_reference_provider_is_down(monkeypatch):
+    def unavailable_reference(**_kwargs):
+        raise ValueError("benchmark_history_unavailable")
+    service, captured, _frame = _official_batch_harness(monkeypatch, unavailable_reference)
+    configurations = [
+        {
+            "strategy_id": "ema9_sma50",
+            "params": validate_strategy_params("ema9_sma50"),
+            "filters": {},
+        },
+        {
+            "strategy_id": "dual_momentum_relative",
+            "params": validate_strategy_params("dual_momentum_relative"),
+            "filters": {},
+        },
+    ]
+    completed, failed, errors = service._run_asset("PETR4", configurations, uuid4())
+    assert (completed, failed) == (1, 1)
+    assert len(captured) == 1
+    assert captured[0]["strategy_id"] == "ema9_sma50"
+    assert errors[0]["strategy_id"] == "dual_momentum_relative"
+    assert "benchmark_history_unavailable" in errors[0]["error"]
+
+
 def test_backtest_exposes_action_separately_from_position_and_records_assumptions():
     frame = _price_frame()
     result = run_backtest(
@@ -231,6 +376,22 @@ def test_backtest_exposes_action_separately_from_position_and_records_assumption
     assert result["current_signal"] == result["action_signal"]
     assert "execução no fechamento t+1" in result["assumptions"]["signal_execution"]
     assert result["assumptions"]["price_series"].startswith("adjusted_close")
+
+
+def test_new_signal_on_final_close_is_buy_while_position_remains_out_until_execution(monkeypatch):
+    frame = _price_frame(120)
+    def final_bar_entry(data, _strategy_id, _params=None):
+        signal = pd.Series(0.0, index=data.index)
+        signal.iloc[-1] = 1.0
+        return signal, pd.DataFrame(index=data.index), {}
+    monkeypatch.setattr("investment_engine.core.backtesting.engine.build_signal", final_bar_entry)
+    result = run_backtest(
+        _bars(frame), strategy_id="ema9_sma50",
+        requested_start=frame.index[20].to_pydatetime(),
+        requested_end=frame.index[-1].to_pydatetime(),
+    )
+    assert result["action_signal"]["status"] == "buy"
+    assert result["position_state"]["status"] == "out"
 
 
 def test_profit_factor_is_money_weighted_not_a_sum_of_percentages():
@@ -254,6 +415,7 @@ def test_profit_factor_is_money_weighted_not_a_sum_of_percentages():
     )
     assert metrics["profit_factor"] == pytest.approx(4.0)
     assert metrics["profit_factor_percentage_aux"] == pytest.approx(1.0)
+    assert metrics["profit_factor_mark_to_market"] == pytest.approx(4.0)
 
 
 def test_regular_accounts_cannot_bypass_queue_and_limits_through_legacy_endpoint():

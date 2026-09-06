@@ -26,6 +26,10 @@ const state = {
   analysisCustomUsage: {used:0,limit:0},
   currentCustomFilter: null,
   analysisLimit: 50,
+  analysisResultCache: new Map(),
+  analysisUpdateCheckedAt: 0,
+  analysisEnsureSentAt: 0,
+  readCache: new Map(),
   curveYears: 10,
   curveHistory: [],
   curveHistoryCount: 1,
@@ -82,6 +86,15 @@ function readableApiError(detail,status){
 
 async function api(path, options = {}) {
   const requestOptions = {...options};
+  const cacheTtlMs = Math.max(0, Number(requestOptions.cacheTtlMs || 0));
+  const bypassCache = Boolean(requestOptions.bypassCache);
+  delete requestOptions.cacheTtlMs;
+  delete requestOptions.bypassCache;
+  const method = String(requestOptions.method || "GET").toUpperCase();
+  if (method === "GET" && cacheTtlMs > 0 && !bypassCache) {
+    const cached = state.readCache.get(path);
+    if (cached && Date.now() - cached.savedAt < cacheTtlMs) return cached.body;
+  }
   const key = requestOptions.requestKey;
   let controller = null;
   if (key) {
@@ -110,6 +123,8 @@ async function api(path, options = {}) {
     const readable = readableApiError(detail,response.status);
     throw new Error(readable);
   }
+  if (method === "GET" && cacheTtlMs > 0) state.readCache.set(path, {savedAt:Date.now(),body});
+  else if (method !== "GET") state.readCache.clear();
   return body;
 }
 
@@ -515,6 +530,7 @@ async function refreshMarketGroups(keys) {
   const groups=String(keys||"").split(",").map(value=>value.trim()).filter(Boolean);
   if(!groups.length)return;
   try {
+    if(groups.some(group=>["catalog","fundamentals","technical_daily","technical_intraday"].includes(group)))state.analysisResultCache.clear();
     const results=await Promise.all(groups.map(group=>api(`/market-dashboard/groups/${encodeURIComponent(group)}/refresh`,{method:"POST"})));
     const scheduled=results.filter(result=>result.scheduled).length;
     toast(scheduled?"Atualização solicitada. Os dados atuais permanecerão visíveis.":"Esses dados foram solicitados há menos de 5 minutos.",scheduled?"success":"info");
@@ -549,16 +565,16 @@ function renderFilterInputs() {
     <div class="field stock-only-filter"><label>Porte da empresa</label><select id="company-sizes" multiple size="3"><option value="large">Blue Chip / Large Cap</option><option value="mid">Mid Cap</option><option value="small">Small Cap</option></select></div>
     <div class="field wide-action valuation-filter"><label>Metodologias de valor ${helpMark("Combine até quatro famílias. Um método sem dados suficientes reprova o critério ativo, sem estimativas artificiais.")}</label>
       <div class="valuation-choice-grid">
-        <label class="check" data-valuation-types="stock"><input id="below-graham" type="checkbox"> Número de Graham</label>
-        <label class="check" data-valuation-types="stock,fii"><input id="below-barsi" type="checkbox"> Preço-teto por dividend yield-alvo (6%, últimos 12 meses)</label>
-        <label class="check" data-valuation-types="stock,fii"><input id="below-relative" type="checkbox"> Valuation relativo por pares comparáveis</label>
-        <label class="check" data-valuation-types="stock"><input id="below-economic" type="checkbox"> Valor econômico (Gordon com cenários explícitos)</label>
+        <label class="check" data-valuation-types="stock"><input id="below-graham" type="checkbox"><span>Número de Graham<small data-valuation-status></small></span></label>
+        <label class="check" data-valuation-types="stock,fii"><input id="below-barsi" type="checkbox"><span>Preço-teto por dividend yield-alvo (6%, últimos 12 meses)<small data-valuation-status></small></span></label>
+        <label class="check" data-valuation-types="stock,fii"><input id="below-relative" type="checkbox"><span>Valuation relativo por pares comparáveis<small data-valuation-status></small></span></label>
+        <label class="check" data-valuation-types="stock"><input id="below-economic" type="checkbox"><span>Valor econômico (Gordon com cenários explícitos)<small data-valuation-status></small></span></label>
       </div>
       <div class="filter-grid compact-grid valuation-controls">
         <div class="field"><label>Combinação</label><select id="valuation-logic"><option value="all">Todos os métodos selecionados</option><option value="any">Ao menos um método</option></select></div>
-        <div class="field"><label>Potencial mínimo (%)</label><input id="valuation-min-upside" type="number" min="-100" max="10000" step="0.1" placeholder="Opcional"></div>
+        <div class="field"><label>Potencial mínimo (%) ${helpMark("É a valorização mínima exigida entre a referência calculada e o preço atual: 100 × (valor de referência ÷ preço atual − 1). Exemplo: 20 exige potencial de pelo menos 20%. Deixe vazio para exigir apenas que o preço esteja abaixo da referência. Em Todos, cada método selecionado precisa atingir o mínimo; em Qualquer, basta um.")}</label><input id="valuation-min-upside" type="number" min="0" max="10000" step="0.1" placeholder="Opcional — ex.: 20"><small>Valorização mínima sobre o preço atual; vazio = somente abaixo da referência.</small></div>
       </div>
-      <details id="economic-assumptions" class="filter-subgroup"><summary>Premissas visíveis do valor econômico</summary>
+      <details id="economic-assumptions" class="filter-subgroup" open><summary>Cenários do valor econômico: Conservador, Base e Otimista</summary>
         <div class="notice info">O modelo não usa crescimento ou retorno ocultos. Para usar os proventos dos últimos 12 meses, marque a confirmação abaixo; eles podem não representar um dividendo sustentável.</div>
         <label class="check"><input id="economic-use-ttm" type="checkbox"> Usar provento dos últimos 12 meses como D0 não normalizado</label>
         <div class="filter-grid compact-grid">
@@ -598,11 +614,21 @@ function updateFilterAvailability() {
   $$("#technical-filters input,#technical-filters select").forEach(node=>node.disabled=!supportsTechnical);
   if($("#analysis-limit"))$("#analysis-limit").disabled=false;
   const permissions={"below-graham":alb||access.can_use_graham_valuation,"below-barsi":alb||access.can_use_dividend_ceiling,"below-relative":alb||access.can_use_relative_valuation,"below-economic":alb||access.can_use_economic_valuation};
+  const dataReasons={
+    etf:"N/D: requer NAV/iNAV e composição da carteira.",
+    bdr:"N/D: requer ativo-lastro, razão do programa e câmbio.",
+    future:"N/D: requer preço à vista, carrego e basis do contrato.",
+  };
   Object.entries(permissions).forEach(([id,allowed])=>{
     const input=$(`#${id}`),holder=input?.closest("[data-valuation-types]");
     const applicable=Boolean(holder?.dataset.valuationTypes.split(",").includes(type));
     if(input)input.disabled=!allowed||!applicable;
-    if(holder){holder.classList.toggle("unavailable",!applicable);holder.title=!applicable?"Ainda não há insumos suficientes para calcular esta metodologia nesta classe.":!allowed?"Metodologia disponível mediante autorização individual.":"";}
+    if(holder){
+      const unavailable=!applicable, reason=unavailable?(dataReasons[type]||"N/D: esta metodologia não representa corretamente esta classe."):!allowed?"Disponível mediante autorização individual.":"Disponível para esta conta.";
+      holder.classList.toggle("unavailable",unavailable||!allowed);
+      holder.title=reason;
+      const status=holder.querySelector("[data-valuation-status]");if(status)status.textContent=reason;
+    }
   });
   const canEconomic=Boolean(permissions["below-economic"]&&type==="stock");
   $$("#economic-assumptions input").forEach(node=>node.disabled=!canEconomic);
@@ -612,11 +638,11 @@ function updateFilterAvailability() {
   if($("#apply-advanced-filters")) $("#apply-advanced-filters").disabled=!supportsTechnical;
   $$("#analysis-preset-row [data-preset-id]").forEach(node=>{
     const permission=node.dataset.presetId==="cnpi"?"can_use_fdi_analysis":node.dataset.presetId==="alb"?"can_use_alb_analysis":null;
-    node.disabled=!supportsFundamentals||Boolean(permission&&!access[permission]);
-    node.title=node.disabled&&permission?"Análise disponível mediante autorização do administrador.":"";
+    node.disabled=!supportsTechnical||Boolean(permission&&!access[permission]);
+    node.title=node.disabled&&permission?"Análise disponível mediante autorização do administrador.":!supportsFundamentals&&permission?"Versão técnica desta análise para a classe selecionada.":"";
   });
   if($("#analysis-filter-notice")) {
-    $("#analysis-filter-notice").textContent=!supportsFundamentals?"Para esta classe, filtros técnicos permanecem ativos; filtros fundamentais e métodos sem insumos ficam indisponíveis de forma explícita.":"Filtros fundamentais e técnicos estão ativos. As quatro metodologias de valor respeitam autorizações e aplicabilidade.";
+    $("#analysis-filter-notice").textContent=!supportsFundamentals?"Padrão, FDI e ALB usam critérios técnicos próprios nesta classe. Os filtros fundamentalistas permanecem visíveis, porém inativos enquanto não houver demonstrações comparáveis; cada metodologia de valor informa por que está N/D.":"Filtros fundamentalistas e técnicos estão ativos. As quatro metodologias de valor respeitam autorizações e aplicabilidade.";
   }
 }
 
@@ -712,10 +738,32 @@ function analysisRequestFromForm() {
   return {asset_type:analysisType(),fundamental_filters,score_filters,valuation_flags,valuation_assumptions,technical_filters,trend_period:Number($("#trend-period")?.value||21),pivot_timeframe:$("#pivot-timeframe")?.value||"daily",include_technical_columns:true,limit:state.analysisLimit,company_sizes:$("#company-sizes")?[...$("#company-sizes").selectedOptions].map(option=>option.value):[],ibov_membership:$("#ibov-membership")?.value||"any"};
 }
 
+function validateAnalysisRequest(request) {
+  const flags=request.valuation_flags||{};
+  const selected=["below_graham","below_barsi_6pct","below_relative_value","below_economic_value"].filter(key=>flags[key]);
+  if(!nullable(flags.minimum_upside_pct)&&!selected.length)throw new Error("Selecione ao menos uma metodologia antes de exigir um potencial mínimo.");
+  if(!nullable(flags.minimum_upside_pct)&&Number(flags.minimum_upside_pct)<0)throw new Error("O potencial mínimo deve ser zero ou positivo.");
+  if(!flags.below_economic_value)return;
+  const economic=request.valuation_assumptions?.economic_value||{};
+  if(!economic.use_ttm_dividend)throw new Error("Para usar o valor econômico nesta tela, confirme o uso do provento dos últimos 12 meses como D0.");
+  for(const [name,label] of [["conservative","Conservador"],["base","Base"],["optimistic","Otimista"]]){
+    const scenario=economic.scenarios?.[name]||{},required=Number(scenario.required_return_pct),growth=Number(scenario.growth_pct);
+    if(!Number.isFinite(required)||!Number.isFinite(growth)||required<=growth)throw new Error(`No cenário ${label}, o retorno exigido precisa ser maior que o crescimento.`);
+  }
+}
+
+function revealSelectedValuationColumns(request) {
+  const type=analysisType(),columns=analysisColumns(type),active=new Set(visibleAnalysisColumns(type,columns).map(column=>column.id));
+  const map={below_graham:["graham","graham_upside"],below_barsi_6pct:["barsi","barsi_upside"],below_relative_value:["relative","relative_upside"],below_economic_value:["economic","economic_upside"]};
+  Object.entries(map).forEach(([flag,ids])=>{if(request.valuation_flags?.[flag])ids.forEach(id=>active.add(id));});
+  state.visibleColumns[type]=columns.filter(column=>column.always||active.has(column.id)).map(column=>column.id);
+  localStorage.setItem("fdi-visible-columns",JSON.stringify(state.visibleColumns));
+}
+
 function renderCustomPresetButtons() {
   const root=$("#custom-preset-buttons"); if(!root)return;
   root.innerHTML=state.analysisCustom.map(item=>`<button class="preset-button" data-custom-filter-id="${esc(item.id)}">${esc(item.name)}</button>`).join("");
-  const access=state.session?.access||{},allowed=Number(access.custom_filter_limit||0)>0&&["stock","fii"].includes(analysisType());
+  const access=state.session?.access||{},allowed=Number(access.custom_filter_limit||0)>0&&["stock","fii","etf","bdr","future"].includes(analysisType());
   $("#custom-filter-controls").classList.toggle("hidden",!allowed);
   $("#custom-filter-usage").textContent=allowed?`${state.analysisCustomUsage.used} de ${state.analysisCustomUsage.limit} análise(s) personalizada(s) utilizada(s).`:"";
   updateCustomFilterControls();
@@ -730,14 +778,13 @@ function updateCustomFilterControls() {
 }
 
 async function loadAnalysisCatalog(type, force=false) {
-  if(!["stock","fii"].includes(type)) { state.analysisCustom=[]; renderCustomPresetButtons(); return; }
   if(force||!state.analysisCatalog[type]){
-    const presetPayload=await api(`/screen/presets?asset_type=${type}`);
+    const presetPayload=await api(`/screen/presets?asset_type=${type}`,{cacheTtlMs:300000,bypassCache:force});
     state.analysisCatalog[type]=Object.fromEntries((presetPayload.items||[]).map(item=>[item.id,item]));
   }
   if(Number(state.session?.access?.custom_filter_limit||0)>0&&(force||!state.analysisCustomCache[type])) {
     try {
-      const custom=await api(`/screen/custom-filters?asset_type=${type}`);
+      const custom=await api(`/screen/custom-filters?asset_type=${type}`,{cacheTtlMs:60000,bypassCache:force});
       state.analysisCustomCache[type]=custom.items||[];state.analysisCustomUsageCache[type]={used:custom.used||0,limit:custom.limit||0};
     } catch(_){state.analysisCustomCache[type]=[];}
   }
@@ -770,7 +817,8 @@ async function saveCustomFilter() {
   const current=state.currentCustomFilter,name=$("#custom-filter-name").value.trim();
   if(!name){toast("Informe um nome para a análise personalizada.","error");$("#custom-filter-name").focus();return;}
   const method=current?"PUT":"POST",path=current?`/screen/custom-filters/${current.id}`:"/screen/custom-filters";
-  const body=current?{name,filters:analysisRequestFromForm()}:{asset_type:analysisType(),name,filters:analysisRequestFromForm()};
+  const filters=analysisRequestFromForm();try{validateAnalysisRequest(filters);}catch(error){toast(error.message,"error");return;}
+  const body=current?{name,filters}:{asset_type:analysisType(),name,filters};
   try {const saved=await api(path,{method,body:JSON.stringify(body)});await loadAnalysisCatalog(analysisType(),true);state.currentCustomFilter=state.analysisCustom.find(item=>item.id===saved.id)||saved;markActiveAnalysis({custom:state.currentCustomFilter});toast(current?"Alterações salvas.":"Análise personalizada gravada.","success");}
   catch(error){toast(error.message,"error");}
 }
@@ -786,40 +834,55 @@ async function loadAnalysis() {
   if(state.tabs.analysisMode==="guide"){renderIndicatorGuide();return;}
   $("#analysis-list-workspace").classList.remove("hidden");$("#analysis-guide").classList.add("hidden");
   const type=analysisType();
-  try {
-    const updatePayload=await api("/market-dashboard/updates");
-    state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),...(updatePayload.updates||{})};
-    if($("#analysis-update-status"))$("#analysis-update-status").innerHTML=marketUpdatePanel(["fundamentals","technical_daily","technical_intraday"],"Atualizações dos dados de análise");
-  } catch(_) {
-    if($("#analysis-update-status"))$("#analysis-update-status").innerHTML='<div class="notice warning">O estado das atualizações não pôde ser consultado agora. Os dados disponíveis continuam acessíveis.</div>';
+  const now=Date.now();
+  if(now-state.analysisUpdateCheckedAt>60000){
+    state.analysisUpdateCheckedAt=now;
+    api("/market-dashboard/updates",{cacheTtlMs:60000}).then(updatePayload=>{
+      state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),...(updatePayload.updates||{})};
+      if(state.view==="analysis"&&$("#analysis-update-status"))$("#analysis-update-status").innerHTML=marketUpdatePanel(["fundamentals","technical_daily","technical_intraday"],"Atualizações dos dados de análise");
+    }).catch(()=>{if(state.view==="analysis"&&$("#analysis-update-status"))$("#analysis-update-status").innerHTML='<div class="notice warning">O estado das atualizações não pôde ser consultado agora. Os dados disponíveis continuam acessíveis.</div>';});
+  } else if($("#analysis-update-status")) {
+    $("#analysis-update-status").innerHTML=marketUpdatePanel(["fundamentals","technical_daily","technical_intraday"],"Atualizações dos dados de análise");
   }
-  Promise.all(["catalog","fundamentals","technical_daily","technical_intraday"].map(group=>api(`/market-dashboard/groups/${group}/ensure`,{method:"POST"}))).catch(()=>{});
+  if(now-state.analysisEnsureSentAt>300000){
+    state.analysisEnsureSentAt=now;
+    Promise.all(["catalog","fundamentals","technical_daily","technical_intraday"].map(group=>api(`/market-dashboard/groups/${group}/ensure`,{method:"POST"}))).catch(()=>{});
+  }
   try {
     await loadAnalysisCatalog(type);
-    if(state.analysisLoadedType!==type){state.analysisLoadedType=type;state.currentCustomFilter=null;state.analysisPreset="default";if(["stock","fii"].includes(type))fillAnalysisForm(state.analysisCatalog[type]?.default?.configuration||{});else resetAdvancedFilters();markActiveAnalysis({presetId:"default"});}
+    if(state.analysisLoadedType!==type){state.analysisLoadedType=type;state.currentCustomFilter=null;state.analysisPreset="default";fillAnalysisForm(state.analysisCatalog[type]?.default?.configuration||{});markActiveAnalysis({presetId:"default"});}
   } catch(error){toast(`Configuração dos filtros: ${error.message}`,"error");}
   updateFilterAvailability();
   await loadAnalysisResults();
 }
 
-async function loadAnalysisResults() {
+function analysisResultCacheKey(type) {
+  return [type,state.currentCustomFilter?.id||"system",state.analysisPreset,state.analysisLimit].join("|");
+}
+
+async function loadAnalysisResults(force=false) {
   const root = $("#analysis-table");
-  root.innerHTML = loadingCards(6);
   const type = analysisType();
+  const cacheKey=analysisResultCacheKey(type),cached=state.analysisResultCache.get(cacheKey);
+  if(!force&&cached&&Date.now()-cached.savedAt<60000){state.analysisRows=cached.rows;renderAnalysisRows(cached.rows);return;}
+  root.innerHTML = loadingCards(6);
   try {
     let rows, warnings=[];
-    if (state.currentCustomFilter && ["stock","fii"].includes(type)) {
+    if (state.currentCustomFilter) {
       const payload=await api(`/screen/db/custom/${state.currentCustomFilter.id}?limit=${state.analysisLimit}`,{requestKey:"analysis"});rows=payload.rows||payload;warnings=payload?.meta?.warnings||[];
     } else if (type === "stock") rows = await api(`/screen/db/stocks/${state.analysisPreset}?limit=${state.analysisLimit}`, {requestKey:"analysis"});
     else if (type === "fii") rows = await api(`/screen/db/fiis/${state.analysisPreset}?limit=${state.analysisLimit}`, {requestKey:"analysis"});
+    else if(state.analysisPreset==="default") rows=await api(`/screen/db/universe/${type}?limit=${state.analysisLimit}`,{requestKey:"analysis"});
     else {
-      const all = await api("/screen/db/universe/other_b3?limit=1200", {requestKey:"analysis"});
-      rows = all.filter(item => item.asset_type === type);
+      const configuration={...(state.analysisCatalog[type]?.[state.analysisPreset]?.configuration||{}),asset_type:type,limit:state.analysisLimit};
+      const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify(configuration)});rows=payload.rows||payload;warnings=payload?.meta?.warnings||[];
     }
     if (type === "stock") rows.sort((a,b)=>(Number(b.graham_upside_pct)||-Infinity)-(Number(a.graham_upside_pct)||-Infinity));
     else rows.sort((a,b)=>String(a.ticker).localeCompare(String(b.ticker)));
     rows = await enrichBacktestLeaders(rows);
+    if(type!==analysisType())return;
     state.analysisRows = rows;
+    state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows});
     renderAnalysisRows(rows);
     if(warnings.length)toast(warnings.join(" "),"warning");
   } catch (error) { if (error.name !== "AbortError") root.innerHTML = errorState(error, "analysis"); }
@@ -829,7 +892,7 @@ async function enrichBacktestLeaders(rows) {
   if (!state.session?.access?.can_view_backtests || !rows?.length) return rows || [];
   const tickers=rows.slice(0,100).map(row=>row.ticker).filter(Boolean).join(",");
   try {
-    const payload=await api(`/backtests/leaderboard?per_asset=3&tickers=${encodeURIComponent(tickers)}`,{requestKey:"analysis-backtests"});
+    const payload=await api(`/backtests/leaderboard?per_asset=3&tickers=${encodeURIComponent(tickers)}`,{requestKey:"analysis-backtests",cacheTtlMs:60000});
     return rows.map(row=>{
       const leaders=payload.items?.[row.ticker]||[];
       return {...row,backtest_leaders:leaders,best_signal:leaders[0]?.current_signal,best_strategy:leaders[0]?.strategy_name};
@@ -859,6 +922,7 @@ function renderIndicatorGuide() {
     {label:"Preço-teto por dividend yield-alvo",description:"Proventos por ação dos últimos 12 meses divididos pela taxa-alvo explícita de 6%. Não é chamado de Bazin quando não há normalização histórica dos proventos."},
     {label:"Valuation relativo por pares",description:"Compara ações do mesmo setor ou FIIs do mesmo segmento. Exige ao menos cinco pares, elimina múltiplos inválidos e reduz o efeito de extremos antes de formar cenários conservador, base e otimista."},
     {label:"Valor econômico por classe",description:"Ações podem usar Gordon somente com D0 e três cenários explícitos de retorno e crescimento. FIIs exigirão NAV/NOI/AFFO ou carteira de crédito; ETFs exigem NAV e composição; BDRs exigem lastro, câmbio e razão; futuros usam fair value/carry. Sem esses insumos, aparece N/D."},
+    {label:"Potencial mínimo (%)",description:"Valorização mínima exigida entre a referência calculada e o preço atual: 100 × (valor de referência ÷ preço atual − 1). Se ficar vazio, o filtro exige apenas preço abaixo da referência. Com Todos, cada método deve atingir o mínimo; com Qualquer, basta um."},
     {label:"RSI 14",description:"Compara ganhos e perdas em 14 pregões pelo suavizamento de Wilder; extremos merecem contexto, não são ordem automática."},
     {label:"Tendências",description:"Alta quando o preço atual está acima da média simples de 20 ou 21 períodos. Semanas e meses em formação são excluídos."},
     {label:"Pivô, suportes e resistências",description:"PP=(máxima+mínima+fechamento)/3. R1=2×PP−mínima; S1=2×PP−máxima; R2/S2 usam a amplitude; R3/S3 usam os extremos e o PP."},
@@ -877,7 +941,7 @@ function analysisColumns(type) {
     {id:"best_signal",label:"3 melhores backtests",render:backtestLeadersCell},
   ];
   const access=state.session?.access||{},alb=Boolean(access.can_use_alb_analysis),canGraham=Boolean(access.can_use_graham_valuation||alb),canDividend=Boolean(access.can_use_dividend_ceiling||alb),canRelative=Boolean(access.can_use_relative_valuation||alb),canEconomic=Boolean(access.can_use_economic_valuation||alb);
-  const valuationCell=(row,family,valueField)=>{const result=row.valuation_methods?.[family]||{};if(result.status&&result.status!=="valid")return `<span class="pill muted" title="${esc(result.reason||"Dados insuficientes")}">N/D</span>`;return money(result.value??row[valueField]);};
+  const valuationCell=(row,family,valueField)=>{const result=row.valuation_methods?.[family]||{};if(result.status&&result.status!=="valid")return `<span class="pill muted" title="${esc(result.reason||"Dados insuficientes")}">N/D</span>`;const scenarios=result.scenarios||{},scenarioItems=[["conservative","C"],["base","B"],["optimistic","O"]].filter(([key])=>!nullable(scenarios[key]?.value));return `<span class="valuation-base-value">${money(result.value??row[valueField])}</span>${scenarioItems.length?`<small class="valuation-mini-scenarios">${scenarioItems.map(([key,label])=>`${label}: ${money(scenarios[key].value)}`).join(" • ")}</small>`:""}`;};
   const upsideCell=(row,family,valueField)=>{const result=row.valuation_methods?.[family]||{};if(result.status&&result.status!=="valid")return "—";const value=result.upside_pct??row[valueField];return `<span class="${variationClass(value)}">${pct(value,true)}</span>`;};
   if(type==="stock") {
     return [common[0],
@@ -922,6 +986,8 @@ function renderAnalysisRows(rows) {
 
 async function applyAdvancedFilters(showToast=true) {
   const request=analysisRequestFromForm();
+  try{validateAnalysisRequest(request);}catch(error){toast(error.message,"error");return;}
+  revealSelectedValuationColumns(request);
   if(!state.currentCustomFilter){const label=state.analysisCatalog[analysisType()]?.[state.analysisPreset]?.name||"Análise";$("#active-analysis-summary").textContent=`${label} • ajustes temporários`;}
   $("#analysis-table").innerHTML=loadingCards(6);
   try {
@@ -938,16 +1004,17 @@ async function openAsset(ticker) {
   const dialog=$("#asset-dialog"), content=$("#asset-dialog-content");
   content.innerHTML=loadingCards(4); dialog.showModal();
   try {
-    const data=await api(`/assets/${encodeURIComponent(ticker)}`);
+    const data=await api(`/assets/${encodeURIComponent(ticker)}`,{cacheTtlMs:60000});
     const a=data.asset||{}, f=data.fundamentals||{}, t=data.technical||{}, d=data.derived||{}, tech=data.technical_analysis||{}, scores=data.scores||{}, leaders=data.backtests||[];
     const valuationLabels={graham_reference:"Número de Graham",dividend_yield_ceiling:"Preço-teto por DY-alvo",relative_peers:"Valuation relativo",economic_value:"Valor econômico"};
     const valuationStatus=result=>result.status==="not_applicable"?"Não se aplica":result.status==="valid"?"Calculado":"Dados insuficientes";
+    const valuationReason=result=>({requires_positive_eps_and_bvps:"Exige lucro e patrimônio por ação positivos.",dividend_per_share_ttm_required:"Exige proventos válidos dos últimos 12 meses.",normalized_dividend_per_share_required:"Exige um dividendo D0 explícito; nenhum valor foi presumido.",three_explicit_scenarios_required:"Exige os três cenários completos."})[result.reason]||result.reason||"Os insumos próprios desta metodologia ainda não estão disponíveis.";
     const valuationMethods=d.valuation_methods||{};
     const valuationCards=Object.entries(valuationMethods).map(([family,result])=>metricCard(valuationLabels[family]||result.label||family,result.status==="valid"?money(result.value):valuationStatus(result),result.status==="valid"?`Potencial ${pct(result.upside_pct,true)}`:"Sem estimativa artificial",result.upside_pct)).join("");
     const valuationDetail=Object.entries(valuationMethods).map(([family,result])=>{
       const scenarios=Object.entries(result.scenarios||{});
-      const scenarioBody=scenarios.length?`<div class="detail-list">${scenarios.map(([name,item])=>`<div><span>${esc(({conservative:"Conservador",base:"Base",optimistic:"Otimista"})[name]||name)}</span><strong>${money(item.value)} <small>${pct(item.upside_pct,true)}</small></strong></div>`).join("")}</div>`:"";
-      return `<article class="valuation-method-card"><div><strong>${esc(valuationLabels[family]||result.label||family)}</strong><span class="pill">${esc(valuationStatus(result))}</span></div>${result.status==="valid"?`<p>Referência base: <strong>${money(result.value)}</strong> • potencial ${pct(result.upside_pct,true)}</p>`:`<p>Este método não recebeu dados suficientes e não foi calculado.</p>`}${scenarioBody}${!nullable(result.quality?.coverage_pct)?`<small>Cobertura: ${pct(result.quality.coverage_pct)} • amostra: ${number(result.quality.sample_size||0,0)}</small>`:""}</article>`;
+      const scenarioBody=scenarios.length?`<div class="detail-list">${scenarios.map(([name,item])=>{const assumptions=item.assumptions||{},premises=!nullable(assumptions.required_return_pct)?`<small>Retorno ${pct(assumptions.required_return_pct)} • crescimento ${pct(assumptions.growth_pct)}${nullable(assumptions.margin_of_safety_pct)?"":` • margem ${pct(assumptions.margin_of_safety_pct)}`}</small>`:"";return `<div><span>${esc(({conservative:"Conservador",base:"Base",optimistic:"Otimista"})[name]||name)}${premises}</span><strong>${money(item.value)} <small>${pct(item.upside_pct,true)}</small></strong></div>`;}).join("")}</div>`:"";
+      return `<article class="valuation-method-card"><div><strong>${esc(valuationLabels[family]||result.label||family)}</strong><span class="pill">${esc(valuationStatus(result))}</span></div>${result.status==="valid"?`<p>Referência base: <strong>${money(result.value)}</strong> • potencial ${pct(result.upside_pct,true)}</p>`:`<p>${esc(valuationReason(result))} O sistema não criou uma estimativa artificial.</p>`}${scenarioBody}${!nullable(result.quality?.coverage_pct)?`<small>Cobertura: ${pct(result.quality.coverage_pct)} • amostra: ${number(result.quality.sample_size||0,0)}</small>`:""}</article>`;
     }).join("");
     const fundamentals=[
       ["P/L",f.pe],["P/VP",f.pbv],["EV/EBITDA",f.ev_ebitda],["Dividend yield (%)",f.dividend_yield_pct],
@@ -977,7 +1044,7 @@ async function openAsset(ticker) {
 async function loadPortfolios() {
   const root=$("#portfolio-tab-content"); root.innerHTML=loadingCards(5);
   try {
-    state.portfolios=await api("/portfolios",{requestKey:"portfolios"});
+    state.portfolios=await api("/portfolios",{requestKey:"portfolios",cacheTtlMs:30000});
     if (!state.portfolios.length) { root.innerHTML='<div class="data-card empty-state"><strong>Você ainda não criou uma carteira</strong>A criação estará disponível aqui para contas com permissão de edição.</div>'; return; }
     if (!state.portfolioId || !state.portfolios.some(p=>p.id===state.portfolioId)) state.portfolioId=state.portfolios[0].id;
     $("#portfolio-selector-wrap").innerHTML=`<select id="portfolio-selector" class="button secondary">${state.portfolios.map(p=>`<option value="${esc(p.id)}" ${p.id===state.portfolioId?"selected":""}>${esc(p.name)}</option>`).join("")}</select>`;
@@ -998,7 +1065,7 @@ async function renderPortfolioTab() {
   root.innerHTML=loadingCards(5);
   try {
     if (tab==="positions") {
-      const data=await api(`/portfolios/${state.portfolioId}`);
+      const data=await api(`/portfolios/${state.portfolioId}`,{cacheTtlMs:30000});
       const positions=data.positions||data.items||[];
       const summary=data.summary||{};
       const cards=`<div class="metric-grid summary-grid">${metricCard("Patrimônio",money(data.consolidated_summary?.total_value??data.consolidated_summary?.known_total_value??summary.market_value))}${metricCard("Posições",String(positions.length))}${metricCard("Outros investimentos",money(data.custom_summary?.current_value||0))}${metricCard("Caixa",money(data.portfolio?.cash_balance))}</div>`;
@@ -1009,12 +1076,12 @@ async function renderPortfolioTab() {
       const positionTable=marketTable(positions,[{label:"Ativo",render:r=>`<span class="ticker-cell">${esc(r.ticker)}</span>`},{label:"Quantidade",render:r=>Number(r.quantity||0).toLocaleString("pt-BR",{maximumFractionDigits:6})},{label:"Preço médio",render:r=>money(r.average_price)},{label:"Preço atual",render:r=>`${money(r.current_price)}${r.current_price_as_of?`<br><small>${dateTime(r.current_price_as_of)} • ${esc(r.price_source||"")}</small>`:""}`},{label:"Valor",render:r=>money(r.market_value??(Number(r.quantity)*Number(r.current_price)))},{label:"Peso / meta",render:r=>`${pct(r.current_weight_pct)}<br><small>meta ${pct(r.effective_target_weight_pct??r.target_weight_pct)}</small>`},{label:"Rebalanceamento",render:r=>nullable(r.rebalance_value)?"—":`<strong class="${variationClass(r.rebalance_value)}">${Number(r.rebalance_value)>=0?"Comprar":"Reduzir"} ${money(Math.abs(Number(r.rebalance_value)))}</strong>${nullable(r.rebalance_quantity)?"":`<br><small>aprox. ${number(Math.abs(Number(r.rebalance_quantity)),0)} unidade(s)</small>`}`},{label:"Setor / segmento",render:r=>`${esc(r.sector||r.classification||"—")}<br><small>${esc(r.segment||"—")}</small>`},{label:"",render:r=>state.session.access.can_write_portfolio?`<button class="button ghost compact danger" data-delete-position="${esc(r.ticker)}">Remover</button>`:""}]);
       root.innerHTML=quoteUpdate+cards+sectionCard("Posições",positionTable,"Sugestão matemática baseada nas metas informadas; não constitui recomendação de investimento.")+positionForm;
     } else if (tab==="allocation") {
-      const [data,catalog]=await Promise.all([api(`/portfolios/${state.portfolioId}`),api(`/portfolios/${state.portfolioId}/custom-investments/catalog`)]);
+      const [data,catalog]=await Promise.all([api(`/portfolios/${state.portfolioId}`,{cacheTtlMs:30000}),api(`/portfolios/${state.portfolioId}/custom-investments/catalog`,{cacheTtlMs:300000})]);
       const rows=data.custom_investments||[],summary=data.consolidated_summary||{},today=new Date().toISOString().slice(0,10);
       const form=state.session.access.can_write_portfolio?`<details class="data-card" ${rows.length?"":"open"}><summary><strong>Adicionar investimento sem ticker</strong></summary><form id="custom-investment-form" class="filter-grid" style="margin-top:16px"><div class="field"><label>Tipo</label><select name="category" required>${catalog.map(item=>`<option value="${esc(item.id)}">${esc(item.label)}</option>`).join("")}</select></div><div class="field"><label>Nome do investimento</label><input name="name" required maxlength="200" placeholder="Ex.: CDB Banco X 110% CDI"></div><div class="field"><label>Instituição</label><input name="institution" maxlength="160" placeholder="Banco ou corretora"></div><div class="field"><label>Setor</label><input name="sector" maxlength="120" placeholder="Ex.: Renda fixa"></div><div class="field"><label>Segmento</label><input name="segment" maxlength="120" placeholder="Ex.: Bancário pós-fixado"></div><div class="field"><label>Data da aplicação</label><input type="date" name="application_date" required value="${today}"></div><div class="field"><label>Vencimento (opcional)</label><input type="date" name="maturity_date"></div><div class="field"><label>Valor aplicado</label><input type="number" name="invested_value" min="0.01" step="0.01" required></div><div class="field"><label>Valor atual</label><input type="number" name="current_value" min="0" step="0.01" required></div><div class="field"><label>Data do valor atual</label><input type="date" name="current_value_as_of" required value="${today}"></div><div class="field"><label>Indexador / referência</label><input name="benchmark" maxlength="80" placeholder="Ex.: 110% do CDI"></div><div class="field"><label>Liquidez</label><input name="liquidity" maxlength="120" placeholder="Ex.: no vencimento ou D+1"></div><div class="field wide-action"><label>Observações</label><textarea name="notes" rows="2"></textarea></div><button class="button primary wide-action" type="submit">Salvar investimento</button></form></details>`:"";
       root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Patrimônio conhecido",money(summary.known_total_value))}${metricCard("Investimentos sem ticker",money(data.custom_summary?.current_value||0),`${rows.length} cadastro(s)`)}${metricCard("Valor aplicado",money(data.custom_summary?.invested_value||0))}${metricCard("Variação",pct(data.custom_summary?.variation_pct,true))}</div>${sectionCard("Composição consolidada",allocationDonut(data.consolidated_allocation||[]),summary.allocation_complete?"Valores de mercado e valores informados manualmente":"Composição parcial: existe posição sem cotação")}${sectionCard("Renda fixa, fundos e outros",marketTable(rows,[{label:"Investimento",render:r=>`<strong>${esc(r.name)}</strong><br><small>${esc(r.category_label)}</small>`},{label:"Setor / segmento",render:r=>`${esc(r.sector||"—")}<br><small>${esc(r.segment||"—")}</small>`},{label:"Instituição",render:r=>esc(r.institution||"—")},{label:"Aplicação",render:r=>dateOnly(r.application_date)},{label:"Vencimento",render:r=>dateOnly(r.maturity_date)},{label:"Aplicado",render:r=>money(r.invested_value)},{label:"Atual",render:r=>`${money(r.current_value)}<br><small>${dateOnly(r.current_value_as_of)}</small>`},{label:"Variação",render:r=>pct(r.variation_pct,true),className:r=>variationClass(r.variation_pct)},{label:"",render:r=>state.session.access.can_write_portfolio?`<span class="row-actions"><button class="button ghost compact" data-update-custom-investment="${esc(r.id)}" data-current-value="${esc(r.current_value)}">Atualizar valor</button><button class="button ghost compact danger" data-delete-custom-investment="${esc(r.id)}">Arquivar</button></span>`:""}]),"O histórico preserva cada valor informado por data")}${form}`;
     } else if (tab==="news") {
-      const cache=await api(`/insights/news/cache/portfolios/${state.portfolioId}`);
+      const cache=await api(`/insights/news/cache/portfolios/${state.portfolioId}`,{cacheTtlMs:30000});
       const data=cache.data||{};
       const groups=data.assets||data.items||[];
       const newsUpdate=`<div class="update-panel"><div class="update-summary"><span><strong>Notícias da carteira</strong><small>${cache.finished_at?`Atualizadas em ${dateTime(cache.finished_at)}`:"Primeira atualização pendente"}</small></span><button class="button secondary compact" data-portfolio-news-refresh="${esc(state.portfolioId)}" ${["queued","running"].includes(cache.status)?"disabled":""}>Atualizar agora</button></div></div>`;
@@ -1029,7 +1096,7 @@ async function renderPortfolioTab() {
 async function renderAlerts(root) {
   const access=state.session.access;
   if (!access.can_use_price_alerts) { root.innerHTML='<div class="data-card empty-state"><strong>Alertas não liberados para esta conta</strong>O administrador pode conceder um limite de 1, 3, 5 ou 10 ativos.</div>'; return; }
-  const data=await api("/alerts");
+  const data=await api("/alerts",{cacheTtlMs:15000});
   const active=data.active||data.alerts||[];
   root.innerHTML=`<div class="notice info" style="margin-bottom:14px">B3: monitoramento em dias úteis, das 10h às 18h, a cada 5 minutos. Outros mercados: a cada 10 minutos, com candles de 5 minutos.</div>${sectionCard("Alertas ativos",marketTable(active,[{label:"Ativo",render:r=>`<strong>${esc(r.symbol)}</strong>`},{label:"Acima de",render:r=>money(r.price_above)},{label:"Abaixo de",render:r=>money(r.price_below)},{label:"Variação positiva",render:r=>pct(r.change_positive_pct)},{label:"Variação negativa",render:r=>pct(r.change_negative_pct)},{label:"Última verificação",render:r=>r.last_checked_at?dateTime(r.last_checked_at):"—"},{label:"Status",render:r=>`<span class="pill">${esc(r.status||"ativo")}</span>`}]),`Limite autorizado: ${data.limit??access.alert_asset_limit} ativos`)}`;
   $("#notification-count").textContent=active.length;
@@ -1171,7 +1238,7 @@ async function openStudyStrategy(strategyId) {
   const dialog=$("#asset-dialog"),content=$("#asset-dialog-content");
   content.innerHTML=loadingCards(5);dialog.showModal();
   try {
-    const data=await api(`/backtests/study/${encodeURIComponent(strategyId)}/configurations`);
+    const data=await api(`/backtests/study/${encodeURIComponent(strategyId)}/configurations`,{cacheTtlMs:60000});
     const configurations=data.items||[];
     content.innerHTML=`<div class="asset-dialog-header"><p class="eyebrow">Estudo de backtests</p><h2 class="asset-title">${esc(data.strategy_name||strategyId)}</h2><p class="asset-subtitle">Todas as configurações oficiais utilizadas nesta estratégia.</p></div>
       <div class="metric-grid">${metricCard("Configurações",number(data.configuration_count||0,0))}${metricCard("Execuções",number(data.run_count||0,0))}${metricCard("Estratégia",esc(strategyId))}</div>
@@ -1266,19 +1333,19 @@ async function loadBacktests() {
   const root=$("#backtests-tab-content"),tab=state.tabs.backtests; root.innerHTML=loadingCards(6);
   try {
     if(tab==="history") {
-      const rows=await api("/backtests/runs?limit=100",{requestKey:"backtests"});
+      const rows=await api("/backtests/runs?limit=100",{requestKey:"backtests",cacheTtlMs:15000});
       rows.sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
       root.innerHTML=recordedUpdatePanel("Histórico de backtests",rows[0]?.created_at,"Atualizado sempre que um teste é concluído")+sectionCard("Últimos 100 backtests",marketTable(rows,[{label:"Data e hora",render:r=>dateTime(r.created_at)},{label:"Ativo",render:r=>`<span class="ticker-cell">${esc(r.ticker||"—")}</span>`},{label:"Estratégia",render:r=>esc(r.strategy_name||r.strategy_id||"—")},{label:"Retorno",render:r=>pct(r.metrics?.total_return_pct??r.return_pct,true),className:r=>variationClass(r.metrics?.total_return_pct??r.return_pct)},{label:"Status",render:r=>`<span class="pill">${esc(r.status||"—")}</span>`}]));
     } else if(tab==="study") {
-      const data=await api("/backtests/study?limit=5"); const rows=data.items||data.ranking||[];
+      const data=await api("/backtests/study?limit=5",{cacheTtlMs:60000}); const rows=data.items||data.ranking||[];
       root.innerHTML=recordedUpdatePanel("Estudos oficiais",data.generated_at||data.updated_at,"Recalculado a partir das rodadas oficiais")+sectionCard("Estratégias mais consistentes",marketTable(rows,[{label:"Posição",render:(r)=>`<strong>${esc(r.position||r.rank||"—")}</strong>`},{label:"Estratégia",render:r=>`<button class="table-link" data-study-strategy="${esc(r.strategy_id)}">${esc(r.strategy_name||r.name||r.strategy_id)}</button><small class="block-hint">Abrir configurações</small>`},{label:"Pontuação",render:r=>number(r.study_score??r.score??r.points,1)},{label:"Presença no top 3",render:r=>number(r.top_three_count??r.top3_count,0)},{label:"1º lugares",render:r=>number(r.first_places,0)},{label:"Cobertura",render:r=>pct(r.coverage_pct)}]),"Ranking ponderado por recorrência no top 3, posição, qualidade e cobertura. Clique na estratégia para ver todas as variáveis.");
     } else if(tab==="official") {
-      const rows=await api("/backtests/batch/jobs?limit=30");
+      const rows=await api("/backtests/batch/jobs?limit=30",{cacheTtlMs:10000});
       state.officialBacktestJobs=new Map(rows.map(row=>[String(row.id),row]));
       const officialUpdated=rows.map(row=>row.last_update_at||row.finished_at||row.created_at).filter(Boolean).sort().pop();
       root.innerHTML=recordedUpdatePanel("Backtests oficiais",officialUpdated,"Rodada automática aos sábados às 00h01, horário de Brasília")+sectionCard("Rodadas oficiais",marketTable(rows,[{label:"Criado em",render:r=>dateTime(r.created_at)},{label:"Identificador",render:r=>`<button class="table-link" data-official-job="${esc(r.id)}">${esc(String(r.id).slice(0,8))}…</button>`},{label:"Ativos",render:r=>number((r.requested_tickers||r.tickers||[]).length,0)},{label:"Progresso",render:r=>`${number(r.processed_assets||0,0)} / ${number(r.total_assets||(r.requested_tickers||r.tickers||[]).length,0)}`},{label:"Partes",render:r=>number(r.received_chunks||0,0)},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":""}">${esc(officialStatusLabels[r.status]||r.status)}</span>`},{label:"",render:r=>`<button class="button ghost compact" data-official-job="${esc(r.id)}">Detalhes</button>`}]),"Em caso de falha, abra Detalhes e use Reprocessar ativos pendentes ou com falha. O sistema não recalcula entregas já concluídas.");
     } else {
-      const [catalog,recentJobs]=await Promise.all([api("/backtests/strategies"),api("/backtests/jobs?limit=5")]);
+      const [catalog,recentJobs]=await Promise.all([api("/backtests/strategies",{cacheTtlMs:300000}),api("/backtests/jobs?limit=5",{cacheTtlMs:10000})]);
       const access=state.session.access;state.backtestCatalog=catalog;
       root.innerHTML=sectionCard("Comparar estratégias",`<form id="backtest-form" class="filter-grid backtest-form">
         <div class="field wide-action"><label>Ativos — separe por vírgula ou espaço</label><textarea name="tickers" required rows="3" placeholder="PETR4, VALE3, BBAS3"></textarea><small>Limite autorizado por análise: ${number(access.backtest_asset_limit||0,0)} ativo(s).</small></div>
@@ -1397,8 +1464,8 @@ async function loadFinances() {
   root.innerHTML=loadingCards(5);
   try {
     const [data,catalog]=await Promise.all([
-      api(`/finances/summary?month=${encodeURIComponent(state.financeMonth)}`,{requestKey:"finances"}),
-      api("/finances/catalog"),
+      api(`/finances/summary?month=${encodeURIComponent(state.financeMonth)}`,{requestKey:"finances",cacheTtlMs:20000}),
+      api("/finances/catalog",{cacheTtlMs:300000}),
     ]);
     const access=state.session.access,tab=state.tabs.finances,transactions=data.transactions||[];
     if(tab==="monthly"){
@@ -1444,7 +1511,7 @@ async function loadAdmin() {
   const root=$("#admin-tab-content"); root.innerHTML=loadingCards(6);
   try {
     if(state.tabs.admin==="users") {
-      const users=await api("/access/users");
+      const users=await api("/access/users",{cacheTtlMs:15000});
       const body=`<div class="table-scroll"><table><thead><tr><th>Usuário e análises</th><th>Status</th><th>Finanças</th><th>Executa backtests</th><th>Ativos</th><th>Estratégias</th><th>Análises/dia</th><th>Alertas</th><th></th></tr></thead><tbody>${users.map(user=>`<tr data-user-row="${esc(user.email)}"><td><strong>${esc(user.display_name||user.email)}</strong><br><small>${esc(user.email)}</small>${user.is_owner?'<div class="permission-grid"><span class="pill">Acesso integral</span></div>':`<div class="permission-grid"><label class="check"><input type="checkbox" data-user-field="can_use_fdi_analysis" ${user.can_use_fdi_analysis?"checked":""}> FDI</label><label class="check"><input type="checkbox" data-user-field="can_use_alb_analysis" ${user.can_use_alb_analysis?"checked":""}> ALB</label><label class="check"><input type="checkbox" data-user-field="can_use_graham_valuation" ${user.can_use_graham_valuation?"checked":""}> Graham</label><label class="check"><input type="checkbox" data-user-field="can_use_dividend_ceiling" ${user.can_use_dividend_ceiling?"checked":""}> Preço-teto</label></div>`}</td><td>${user.is_owner?'<span class="pill">Permanente</span>':`<select data-user-field="status"><option value="pending" ${user.status==="pending"?"selected":""}>Pendente</option><option value="approved" ${user.status==="approved"?"selected":""}>Aprovado</option><option value="blocked" ${user.status==="blocked"?"selected":""}>Bloqueado</option></select>`}</td><td>${user.is_owner?"Leitura e escrita":`<label class="check"><input type="checkbox" data-user-field="can_view_finances" ${user.can_view_finances?"checked":""}> Ver</label><label class="check"><input type="checkbox" data-user-field="can_write_finances" ${user.can_write_finances?"checked":""}> Editar</label>`}</td><td>${user.is_owner?"Sim":`<label class="check"><input type="checkbox" data-user-field="can_run_backtests" ${user.can_run_backtests?"checked":""}> Permitir</label>`}</td><td>${user.is_owner?"10":`<select data-user-field="backtest_asset_limit">${[0,1,3,5,10].map(value=>`<option value="${value}" ${Number(user.backtest_asset_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${user.is_owner?"5":`<select data-user-field="backtest_strategy_limit">${[0,1,2,3,5].map(value=>`<option value="${value}" ${Number(user.backtest_strategy_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${user.is_owner?"20":`<select data-user-field="backtest_daily_limit">${[0,1,5,10,20].map(value=>`<option value="${value}" ${Number(user.backtest_daily_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${number(user.alert_asset_limit||0,0)}</td><td>${user.is_owner?"":`<button class="button secondary" data-save-user="${esc(user.email)}">Salvar</button>`}</td></tr>`).join("")}</tbody></table></div>`;
       root.innerHTML=sectionCard("Usuários e permissões",body,"Níveis disponíveis: 1, 3, 5 ou 10 ativos; 1, 2, 3 ou 5 estratégias; e 1, 5, 10 ou 20 solicitações por dia. Toda conta respeita intervalo mínimo de 60 segundos.");
       users.filter(user=>!user.is_owner).forEach(user=>{
@@ -1453,7 +1520,7 @@ async function loadAdmin() {
         grid.insertAdjacentHTML("beforeend",`<label class="check"><input type="checkbox" data-user-field="can_use_relative_valuation" ${user.can_use_relative_valuation?"checked":""}> Valuation relativo</label><label class="check"><input type="checkbox" data-user-field="can_use_economic_valuation" ${user.can_use_economic_valuation?"checked":""}> Valor econômico</label>`);
       });
     } else if(state.tabs.admin==="data") {
-      const [summary,updatePayload]=await Promise.all([api("/data/catalog-summary"),api("/market-dashboard/updates")]);
+      const [summary,updatePayload]=await Promise.all([api("/data/catalog-summary"),api("/market-dashboard/updates",{cacheTtlMs:60000})]);
       state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),...(updatePayload.updates||{})};
       const counts=summary.counts||{}, groups=summary.groups||{};
       root.innerHTML=`${marketUpdatePanel(["catalog","fundamentals","technical_daily","technical_intraday"],"Atualizações do catálogo e análises")}<div class="metric-grid">${metricCard("Ações",number(groups.stock||0,0),"Ativos ativos")}${metricCard("FIIs",number(groups.fii||0,0),"Fundos imobiliários")}${metricCard("ETFs",number(counts.etf||0,0),"Fundos de índice")}${metricCard("BDRs",number(counts.bdr||0,0),"Recibos negociados na B3")}</div>
@@ -1477,6 +1544,7 @@ async function syncMarketCatalog(assetType, includeTechnicals) {
   if(status){status.classList.remove("hidden");status.textContent="Atualizando o catálogo…";}
   try {
     const result=await api("/data/sync-market",{method:"POST",body:JSON.stringify({asset_type:assetType,include_technicals:includeTechnicals})});
+    state.analysisResultCache.clear();
     toast(`Catálogo atualizado: ${number(result.catalog_count||0,0)} ativo(s).`,"success");
     await loadAdmin();
   } catch(error) {
@@ -1588,6 +1656,7 @@ function bindEvents() {
   $("#save-custom-filter").addEventListener("click",saveCustomFilter);
   $("#delete-custom-filter").addEventListener("click",deleteCustomFilter);
   document.addEventListener("change",event=>{
+    if(event.target.id==="below-economic"&&event.target.checked){const details=$("#economic-assumptions");if(details){details.open=true;details.scrollIntoView({behavior:"smooth",block:"nearest"});}}
     if(event.target.matches('#finance-transaction-form [name="kind"]')){
       const kind=event.target.value,form=event.target.form;
       form.querySelectorAll("[data-finance-category-kind]").forEach(option=>{const active=option.dataset.financeCategoryKind===kind;option.hidden=!active;option.disabled=!active;});

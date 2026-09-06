@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
-version = "1.21.0"
-description = "Formação do Investidor V1.21.0 with audited valuation families, technical filters and backtest strategies."
+version = "1.21.1"
+description = "Formação do Investidor V1.21.1 with visible valuation scenarios, multi-asset technical presets and faster navigation."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

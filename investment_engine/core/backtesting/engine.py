@@ -74,7 +74,17 @@ def _performance_metrics(equity: pd.Series, returns: pd.Series, position: pd.Ser
     marked_returns = [float(t["return_pct"]) / 100.0 for t in completed + open_trades]
     marked_wins = [r for r in marked_returns if r > 0]
     marked_losses = [r for r in marked_returns if r < 0]
-    marked_profit_factor = (sum(marked_wins) / abs(sum(marked_losses))) if marked_losses else (None if not marked_wins else 999.0)
+    marked_pnl = [
+        float(t["pnl_value"])
+        for t in completed + open_trades
+        if t.get("pnl_value") is not None
+    ]
+    marked_pnl_wins = [value for value in marked_pnl if value > 0]
+    marked_pnl_losses = [value for value in marked_pnl if value < 0]
+    marked_profit_factor = (
+        sum(marked_pnl_wins) / abs(sum(marked_pnl_losses))
+        if marked_pnl_losses else (None if not marked_pnl_wins else 999.0)
+    )
     avg_holding = sum(t.get("holding_days") or 0 for t in completed) / len(completed) if completed else None
 
     return {
@@ -184,12 +194,27 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
 
     # Yahoo OHLC can be unadjusted while adjusted_close reflects splits/dividends.
     # Scale high/low to the same basis as the price series before ATR/ADX/Bollinger touch filters.
-    raw_close = pd.to_numeric(df.get("close"), errors="coerce")
+    # Older imported histories can contain only adjusted_close.  Keep those
+    # datasets valid, while scaling OHLC to the adjusted basis whenever the
+    # raw fields are available (notably across splits).
+    raw_close = (
+        pd.to_numeric(df["close"], errors="coerce")
+        if "close" in df
+        else pd.Series(index=df.index, dtype=float)
+    )
     factor = df["price"] / raw_close.replace(0, pd.NA)
-    raw_high = pd.to_numeric(df.get("high"), errors="coerce")
-    raw_low = pd.to_numeric(df.get("low"), errors="coerce")
-    df["adj_high"] = raw_high * factor
-    df["adj_low"] = raw_low * factor
+    raw_high = (
+        pd.to_numeric(df["high"], errors="coerce")
+        if "high" in df
+        else pd.Series(index=df.index, dtype=float)
+    )
+    raw_low = (
+        pd.to_numeric(df["low"], errors="coerce")
+        if "low" in df
+        else pd.Series(index=df.index, dtype=float)
+    )
+    df["adj_high"] = (raw_high * factor).fillna(df["price"])
+    df["adj_low"] = (raw_low * factor).fillna(df["price"])
 
     benchmark_price = None
     if benchmark_bars:

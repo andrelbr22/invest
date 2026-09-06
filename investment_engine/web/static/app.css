@@ -312,6 +312,7 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .detail-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 18px; }
 .detail-list > div { display: flex; justify-content: space-between; gap: 12px; padding: 9px 2px; border-bottom: 1px solid #edf1ef; }
 .detail-list span { color: var(--muted); font-size: .75rem; }
+.detail-list span small { display: block; margin-top: 3px; color: var(--muted); font-size: .64rem; line-height: 1.35; }
 .detail-list strong { font-size: .78rem; }
 .metric-grid.mini { grid-template-columns: repeat(2,minmax(0,1fr)); margin-bottom: 14px; }
 .formula-note { display: block; margin-top: 12px; color: var(--muted); line-height: 1.45; }
@@ -319,10 +320,14 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .backtest-form { grid-template-columns: repeat(3,minmax(0,1fr)); }
 .valuation-choice-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px 16px; margin: 8px 0 12px; }
 .valuation-choice-grid .check { min-height: 34px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.valuation-choice-grid .check > span { display: grid; gap: 3px; }
+.valuation-choice-grid .check small { color: var(--muted); font-size: .64rem; line-height: 1.35; }
 .valuation-choice-grid .check.unavailable { opacity: .5; background: #f4f6f5; }
 .valuation-controls { margin: 4px 0 10px; }
 #economic-assumptions { padding: 10px 0; }
 #economic-assumptions .notice { margin: 10px 0; }
+.valuation-base-value { display: block; font-weight: 750; }
+.valuation-mini-scenarios { display: block; min-width: 220px; margin-top: 4px; color: var(--muted); font-size: .64rem; line-height: 1.45; white-space: normal; }
 .valuation-method-list { display: grid; gap: 10px; }
 .valuation-method-card { padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .valuation-method-card > div:first-child { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
