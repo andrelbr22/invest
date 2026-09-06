@@ -15,6 +15,8 @@ PERMISSION_FIELDS = (
     "can_use_alb_analysis",
     "can_use_graham_valuation",
     "can_use_dividend_ceiling",
+    "can_use_relative_valuation",
+    "can_use_economic_valuation",
     "can_view_portfolio",
     "can_write_portfolio",
     "can_view_finances",
@@ -79,6 +81,8 @@ def policy_dict(row: UserAccessPolicyORM, *, is_owner: bool = False) -> dict:
     if result["can_use_alb_analysis"]:
         result["can_use_graham_valuation"] = True
         result["can_use_dividend_ceiling"] = True
+        result["can_use_relative_valuation"] = True
+        result["can_use_economic_valuation"] = True
     return result
 
 
@@ -150,5 +154,7 @@ class AccessPolicyRepository:
         if row.can_use_alb_analysis:
             row.can_use_graham_valuation = True
             row.can_use_dividend_ceiling = True
+            row.can_use_relative_valuation = True
+            row.can_use_economic_valuation = True
         self.session.flush()
         return row

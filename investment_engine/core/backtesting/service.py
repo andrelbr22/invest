@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from .engine import run_backtest
 from .basket import aggregate_basket
 from .aliases import resolve_ticker_alias
-from .strategies import STRATEGIES, warmup_bars
+from .strategies import STRATEGIES, warmup_bars, validate_strategy_params
 from .filters import filter_warmup_calendar_days
 from .ranking import enrich_result
 from ..repositories.assets import AssetRepository
@@ -24,7 +24,7 @@ PERIOD_LABELS = {
     "20y": "20 anos",
 }
 
-ENGINE_VERSION = "1.20.0"
+ENGINE_VERSION = "1.21.0"
 
 def _minus_months(dt: datetime, months: int) -> datetime:
     total = dt.year * 12 + (dt.month - 1) - months
@@ -167,6 +167,44 @@ class BacktestService:
             raise ValueError(f"price_history_unavailable: histórico insuficiente para {ticker}")
         return asset, existing
 
+    @staticmethod
+    def _benchmark_candidates(asset_type: str, strategy_params: dict | None = None) -> list[str]:
+        explicit = str((strategy_params or {}).get("benchmark_ticker") or "auto").strip().upper()
+        if explicit and explicit != "AUTO":
+            return [explicit]
+        if str(asset_type).lower() == "fii":
+            return ["^IFIX", "XFIX11"]
+        return ["^BVSP"]
+
+    @staticmethod
+    def _needs_benchmark(strategy_ids: list[str], filters: dict | None) -> bool:
+        return any(STRATEGIES[strategy_id].requires_benchmark for strategy_id in strategy_ids) or (
+            (filters or {}).get("relative_strength_min") is not None
+        )
+
+    def _benchmark_history(
+        self, *, asset_type: str, start: datetime, end: datetime,
+        strategy_ids: list[str], params_by_strategy: dict[str, dict] | None,
+        filters: dict | None,
+    ) -> tuple[list[dict] | None, str | None]:
+        if not self._needs_benchmark(strategy_ids, filters):
+            return None, None
+        configured = None
+        for strategy_id in strategy_ids:
+            params = (params_by_strategy or {}).get(strategy_id) or {}
+            explicit = str(params.get("benchmark_ticker") or "auto").strip().upper()
+            if explicit != "AUTO":
+                configured = params
+                break
+        for ticker in self._benchmark_candidates(asset_type, configured):
+            try:
+                rows = self.ingestion.provider.fetch(ticker, start=start, end=end)
+            except Exception:
+                continue
+            if len(rows) >= 20:
+                return list(rows), ticker
+        raise ValueError("benchmark_history_unavailable: histórico do índice de referência indisponível")
+
     def run(self, *, ticker: str, strategy_id: str, period: str, asset_type: str = "stock",
             start: datetime | None = None, end: datetime | None = None, initial_capital: float = 10000.0,
             fee_pct: float = 0.03, slippage_pct: float = 0.05, risk_free_rate_pct: float = 0.0,
@@ -174,6 +212,7 @@ class BacktestService:
             params: dict | None = None, filters: dict | None = None, persist: bool = True,
             owner_email: str = "local-owner@localhost", scope: str = "personal",
             deduplicate_day: bool = True, batch_job_id=None) -> dict:
+        params = validate_strategy_params(strategy_id, params)
         requested_start, requested_end = resolve_period(period, start=start, end=end)
         warm = warmup_bars(strategy_id, params)
         filter_warm_days = filter_warmup_calendar_days(filters)
@@ -193,13 +232,18 @@ class BacktestService:
                 return self.restore(cached)
         asset, rows = self.ensure_history(resolved_ticker, asset_type=asset_type, start=warmup_start, end=requested_end)
         bars = [_bar_dict(r) for r in rows]
+        benchmark_bars, benchmark_ticker = self._benchmark_history(
+            asset_type=asset_type, start=warmup_start, end=requested_end,
+            strategy_ids=[strategy_id], params_by_strategy={strategy_id: params}, filters=filters,
+        )
         fundamental_rows = self.assets.fundamental_history_until(asset.id, end=requested_end)
         fundamentals = [_fundamental_dict(r) for r in fundamental_rows]
         result = run_backtest(
             bars, strategy_id=strategy_id, requested_start=requested_start, requested_end=requested_end,
             initial_capital=initial_capital, fee_pct=fee_pct, slippage_pct=slippage_pct,
             risk_free_rate_pct=risk_free_rate_pct, cash_yield_rate_pct=cash_yield_rate_pct,
-            apply_cash_yield=apply_cash_yield, params=params, filters=filters, fundamental_snapshots=fundamentals,
+            apply_cash_yield=apply_cash_yield, params=params, filters=filters,
+            fundamental_snapshots=fundamentals, benchmark_bars=benchmark_bars,
         )
         result["ticker"] = asset.ticker
         result["requested_ticker"] = requested_ticker
@@ -212,6 +256,7 @@ class BacktestService:
         result["engine_version"] = ENGINE_VERSION
         result["scope"] = scope
         result["config_hash"] = config_hash
+        result["benchmark_ticker"] = benchmark_ticker
         enrich_result(result)
 
         if persist:
@@ -238,41 +283,55 @@ class BacktestService:
                 start: datetime | None = None, end: datetime | None = None, initial_capital: float = 10000.0,
                 fee_pct: float = 0.03, slippage_pct: float = 0.05, risk_free_rate_pct: float = 0.0,
                 cash_yield_rate_pct: float = 0.0, apply_cash_yield: bool = False,
-                filters: dict | None = None, owner_email: str = "local-owner@localhost") -> list[dict]:
+                filters: dict | None = None, owner_email: str = "local-owner@localhost",
+                params_by_strategy: dict[str, dict] | None = None) -> list[dict]:
         if not strategy_ids:
             return []
+        typed_params = {
+            sid: validate_strategy_params(sid, (params_by_strategy or {}).get(sid))
+            for sid in strategy_ids
+        }
         requested_start, requested_end = resolve_period(period, start=start, end=end)
-        max_warm = max(warmup_bars(sid) for sid in strategy_ids)
+        max_warm = max(warmup_bars(sid, typed_params[sid]) for sid in strategy_ids)
         filter_warm_days = filter_warmup_calendar_days(filters)
         warmup_start = requested_start - timedelta(days=max(60, max_warm * 2, filter_warm_days))
         requested_ticker = ticker.upper().strip()
         resolved_ticker, alias = resolve_ticker_alias(requested_ticker)
         asset, rows = self.ensure_history(resolved_ticker, asset_type=asset_type, start=warmup_start, end=requested_end)
         bars = [_bar_dict(r) for r in rows]
+        benchmark_bars, benchmark_ticker = self._benchmark_history(
+            asset_type=asset_type, start=warmup_start, end=requested_end,
+            strategy_ids=strategy_ids, params_by_strategy=typed_params, filters=filters,
+        )
         fundamental_rows = self.assets.fundamental_history_until(asset.id, end=requested_end)
         fundamentals = [_fundamental_dict(r) for r in fundamental_rows]
         out = []
         for sid in strategy_ids:
+            strategy_params = typed_params[sid]
             config_hash = self._configuration_hash(
                 ticker=resolved_ticker, asset_type=asset_type, strategy_id=sid, period=period,
                 requested_start=requested_start, requested_end=requested_end, initial_capital=initial_capital,
                 fee_pct=fee_pct, slippage_pct=slippage_pct, risk_free_rate_pct=risk_free_rate_pct,
                 cash_yield_rate_pct=cash_yield_rate_pct, apply_cash_yield=apply_cash_yield,
-                params=None, filters=filters,
+                params=strategy_params, filters=filters,
             )
             cached = self.runs.find_daily_cached(owner_email=owner_email, scope="personal", config_hash=config_hash)
             if cached is not None:
                 out.append({
                     "run_id": str(cached.id), "strategy_id": sid, "strategy_name": STRATEGIES[sid].name,
                     "requested_ticker": requested_ticker, "ticker": asset.ticker, "ticker_alias": alias,
-                    "cached": True, **(cached.metrics_json or {}),
+                    "cached": True,
+                    "current_signal": cached.current_signal,
+                    "position_state": (cached.result_json or {}).get("position_state"),
+                    **(cached.metrics_json or {}),
                 })
                 continue
             result = run_backtest(
                 bars, strategy_id=sid, requested_start=requested_start, requested_end=requested_end,
                 initial_capital=initial_capital, fee_pct=fee_pct, slippage_pct=slippage_pct,
                 risk_free_rate_pct=risk_free_rate_pct, cash_yield_rate_pct=cash_yield_rate_pct,
-                apply_cash_yield=apply_cash_yield, filters=filters, fundamental_snapshots=fundamentals,
+                apply_cash_yield=apply_cash_yield, params=strategy_params, filters=filters,
+                fundamental_snapshots=fundamentals, benchmark_bars=benchmark_bars,
             )
             enrich_result(result)
             run = self.runs.save_run(
@@ -292,6 +351,9 @@ class BacktestService:
             out.append({
                 "run_id": str(run.id), "strategy_id": sid, "strategy_name": STRATEGIES[sid].name,
                 "requested_ticker": requested_ticker, "ticker": asset.ticker, "ticker_alias": alias,
+                "benchmark_ticker": benchmark_ticker,
+                "current_signal": (result.get("current_signal") or {}).get("status", "neutral"),
+                "action_signal": result.get("action_signal"), "position_state": result.get("position_state"),
                 **result["metrics"],
             })
         return out
@@ -304,6 +366,7 @@ class BacktestService:
         risk_free_rate_pct: float = 0.0, cash_yield_rate_pct: float = 0.0,
         apply_cash_yield: bool = False, filters: dict | None = None,
         owner_email: str = "local-owner@localhost",
+        params_by_strategy: dict[str, dict] | None = None,
     ) -> dict:
         """Execute one position whose state is derived from several strategies."""
         component_ids = list(dict.fromkeys(strategy_ids))
@@ -313,9 +376,15 @@ class BacktestService:
             raise ValueError("invalid_strategy_combination_rule")
         if any(component_id not in STRATEGIES for component_id in component_ids):
             raise ValueError("strategy_not_found")
+        typed_params = {
+            component_id: validate_strategy_params(
+                component_id, (params_by_strategy or {}).get(component_id),
+            )
+            for component_id in component_ids
+        }
 
         requested_start, requested_end = resolve_period(period, start=start, end=end)
-        max_warm = max(warmup_bars(component_id) for component_id in component_ids)
+        max_warm = max(warmup_bars(component_id, typed_params[component_id]) for component_id in component_ids)
         filter_warm_days = filter_warmup_calendar_days(filters)
         warmup_start = requested_start - timedelta(days=max(60, max_warm * 2, filter_warm_days))
         requested_ticker = ticker.upper().strip()
@@ -323,6 +392,7 @@ class BacktestService:
         combination_key = build_config_hash({
             "rule": combination_rule,
             "components": component_ids,
+            "parameters": typed_params,
         })[:12]
         stored_strategy_id = f"combined_{combination_rule}_{combination_key}"
         config_hash = self._configuration_hash(
@@ -331,7 +401,10 @@ class BacktestService:
             initial_capital=initial_capital, fee_pct=fee_pct, slippage_pct=slippage_pct,
             risk_free_rate_pct=risk_free_rate_pct, cash_yield_rate_pct=cash_yield_rate_pct,
             apply_cash_yield=apply_cash_yield,
-            params={"components": component_ids, "combination_rule": combination_rule},
+            params={
+                "components": component_ids, "combination_rule": combination_rule,
+                "parameters": typed_params,
+            },
             filters=filters,
         )
         cached = self.runs.find_daily_cached(
@@ -345,6 +418,8 @@ class BacktestService:
                 "requested_ticker": requested_ticker, "ticker": cached.asset.ticker,
                 "ticker_alias": alias, "cached": True,
                 "strategy_components": component_ids, "combination_rule": combination_rule,
+                "current_signal": cached.current_signal,
+                "position_state": restored.get("position_state"),
                 **(restored.get("metrics") or {}),
             }
 
@@ -352,6 +427,10 @@ class BacktestService:
             resolved_ticker, asset_type=asset_type, start=warmup_start, end=requested_end,
         )
         bars = [_bar_dict(row) for row in rows]
+        benchmark_bars, benchmark_ticker = self._benchmark_history(
+            asset_type=asset_type, start=warmup_start, end=requested_end,
+            strategy_ids=component_ids, params_by_strategy=typed_params, filters=filters,
+        )
         fundamentals = [
             _fundamental_dict(row)
             for row in self.assets.fundamental_history_until(asset.id, end=requested_end)
@@ -362,8 +441,8 @@ class BacktestService:
             requested_start=requested_start, requested_end=requested_end,
             initial_capital=initial_capital, fee_pct=fee_pct, slippage_pct=slippage_pct,
             risk_free_rate_pct=risk_free_rate_pct, cash_yield_rate_pct=cash_yield_rate_pct,
-            apply_cash_yield=apply_cash_yield, filters=filters,
-            fundamental_snapshots=fundamentals,
+            apply_cash_yield=apply_cash_yield, params=typed_params, filters=filters,
+            fundamental_snapshots=fundamentals, benchmark_bars=benchmark_bars,
         )
         result.update({
             "ticker": asset.ticker, "requested_ticker": requested_ticker,
@@ -371,6 +450,7 @@ class BacktestService:
             "period": period, "period_label": PERIOD_LABELS.get(period, "Personalizado"),
             "warmup_bars": max_warm, "engine_version": ENGINE_VERSION,
             "scope": "personal", "config_hash": config_hash,
+            "benchmark_ticker": benchmark_ticker,
         })
         enrich_result(result)
         rule_labels = {"all": "Todas (E)", "any": "Qualquer uma (OU)", "majority": "Maioria"}
@@ -404,6 +484,8 @@ class BacktestService:
             "strategy_name": strategy_name, "requested_ticker": requested_ticker,
             "ticker": asset.ticker, "ticker_alias": alias, "cached": False,
             "strategy_components": component_ids, "combination_rule": combination_rule,
+            "current_signal": (result.get("current_signal") or {}).get("status", "neutral"),
+            "action_signal": result.get("action_signal"), "position_state": result.get("position_state"),
             **result["metrics"],
         }
 

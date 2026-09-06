@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_and_health_are_v1200():
-    assert __version__.startswith("1.20.")
+    assert tuple(map(int, __version__.split("."))) >= (1, 20, 0)
     response = TestClient(app, base_url="http://localhost").get("/health")
     assert response.status_code == 200
     assert response.json()["version"] == __version__
@@ -22,6 +22,7 @@ def test_pytest_discovers_every_versioned_test_directory():
     assert '"tests_v1160"' in pyproject
     assert '"tests_v1170"' in pyproject
     assert '"tests_v1200"' in pyproject
+    assert '"tests_v1210"' in pyproject
 
 
 def test_deployment_runs_the_lightweight_worker_separately_from_the_web_app():

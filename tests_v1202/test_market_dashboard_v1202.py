@@ -9,7 +9,7 @@ from investment_engine.data.providers.market_dashboard import MarketDashboardSer
 
 
 def test_release_line_and_routes_keep_v1202_capabilities():
-    assert __version__.startswith("1.20.")
+    assert tuple(map(int, __version__.split("."))) >= (1, 20, 2)
     paths = {route.path for route in app.routes}
     assert "/market-dashboard/comparison" in paths
     assert "/market-dashboard/comparison/refresh" in paths

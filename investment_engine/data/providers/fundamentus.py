@@ -32,6 +32,10 @@ class FundamentusStockProvider(StockFundamentalsProvider):
                 "ebit_margin_pct": parse_br_number(c[12]),
                 "net_margin_pct": parse_br_number(c[13]),
                 "current_ratio": parse_br_number(c[14]),
+                # Fundamentus column 15 is ROIC and column 16 is ROE.  ROIC
+                # was previously omitted, which made the corresponding
+                # screener control look available while every row was N/D.
+                "roic_pct": parse_br_number(c[15]),
                 "roe_pct": parse_br_number(c[16]),
                 "daily_liquidity": parse_br_number(c[17]),
                 "gross_debt_to_equity": parse_br_number(c[19]),

@@ -317,6 +317,19 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .formula-note { display: block; margin-top: 12px; color: var(--muted); line-height: 1.45; }
 .empty-state.compact { padding: 20px 12px; }
 .backtest-form { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.valuation-choice-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px 16px; margin: 8px 0 12px; }
+.valuation-choice-grid .check { min-height: 34px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.valuation-choice-grid .check.unavailable { opacity: .5; background: #f4f6f5; }
+.valuation-controls { margin: 4px 0 10px; }
+#economic-assumptions { padding: 10px 0; }
+#economic-assumptions .notice { margin: 10px 0; }
+.valuation-method-list { display: grid; gap: 10px; }
+.valuation-method-card { padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.valuation-method-card > div:first-child { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.valuation-method-card p { margin: 9px 0; color: var(--muted); }
+.strategy-parameters { display: grid; gap: 10px; }
+.strategy-parameter-card { box-shadow: none; }
+.strategy-parameter-card > summary { cursor: pointer; }
 .staging-banner { position: fixed; z-index: 100; inset: 0 0 auto; height: 32px; display: grid; place-items: center; color: #493509; background: #f5c861; font-size: .73rem; font-weight: 800; letter-spacing: .035em; }
 body.staging-mode .sidebar { top: 32px; }
 body.staging-mode .topbar { top: 32px; }
@@ -361,6 +374,7 @@ body.staging-mode .login-view { padding-top: 60px; }
   .comparison-date-range { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .custom-filter-controls small { grid-column: auto; }
   .filter-grid { grid-template-columns: 1fr 1fr; }
+  .valuation-choice-grid { grid-template-columns: 1fr; }
   .login-card { padding: 36px 24px; }
 }
 

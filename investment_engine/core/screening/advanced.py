@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 import math
 from typing import Iterable
@@ -9,6 +10,13 @@ import pandas as pd
 
 from investment_engine.core.portfolio.service import classification_for, localize_classification
 from investment_engine.core.screening.universe import COMPANY_SIZE_LABELS, company_size_category
+from investment_engine.core.valuation.catalog import (
+    VALUATION_FAMILIES,
+    valuation_applicability,
+    valuation_method_metadata,
+)
+from investment_engine.core.valuation.gordon import gordon_growth_scenarios
+from investment_engine.core.valuation.relative import relative_valuation
 
 
 FUNDAMENTAL_FIELDS = {
@@ -16,6 +24,9 @@ FUNDAMENTAL_FIELDS = {
     "current_ratio", "roe_pct", "roic_pct", "gross_debt_to_equity", "net_debt_to_ebitda",
     "revenue_cagr_5y_pct", "earnings_cagr_5y_pct", "ffo_yield_pct", "cap_rate_pct", "vacancy_pct",
     "financial_vacancy_pct", "ltv_pct", "wale_years", "daily_liquidity",
+    # Optional normalized inputs for the new valuation families. They remain
+    # None with the current schema and can be supplied by future providers.
+    "dividend_per_share_ttm", "normalized_dividend_per_share",
 }
 
 SCORE_FIELDS = {
@@ -27,6 +38,22 @@ PIVOT_ZONES = {
     "below_s3", "s3_s2", "s2_s1", "s1_pp", "pp_r1", "r1_r2", "r2_r3", "above_r3",
 }
 PIVOT_LEVELS = {"s3", "s2", "s1", "pp", "r1", "r2", "r3"}
+
+VALUATION_FLAG_ALIASES = {
+    "graham_reference": ("below_graham", "below_graham_number"),
+    "dividend_yield_ceiling": (
+        "below_dividend_yield_ceiling", "below_dividend_target", "below_barsi_6pct",
+    ),
+    "relative_peers": ("below_relative_value", "below_relative_peers"),
+    "economic_value": ("below_economic_value", "below_gordon_ddm"),
+}
+
+VALUATION_FLAT_FIELDS = {
+    "graham_reference": ("graham_number", "graham_upside_pct"),
+    "dividend_yield_ceiling": ("dividend_yield_ceiling_value", "dividend_yield_ceiling_upside_pct"),
+    "relative_peers": ("relative_peers_value", "relative_peers_upside_pct"),
+    "economic_value": ("economic_value", "economic_value_upside_pct"),
+}
 
 
 def _f(value):
@@ -76,7 +103,15 @@ def _bars_frame(bars: Iterable) -> pd.DataFrame:
         return df
     df = df.set_index("timestamp")
     df["price"] = df["adjusted_close"].where(df["adjusted_close"].notna(), df["close"])
-    return df[df["price"].notna() & (df["price"] > 0)].copy()
+    df = df[df["price"].notna() & (df["price"] > 0)].copy()
+    # Keep OHLC and the analysis price on the same corporate-action-adjusted
+    # basis.  Comparing adjusted close with raw highs/lows can create false
+    # pivot/support/resistance levels around splits and reverse splits.
+    factor = df["price"] / pd.to_numeric(df["close"], errors="coerce").replace(0, pd.NA)
+    for field in ("open", "high", "low", "close"):
+        raw = pd.to_numeric(df[field], errors="coerce")
+        df[field] = (raw * factor).where(factor.notna(), raw)
+    return df
 
 
 def _completed_resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:
@@ -110,6 +145,10 @@ def _rsi(series: pd.Series, period: int = 14) -> float | None:
     last_g = _f(avg_gain.iloc[-1]); last_l = _f(avg_loss.iloc[-1])
     if last_g is None or last_l is None:
         return None
+    if last_g == 0 and last_l == 0:
+        # Wilder's ratio is indeterminate in a perfectly flat market. There is
+        # neither buying nor selling pressure, therefore the neutral RSI is 50.
+        return 50.0
     if last_l == 0:
         return 100.0
     rs = last_g / last_l
@@ -234,17 +273,123 @@ def technical_filters_pass(features: dict, spec: dict | None) -> bool:
     return True
 
 
+def _valuation_result(
+    family_id: str,
+    *,
+    method: str,
+    status: str,
+    value: float | None = None,
+    upside_pct: float | None = None,
+    reason: str | None = None,
+    scenarios: dict | None = None,
+    quality: dict | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """Return one stable payload shape for every valuation family."""
+    family = VALUATION_FAMILIES[family_id]
+    return {
+        "family_id": family_id,
+        "method": method,
+        "label": family.label,
+        "status": status,
+        "value": _f(value),
+        "upside_pct": _f(upside_pct),
+        "reason": reason,
+        "scenarios": scenarios or {},
+        "quality": quality or {
+            "score": 100.0 if status == "valid" else 0.0,
+            "coverage_pct": 100.0 if status == "valid" else 0.0,
+            "sample_size": 0,
+            "metric_sample_sizes": {},
+            "metrics_used": [],
+            "warnings": [],
+        },
+        "metadata": metadata or {},
+    }
+
+
+def _unavailable_valuation(family_id: str, asset_type: str, asset_class: str = "default") -> dict:
+    rule = valuation_applicability(asset_type, asset_class)[family_id]
+    status = "not_applicable" if rule.status == "not_applicable" else "insufficient_data"
+    return _valuation_result(
+        family_id,
+        method=rule.method or family_id,
+        status=status,
+        reason=rule.note,
+        metadata={"applicability": rule.status, "asset_class": asset_class},
+    )
+
+
+def _set_valuation_result(fund: dict, family_id: str, result: dict) -> None:
+    """Store canonical nested data and convenient flat fields together."""
+    fund.setdefault("valuation_methods", {})[family_id] = result
+    value_field, upside_field = VALUATION_FLAT_FIELDS[family_id]
+    fund[value_field] = _f(result.get("value"))
+    fund[upside_field] = _f(result.get("upside_pct"))
+    fund[f"{family_id}_status"] = result.get("status")
+
+
+def _active_valuation_families(flags: Mapping | None) -> list[str]:
+    values = flags or {}
+    return [
+        family_id
+        for family_id, aliases in VALUATION_FLAG_ALIASES.items()
+        if any(bool(values.get(alias)) for alias in aliases)
+    ]
+
+
+def _valuation_family_passes(fund: dict, family_id: str, flags: Mapping) -> bool:
+    nested = fund.get("valuation_methods") if isinstance(fund.get("valuation_methods"), dict) else {}
+    result = nested.get(family_id) if isinstance(nested.get(family_id), dict) else {}
+    if result and result.get("status") not in {None, "valid"}:
+        return False
+    value_field, upside_field = VALUATION_FLAT_FIELDS[family_id]
+    value = _f(result.get("value")) if result else _f(fund.get(value_field))
+    upside = _f(result.get("upside_pct")) if result else _f(fund.get(upside_field))
+
+    # Preserve compatibility with rows constructed by older clients/tests.
+    if family_id == "graham_reference" and value is None:
+        price, pe, pbv = _f(fund.get("price")), _f(fund.get("pe")), _f(fund.get("pbv"))
+        if price is not None and price > 0 and pe is not None and pe > 0 and pbv is not None and pbv > 0:
+            value = price * math.sqrt(22.5 / (pe * pbv))
+            upside = (value / price - 1.0) * 100.0
+    elif family_id == "dividend_yield_ceiling" and value is None:
+        price, dy = _f(fund.get("price")), _f(fund.get("dividend_yield_pct"))
+        if price is not None and price > 0 and dy is not None and dy >= 0:
+            value = price * dy / 6.0
+            upside = (value / price - 1.0) * 100.0
+
+    price = _f(fund.get("price"))
+    if value is None or price is None or price <= 0:
+        return False
+
+    thresholds = flags.get("minimum_upside_pct")
+    threshold = None
+    if isinstance(thresholds, Mapping):
+        threshold = _f(thresholds.get(family_id))
+    elif thresholds is not None:
+        threshold = _f(thresholds)
+    if threshold is not None:
+        return upside is not None and upside >= threshold
+    return price < value
+
+
 def valuation_flags_pass(fund: dict, flags: dict | None) -> bool:
+    """Evaluate any combination of the four families, failing closed on N/D.
+
+    ``all`` is the default and therefore preserves the historical behavior.
+    ``any`` lets an authorized caller select several methodologies as
+    alternatives. Legacy flag names remain accepted.
+    """
     flags = flags or {}
-    if flags.get("below_graham"):
-        pe, pbv = _f(fund.get("pe")), _f(fund.get("pbv"))
-        if pe is None or pbv is None or pe <= 0 or pbv <= 0 or pe * pbv >= 22.5:
-            return False
-    if flags.get("below_barsi_6pct"):
-        dy = _f(fund.get("dividend_yield_pct"))
-        if dy is None or dy <= 6.0:
-            return False
-    return True
+    logic = str(flags.get("logic") or flags.get("valuation_logic") or "all").strip().casefold()
+    if logic not in {"all", "any"}:
+        raise ValueError("invalid_valuation_logic")
+    active = _active_valuation_families(flags)
+    if not active:
+        return True
+    checks = [_valuation_family_passes(fund, family_id, flags) for family_id in active]
+    return all(checks) if logic == "all" else any(checks)
 
 
 def filter_row(fund: dict, scores: dict, *, fundamental_filters: dict | None = None,
@@ -279,11 +424,49 @@ def row_from_orm(asset, fund, tech, score) -> dict:
         graham_number = price * math.sqrt(22.5 / (pe * pbv))
         graham_upside_pct = ((graham_number / price) - 1.0) * 100.0
     dy = fund_dict.get("dividend_yield_pct")
-    if asset.asset_type == "stock" and price is not None and price > 0 and dy is not None and dy >= 0:
+    if asset.asset_type in {"stock", "fii"} and price is not None and price > 0 and dy is not None and dy >= 0:
         # Preço-teto de dividendos: provento anual estimado dividido pela
         # rentabilidade mínima desejada de 6% ao ano.
         barsi_ceiling_price = price * dy / 6.0
         barsi_upside_pct = (barsi_ceiling_price / price - 1.0) * 100.0
+    raw_payload = getattr(fund, "raw_payload", None) if fund is not None else None
+    if isinstance(raw_payload, dict):
+        fund_dict["dividend_per_share_ttm"] = _f(raw_payload.get("dividend_per_share_ttm"))
+        fund_dict["normalized_dividend_per_share"] = _f(raw_payload.get("normalized_dividend_per_share"))
+    if (
+        fund_dict.get("dividend_per_share_ttm") is None
+        and price is not None and price > 0 and dy is not None and dy >= 0
+    ):
+        # Fundamentus publishes DY on the same price basis. Recovering D0 from
+        # price * DY is an exact unit conversion, not a growth assumption.
+        fund_dict["dividend_per_share_ttm"] = price * dy / 100.0
+
+    valuation_methods = {
+        family_id: _unavailable_valuation(family_id, asset.asset_type)
+        for family_id in VALUATION_FAMILIES
+    }
+    graham_meta = valuation_method_metadata("graham_number")
+    if asset.asset_type == "stock":
+        valuation_methods["graham_reference"] = _valuation_result(
+            "graham_reference",
+            method=graham_meta.canonical_id,
+            status="valid" if graham_number is not None else "insufficient_data",
+            value=graham_number,
+            upside_pct=graham_upside_pct,
+            reason=None if graham_number is not None else "requires_positive_eps_and_bvps",
+            metadata={"formula": graham_meta.formula},
+        )
+    dividend_meta = valuation_method_metadata("dividend_yield_ceiling_ttm")
+    if asset.asset_type in {"stock", "fii"}:
+        valuation_methods["dividend_yield_ceiling"] = _valuation_result(
+            "dividend_yield_ceiling",
+            method=dividend_meta.canonical_id,
+            status="valid" if barsi_ceiling_price is not None else "insufficient_data",
+            value=barsi_ceiling_price,
+            upside_pct=barsi_upside_pct,
+            reason=None if barsi_ceiling_price is not None else "dividend_per_share_ttm_required",
+            metadata={"target_yield_pct": 6.0, "formula": dividend_meta.formula},
+        )
     size = company_size_category({
         "market_cap_category": asset.market_cap_category,
         "metadata_json": asset.metadata_json if isinstance(asset.metadata_json, dict) else {},
@@ -309,8 +492,18 @@ def row_from_orm(asset, fund, tech, score) -> dict:
             **fund_dict,
             "graham_number": graham_number,
             "graham_upside_pct": graham_upside_pct,
+            # Legacy fields are retained until every API/UI client has moved
+            # to the canonical nested representation.
             "barsi_ceiling_price": barsi_ceiling_price,
             "barsi_upside_pct": barsi_upside_pct,
+            "dividend_yield_ceiling_value": barsi_ceiling_price,
+            "dividend_yield_ceiling_upside_pct": barsi_upside_pct,
+            "relative_peers_value": None,
+            "relative_peers_upside_pct": None,
+            "economic_value": None,
+            "economic_value_upside_pct": None,
+            "valuation_methods": valuation_methods,
+            **{f"{family_id}_status": valuation_methods[family_id]["status"] for family_id in VALUATION_FAMILIES},
         },
         "scores": score_dict,
         "snapshot_technical": {
@@ -320,14 +513,148 @@ def row_from_orm(asset, fund, tech, score) -> dict:
     }
 
 
+def _asset_valuation_class(asset) -> str:
+    metadata = asset.metadata_json if isinstance(getattr(asset, "metadata_json", None), dict) else {}
+    explicit = str(metadata.get("valuation_class") or metadata.get("asset_class") or "").strip().casefold()
+    if explicit:
+        return explicit
+    sector = str(getattr(asset, "sector", None) or "").casefold()
+    industry = str(getattr(asset, "industry", None) or "").casefold()
+    segment = str(getattr(asset, "segment", None) or "").casefold()
+    if asset.asset_type == "stock":
+        if any(token in f"{sector} {industry}" for token in ("bank", "banco", "financial services")):
+            return "bank"
+        if any(token in f"{sector} {industry}" for token in ("insurance", "segur")):
+            return "insurance"
+    if asset.asset_type == "fii":
+        if any(token in segment for token in ("papel", "receb", "cri", "mortgage")):
+            return "paper"
+        if any(token in segment for token in ("fof", "fundo de fundos")):
+            return "fof"
+        if segment:
+            return "brick"
+    return "default"
+
+
+def _scenario_family_result(result) -> dict:
+    payload = result.model_dump(mode="python")
+    base = payload.get("scenarios", {}).get("base") or {}
+    metadata = {
+        **(payload.get("metadata") or {}),
+        "asset_type": payload.get("asset_type"),
+        "asset_class": payload.get("asset_class"),
+    }
+    return _valuation_result(
+        result.family_id,
+        method=result.method,
+        status=result.status,
+        value=base.get("value"),
+        upside_pct=base.get("upside_pct"),
+        reason=result.reason,
+        scenarios=payload.get("scenarios"),
+        quality=payload.get("quality"),
+        metadata=metadata,
+    )
+
+
+def _valuation_options(options: Mapping | None) -> tuple[dict, dict]:
+    values = options if isinstance(options, Mapping) else {}
+    relative = values.get("relative_peers")
+    relative = dict(relative) if isinstance(relative, Mapping) else {}
+    economic = values.get("economic_value") or values.get("gordon_growth_ddm")
+    economic = dict(economic) if isinstance(economic, Mapping) else {}
+    return relative, economic
+
+
+def _enrich_valuation_rows(
+    entries: list[tuple[object, dict]],
+    *,
+    peer_entries: list[tuple[object, dict]],
+    valuation_assumptions: Mapping | None,
+) -> None:
+    """Add relative/Gordon results after the peer universe is known."""
+    relative_options, economic_options = _valuation_options(valuation_assumptions)
+    try:
+        min_peers = int(relative_options.get("minimum_peers", 5))
+    except (TypeError, ValueError):
+        min_peers = 5
+    raw_limits = relative_options.get("winsor_limits", (0.10, 0.90))
+    try:
+        winsor_limits = (
+            float(raw_limits[0]), float(raw_limits[1])
+        ) if isinstance(raw_limits, (list, tuple)) and len(raw_limits) == 2 else (0.10, 0.90)
+    except (TypeError, ValueError):
+        winsor_limits = (0.10, 0.90)
+
+    peers = [
+        {
+            **row["asset"], **row["fundamentals"],
+            "asset_class": _asset_valuation_class(peer_asset),
+        }
+        for peer_asset, row in peer_entries
+    ]
+    economic_scenarios = economic_options.get("scenarios")
+    if economic_scenarios is None and any(name in economic_options for name in ("conservative", "base", "optimistic")):
+        economic_scenarios = {
+            name: economic_options.get(name)
+            for name in ("conservative", "base", "optimistic")
+            if name in economic_options
+        }
+    dividend_by_ticker = economic_options.get("normalized_dividend_per_share_by_ticker")
+    dividend_by_ticker = dividend_by_ticker if isinstance(dividend_by_ticker, Mapping) else {}
+
+    for asset, row in entries:
+        fund = row["fundamentals"]
+        asset_class = _asset_valuation_class(asset)
+        target = {**row["asset"], **fund, "asset_class": asset_class}
+        relative = relative_valuation(
+            target,
+            peers,
+            asset_type=asset.asset_type,
+            asset_class=asset_class,
+            min_peers=min_peers,
+            winsor_limits=winsor_limits,
+        )
+        _set_valuation_result(fund, "relative_peers", _scenario_family_result(relative))
+
+        if asset.asset_type == "stock":
+            dividend = _f(fund.get("normalized_dividend_per_share"))
+            dividend_source = "normalized_provider_dividend"
+            if dividend is None:
+                dividend = _f(dividend_by_ticker.get(str(asset.ticker).upper()))
+                dividend_source = "user_normalized_dividend" if dividend is not None else None
+            if dividend is None and bool(economic_options.get("use_ttm_dividend")):
+                dividend = _f(fund.get("dividend_per_share_ttm"))
+                dividend_source = "trailing_12_month_dividend" if dividend is not None else None
+            economic = gordon_growth_scenarios(
+                dividend,
+                assumptions=economic_scenarios,
+                market_price=fund.get("price"),
+                margin_of_safety_pct=economic_options.get("margin_of_safety_pct"),
+                asset_type=asset.asset_type,
+                asset_class=asset_class,
+            )
+            economic_payload = _scenario_family_result(economic)
+            economic_payload.setdefault("metadata", {})["dividend_source"] = dividend_source
+            if dividend_source == "trailing_12_month_dividend":
+                economic_payload.setdefault("quality", {}).setdefault("warnings", []).append(
+                    "ttm_dividend_is_not_normalized"
+                )
+        else:
+            economic_payload = _unavailable_valuation("economic_value", asset.asset_type, asset_class)
+        _set_valuation_result(fund, "economic_value", economic_payload)
+
+
 def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None = None,
                     score_filters: dict | None = None, valuation_flags: dict | None = None,
+                    valuation_assumptions: dict | None = None,
                     technical_filters: dict | None = None, trend_period: int = 21,
                     pivot_timeframe: str = "daily", include_technical_columns: bool = True,
                     limit: int = 100, allowed_tickers: Iterable[str] | None = None,
                     company_sizes: Iterable[str] | None = None,
                     ibov_membership: str = "any", ibov_tickers: Iterable[str] | None = None) -> dict:
-    universe = repo.latest_universe(asset_type=asset_type, limit=1200)
+    full_universe = list(repo.latest_universe(asset_type=asset_type, limit=1200))
+    universe = list(full_universe)
     if allowed_tickers is not None:
         allowed = {str(ticker).strip().upper() for ticker in allowed_tickers if str(ticker).strip()}
         universe = [row for row in universe if str(row[0].ticker).upper() in allowed]
@@ -349,14 +676,39 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
             raise ValueError("ibov_membership_unavailable")
         should_be_inside = ibov_membership == "inside"
         universe = [row for row in universe if ((str(row[0].ticker).upper() in ibov) == should_be_inside)]
-    preliminary = []
-    for asset, fund, tech, score in universe:
+    peer_rows = []
+    rows_by_asset_id = {}
+    for asset, fund, tech, score in full_universe:
         if fund is None and asset_type in {"stock", "fii"}:
             continue
         row = row_from_orm(asset, fund, tech, score)
+        peer_rows.append((asset, row))
+        rows_by_asset_id[asset.id] = row
+
+    # Screen restrictions select targets, not the reference peer group. This
+    # keeps a one-ticker search comparable with the same full market cohort.
+    base_rows = [
+        (asset, rows_by_asset_id[asset.id])
+        for asset, _fund, _tech, _score in universe
+        if asset.id in rows_by_asset_id
+    ]
+
+    preliminary = []
+    for asset, row in base_rows:
         if filter_row(row["fundamentals"], row["scores"], fundamental_filters=fundamental_filters,
-                      score_filters=score_filters, valuation_flags=valuation_flags):
+                      score_filters=score_filters, valuation_flags=None):
             preliminary.append((asset, row))
+
+    _enrich_valuation_rows(
+        preliminary,
+        peer_entries=peer_rows,
+        valuation_assumptions=valuation_assumptions,
+    )
+    preliminary = [
+        (asset, row)
+        for asset, row in preliminary
+        if valuation_flags_pass(row["fundamentals"], valuation_flags)
+    ]
 
     tech_spec = technical_filters or {}
     technical_active = any([
@@ -420,5 +772,8 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
             "universe_count": len(universe), "fundamental_candidates": len(preliminary), "returned": len(results),
             "technical_history_missing": missing_history, "trend_period": trend_period, "pivot_timeframe": pivot_timeframe,
             "technical_filter_active": technical_active,
+            "valuation_families": list(VALUATION_FAMILIES),
+            "valuation_filter_active": _active_valuation_families(valuation_flags),
+            "valuation_logic": str((valuation_flags or {}).get("logic") or (valuation_flags or {}).get("valuation_logic") or "all").casefold(),
         },
     }

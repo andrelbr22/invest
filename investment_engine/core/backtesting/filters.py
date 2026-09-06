@@ -23,10 +23,23 @@ def default_filter_config() -> dict:
         "trend_combination": "all",
         "adx_min": None,
         "volume_ratio_min": None,
+        "volume_period": 20,
+        "volume_timeframe": "daily",
         "rsi_min": None,
         "rsi_max": None,
         "atr_pct_min": None,
         "atr_pct_max": None,
+        "macd_condition": "any",
+        "bollinger_percent_b_min": None,
+        "bollinger_percent_b_max": None,
+        "bollinger_bandwidth_min": None,
+        "bollinger_bandwidth_max": None,
+        "relative_strength_min": None,
+        "relative_strength_lookback": 126,
+        "pivot_zone": "any",
+        "near_pivot_level": "none",
+        "pivot_tolerance_pct": 0.5,
+        "daily_liquidity_min": None,
         "exit_on_filter_failure": False,
         "fundamental_entry": {},
         "fundamental_exit": {},
@@ -64,6 +77,19 @@ def normalize_filter_config(config: dict | None) -> dict:
     out["trend_combination"] = combination if combination in {"all", "any", "majority"} else "all"
     out["fundamental_min_coverage_pct"] = float(out.get("fundamental_min_coverage_pct") or 70.0)
     out["fundamental_max_age_days"] = max(1, int(out.get("fundamental_max_age_days") or 45))
+    out["volume_period"] = int(out.get("volume_period") or 20)
+    if out["volume_period"] not in {9, 20, 50}:
+        out["volume_period"] = 20
+    timeframe = str(out.get("volume_timeframe") or "daily").lower()
+    out["volume_timeframe"] = timeframe if timeframe in {"daily", "weekly", "monthly"} else "daily"
+    macd = str(out.get("macd_condition") or "any").lower()
+    out["macd_condition"] = macd if macd in {"any", "above", "below", "cross_up", "cross_down"} else "any"
+    out["relative_strength_lookback"] = max(20, min(504, int(out.get("relative_strength_lookback") or 126)))
+    zone = str(out.get("pivot_zone") or "any").lower()
+    out["pivot_zone"] = zone if zone in {"any", "below_s3", "s3_s2", "s2_s1", "s1_pp", "pp_r1", "r1_r2", "r2_r3", "above_r3"} else "any"
+    level = str(out.get("near_pivot_level") or "none").lower()
+    out["near_pivot_level"] = level if level in {"none", "s3", "s2", "s1", "pp", "r1", "r2", "r3"} else "none"
+    out["pivot_tolerance_pct"] = max(0.0, min(20.0, float(out.get("pivot_tolerance_pct") or 0.5)))
     return out
 
 
@@ -71,7 +97,13 @@ def filters_active(config: dict | None) -> bool:
     cfg = normalize_filter_config(config)
     if any(cfg[x]["enabled"] for x in ("daily_trend", "weekly_trend", "monthly_trend")):
         return True
-    if any(cfg.get(x) is not None for x in ("adx_min", "volume_ratio_min", "rsi_min", "rsi_max", "atr_pct_min", "atr_pct_max")):
+    if any(cfg.get(x) is not None for x in (
+        "adx_min", "volume_ratio_min", "rsi_min", "rsi_max", "atr_pct_min", "atr_pct_max",
+        "bollinger_percent_b_min", "bollinger_percent_b_max", "bollinger_bandwidth_min",
+        "bollinger_bandwidth_max", "relative_strength_min", "daily_liquidity_min",
+    )):
+        return True
+    if cfg.get("macd_condition") != "any" or cfg.get("pivot_zone") != "any" or cfg.get("near_pivot_level") != "none":
         return True
     return bool(cfg["fundamental_entry"] or cfg["fundamental_exit"])
 
@@ -172,6 +204,59 @@ def _atr_adx(df: pd.DataFrame, period: int = 14) -> tuple[pd.Series, pd.Series]:
     return atr, adx
 
 
+def _volume_ratio(volume: pd.Series, *, period: int, timeframe: str) -> pd.Series:
+    """Point-in-time volume relative to prior completed periods."""
+    values = pd.to_numeric(volume, errors="coerce")
+    if timeframe == "daily":
+        average = values.rolling(period, min_periods=period).mean().shift(1)
+        return values / average.mask(lambda item: item == 0)
+
+    naive_index = values.index.tz_convert(None) if getattr(values.index, "tz", None) is not None else values.index
+    labels = naive_index.to_period("W-FRI" if timeframe == "weekly" else "M")
+    grouped = values.groupby(labels)
+    totals = grouped.sum(min_count=1)
+    last_dates = grouped.apply(lambda series: series.index.max())
+    # The last week/month can still be in progress. Exclude it so the filter
+    # never compares an incomplete period with completed historical periods.
+    if len(totals) > 0:
+        totals = totals.iloc[:-1]
+        last_dates = last_dates.iloc[:-1]
+    average = totals.rolling(period, min_periods=period).mean().shift(1)
+    ratio = totals / average.mask(lambda item: item == 0)
+    anchors = pd.Series(ratio.to_numpy(), index=pd.DatetimeIndex(list(last_dates)))
+    union = values.index.union(anchors.index).sort_values()
+    return anchors.reindex(union).ffill().reindex(values.index)
+
+
+def _classic_pivots(df: pd.DataFrame, price: pd.Series) -> dict[str, pd.Series]:
+    high = pd.to_numeric(df.get("adj_high", df.get("high", price)), errors="coerce").shift(1)
+    low = pd.to_numeric(df.get("adj_low", df.get("low", price)), errors="coerce").shift(1)
+    close = price.shift(1)
+    pp = (high + low + close) / 3.0
+    return {
+        "pp": pp,
+        "r1": 2.0 * pp - low,
+        "s1": 2.0 * pp - high,
+        "r2": pp + (high - low),
+        "s2": pp - (high - low),
+        "r3": high + 2.0 * (pp - low),
+        "s3": low - 2.0 * (high - pp),
+    }
+
+
+def _pivot_zone_gate(price: pd.Series, pivots: dict[str, pd.Series], zone: str) -> pd.Series:
+    p = price
+    if zone == "below_s3": return p < pivots["s3"]
+    if zone == "s3_s2": return (p >= pivots["s3"]) & (p < pivots["s2"])
+    if zone == "s2_s1": return (p >= pivots["s2"]) & (p < pivots["s1"])
+    if zone == "s1_pp": return (p >= pivots["s1"]) & (p < pivots["pp"])
+    if zone == "pp_r1": return (p >= pivots["pp"]) & (p < pivots["r1"])
+    if zone == "r1_r2": return (p >= pivots["r1"]) & (p < pivots["r2"])
+    if zone == "r2_r3": return (p >= pivots["r2"]) & (p < pivots["r3"])
+    if zone == "above_r3": return p >= pivots["r3"]
+    return pd.Series(True, index=price.index, dtype=bool)
+
+
 def build_fundamental_context(index: pd.DatetimeIndex, snapshots: list[dict] | None, *, max_age_days: int) -> pd.DataFrame:
     out = pd.DataFrame(index=index)
     snapshots = snapshots or []
@@ -233,6 +318,7 @@ def apply_backtest_filters(
     requested_start: datetime,
     requested_end: datetime,
     fundamental_snapshots: list[dict] | None = None,
+    benchmark_price: pd.Series | None = None,
 ) -> tuple[pd.Series, pd.DataFrame, dict, dict]:
     cfg = normalize_filter_config(config)
     if not filters_active(cfg) and not cfg.get("exit_on_filter_failure"):
@@ -294,12 +380,17 @@ def apply_backtest_filters(
 
     if cfg.get("volume_ratio_min") is not None:
         volume = pd.to_numeric(df.get("volume"), errors="coerce")
-        avg = volume.rolling(20, min_periods=20).mean()
-        ratio = volume / avg.mask(lambda x: x == 0)
-        indicators["Filtro volume / média20"] = ratio
+        ratio = _volume_ratio(
+            volume, period=int(cfg["volume_period"]), timeframe=str(cfg["volume_timeframe"]),
+        )
+        indicators[f"Filtro volume {cfg['volume_timeframe']} / média {cfg['volume_period']}"] = ratio
         passed = ratio.notna() & (ratio >= float(cfg["volume_ratio_min"]))
         gate &= passed
-        diagnostics["conditions"]["Volume"] = {"min_ratio": float(cfg["volume_ratio_min"]), "bars_pass": int(passed.sum()), "bars_valid": int(ratio.notna().sum())}
+        diagnostics["conditions"]["Volume"] = {
+            "min_ratio": float(cfg["volume_ratio_min"]), "period": int(cfg["volume_period"]),
+            "timeframe": cfg["volume_timeframe"], "bars_pass": int(passed.sum()),
+            "bars_valid": int(ratio.notna().sum()),
+        }
 
     if cfg.get("rsi_min") is not None or cfg.get("rsi_max") is not None:
         rsi = _rsi(price, 14)
@@ -318,6 +409,99 @@ def apply_backtest_filters(
         if cfg.get("atr_pct_max") is not None: passed &= atr_pct <= float(cfg["atr_pct_max"])
         gate &= passed
         diagnostics["conditions"]["ATR %"] = {"min": cfg.get("atr_pct_min"), "max": cfg.get("atr_pct_max"), "bars_pass": int(passed.sum()), "bars_valid": int(atr_pct.notna().sum())}
+
+    if cfg.get("macd_condition") != "any":
+        ema_fast = _ma(price, 12, "ema")
+        ema_slow = _ma(price, 26, "ema")
+        macd = ema_fast - ema_slow
+        macd_signal = macd.ewm(span=9, adjust=False, min_periods=9).mean()
+        difference = macd - macd_signal
+        condition = cfg["macd_condition"]
+        if condition == "above": passed = difference > 0
+        elif condition == "below": passed = difference < 0
+        elif condition == "cross_up": passed = (difference > 0) & (difference.shift(1) <= 0)
+        else: passed = (difference < 0) & (difference.shift(1) >= 0)
+        passed &= difference.notna()
+        indicators["Filtro MACD"] = macd
+        indicators["Filtro sinal MACD"] = macd_signal
+        gate &= passed
+        diagnostics["conditions"]["MACD"] = {
+            "condition": condition, "bars_pass": int(passed.sum()), "bars_valid": int(difference.notna().sum()),
+        }
+
+    bollinger_requested = any(cfg.get(key) is not None for key in (
+        "bollinger_percent_b_min", "bollinger_percent_b_max",
+        "bollinger_bandwidth_min", "bollinger_bandwidth_max",
+    ))
+    if bollinger_requested:
+        middle = price.rolling(20, min_periods=20).mean()
+        deviation = price.rolling(20, min_periods=20).std(ddof=0)
+        upper = middle + 2.0 * deviation
+        lower = middle - 2.0 * deviation
+        width = upper - lower
+        percent_b = (price - lower) / width.mask(lambda value: value == 0)
+        bandwidth = width / middle.mask(lambda value: value == 0) * 100.0
+        passed = percent_b.notna() & bandwidth.notna()
+        for key, series in (("bollinger_percent_b", percent_b), ("bollinger_bandwidth", bandwidth)):
+            minimum, maximum = cfg.get(f"{key}_min"), cfg.get(f"{key}_max")
+            if minimum is not None: passed &= series >= float(minimum)
+            if maximum is not None: passed &= series <= float(maximum)
+        indicators["Filtro Bollinger %B"] = percent_b
+        indicators["Filtro Bollinger largura %"] = bandwidth
+        gate &= passed
+        diagnostics["conditions"]["Bollinger"] = {
+            "percent_b_min": cfg.get("bollinger_percent_b_min"),
+            "percent_b_max": cfg.get("bollinger_percent_b_max"),
+            "bandwidth_min": cfg.get("bollinger_bandwidth_min"),
+            "bandwidth_max": cfg.get("bollinger_bandwidth_max"),
+            "bars_pass": int(passed.sum()),
+        }
+
+    if cfg.get("relative_strength_min") is not None:
+        if benchmark_price is None:
+            raise ValueError("benchmark_history_required_for_relative_strength")
+        benchmark = pd.to_numeric(benchmark_price, errors="coerce").reindex(price.index).ffill()
+        lookback = int(cfg["relative_strength_lookback"])
+        asset_return = price / price.shift(lookback) - 1.0
+        benchmark_return = benchmark / benchmark.shift(lookback) - 1.0
+        relative = (asset_return - benchmark_return) * 100.0
+        passed = relative.notna() & (relative >= float(cfg["relative_strength_min"]))
+        indicators[f"Força relativa {lookback} pregões %"] = relative
+        gate &= passed
+        diagnostics["conditions"]["Força relativa"] = {
+            "minimum_pct": float(cfg["relative_strength_min"]), "lookback": lookback,
+            "bars_pass": int(passed.sum()), "bars_valid": int(relative.notna().sum()),
+        }
+
+    if cfg.get("daily_liquidity_min") is not None:
+        volume = pd.to_numeric(df.get("volume"), errors="coerce")
+        traded_value = price * volume
+        average_liquidity = traded_value.rolling(20, min_periods=20).mean()
+        passed = average_liquidity.notna() & (average_liquidity >= float(cfg["daily_liquidity_min"]))
+        indicators["Liquidez financeira média 20"] = average_liquidity
+        gate &= passed
+        diagnostics["conditions"]["Liquidez"] = {
+            "minimum": float(cfg["daily_liquidity_min"]), "bars_pass": int(passed.sum()),
+            "bars_valid": int(average_liquidity.notna().sum()),
+        }
+
+    if cfg.get("pivot_zone") != "any" or cfg.get("near_pivot_level") != "none":
+        pivots = _classic_pivots(df, price)
+        for key, series in pivots.items():
+            indicators[f"Pivô {key.upper()}"] = series
+        passed = pd.Series(True, index=df.index, dtype=bool)
+        if cfg.get("pivot_zone") != "any":
+            passed &= _pivot_zone_gate(price, pivots, cfg["pivot_zone"])
+        level = cfg.get("near_pivot_level")
+        if level != "none":
+            reference = pivots[level]
+            tolerance = float(cfg.get("pivot_tolerance_pct") or 0.5) / 100.0
+            passed &= reference.notna() & (reference != 0) & ((price / reference - 1.0).abs() <= tolerance)
+        gate &= passed
+        diagnostics["conditions"]["Pivô"] = {
+            "zone": cfg.get("pivot_zone"), "near": level,
+            "tolerance_pct": cfg.get("pivot_tolerance_pct"), "bars_pass": int(passed.sum()),
+        }
 
     fundamental_entry = cfg.get("fundamental_entry") or {}
     fundamental_exit = cfg.get("fundamental_exit") or {}
@@ -380,6 +564,15 @@ def filter_warmup_calendar_days(config: dict | None) -> int:
         rule = cfg[key]
         if rule["enabled"]:
             days = max(days, int(rule["period"]) * mult + 30)
-    if any(cfg.get(x) is not None for x in ("adx_min", "volume_ratio_min", "rsi_min", "rsi_max", "atr_pct_min", "atr_pct_max")):
+    if any(cfg.get(x) is not None for x in (
+        "adx_min", "volume_ratio_min", "rsi_min", "rsi_max", "atr_pct_min", "atr_pct_max",
+        "bollinger_percent_b_min", "bollinger_percent_b_max", "bollinger_bandwidth_min",
+        "bollinger_bandwidth_max", "relative_strength_min", "daily_liquidity_min",
+    )) or cfg.get("macd_condition") != "any" or cfg.get("pivot_zone") != "any" or cfg.get("near_pivot_level") != "none":
         days = max(days, 90)
+    if cfg.get("relative_strength_min") is not None:
+        days = max(days, int(cfg["relative_strength_lookback"]) * 2 + 30)
+    if cfg.get("volume_ratio_min") is not None:
+        multiplier = {"daily": 2, "weekly": 9, "monthly": 32}[cfg["volume_timeframe"]]
+        days = max(days, int(cfg["volume_period"]) * multiplier + 30)
     return days

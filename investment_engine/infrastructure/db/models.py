@@ -216,6 +216,8 @@ class UserAccessPolicyORM(Base):
     can_use_alb_analysis: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_use_graham_valuation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_use_dividend_ceiling: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_relative_valuation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_economic_valuation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_view_portfolio: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_write_portfolio: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_view_finances: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

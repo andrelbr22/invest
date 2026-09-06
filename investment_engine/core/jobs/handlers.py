@@ -477,6 +477,11 @@ def handle_personal_backtest_matrix(payload: dict) -> dict:
     owner_email = str(payload["owner_email"]).strip().lower()
     tickers = list(dict.fromkeys(str(item).strip().upper() for item in payload.get("tickers", []) if str(item).strip()))
     strategy_ids = list(dict.fromkeys(str(item).strip() for item in payload.get("strategy_ids", []) if str(item).strip()))
+    strategy_params = {
+        str(key): dict(value or {})
+        for key, value in dict(payload.get("strategy_params") or {}).items()
+        if str(key) in strategy_ids
+    }
     execution_mode = str(payload.get("execution_mode") or "compare")
     combination_rule = str(payload.get("combination_rule") or "all")
     final_attempt = int(payload.get("_background_job_attempt") or 1) >= int(payload.get("_background_job_max_attempts") or 1)
@@ -515,10 +520,13 @@ def handle_personal_backtest_matrix(payload: dict) -> dict:
                 }
                 if execution_mode == "combined":
                     rows.append(service.run_combined(
-                        strategy_ids=strategy_ids, combination_rule=combination_rule, **common,
+                        strategy_ids=strategy_ids, combination_rule=combination_rule,
+                        params_by_strategy=strategy_params, **common,
                     ))
                 else:
-                    rows.extend(service.compare(strategy_ids=strategy_ids, **common))
+                    rows.extend(service.compare(
+                        strategy_ids=strategy_ids, params_by_strategy=strategy_params, **common,
+                    ))
                 session.commit()
             except Exception as exc:
                 session.rollback()

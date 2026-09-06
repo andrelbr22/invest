@@ -59,7 +59,18 @@ def _performance_metrics(equity: pd.Series, returns: pd.Series, position: pd.Ser
     trade_returns = [float(t["return_pct"]) / 100.0 for t in completed]
     wins = [r for r in trade_returns if r > 0]
     losses = [r for r in trade_returns if r < 0]
-    profit_factor = (sum(wins) / abs(sum(losses))) if losses else (None if not wins else 999.0)
+    # Profit factor is a money-weighted trading statistic: gross monetary
+    # profits divided by gross monetary losses. Summing percentages gives the
+    # wrong weight after the portfolio capital has changed between trades.
+    trade_pnl = [float(t["pnl_value"]) for t in completed if t.get("pnl_value") is not None]
+    pnl_wins = [value for value in trade_pnl if value > 0]
+    pnl_losses = [value for value in trade_pnl if value < 0]
+    profit_factor = (
+        sum(pnl_wins) / abs(sum(pnl_losses))
+        if pnl_losses else (None if not pnl_wins else 999.0)
+    )
+    # Kept as an explicitly named auxiliary for backwards analysis only.
+    percentage_profit_factor = (sum(wins) / abs(sum(losses))) if losses else (None if not wins else 999.0)
     marked_returns = [float(t["return_pct"]) / 100.0 for t in completed + open_trades]
     marked_wins = [r for r in marked_returns if r > 0]
     marked_losses = [r for r in marked_returns if r < 0]
@@ -82,6 +93,7 @@ def _performance_metrics(equity: pd.Series, returns: pd.Series, position: pd.Ser
         "open_trades": len(open_trades),
         "win_rate_pct": (len(wins) / len(completed) * 100) if completed else None,
         "profit_factor": _safe(profit_factor),
+        "profit_factor_percentage_aux": _safe(percentage_profit_factor),
         "profit_factor_mark_to_market": _safe(marked_profit_factor),
         "win_rate_mark_to_market_pct": (len(marked_wins) / len(marked_returns) * 100) if marked_returns else None,
         "open_position_return_pct": _safe(open_trades[-1].get("return_pct")) if open_trades else None,
@@ -142,6 +154,7 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
                  risk_free_rate_pct: float = 0.0, cash_yield_rate_pct: float = 0.0,
                  apply_cash_yield: bool = False, params: dict | None = None, filters: dict | None = None,
                  fundamental_snapshots: list[dict] | None = None,
+                 benchmark_bars: list[dict] | None = None,
                  combination_strategy_ids: list[str] | None = None,
                  combination_rule: str = "all") -> dict:
     component_ids = list(dict.fromkeys(combination_strategy_ids or [strategy_id]))
@@ -178,8 +191,31 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
     df["adj_high"] = raw_high * factor
     df["adj_low"] = raw_low * factor
 
+    benchmark_price = None
+    if benchmark_bars:
+        benchmark_frame = pd.DataFrame(benchmark_bars)
+        if not benchmark_frame.empty and "timestamp" in benchmark_frame:
+            benchmark_frame["timestamp"] = pd.to_datetime(benchmark_frame["timestamp"], utc=True)
+            benchmark_frame = (
+                benchmark_frame.sort_values("timestamp")
+                .drop_duplicates("timestamp", keep="last")
+                .set_index("timestamp")
+            )
+            benchmark_adjusted = pd.to_numeric(
+                benchmark_frame.get("adjusted_close"), errors="coerce",
+            ) if "adjusted_close" in benchmark_frame else pd.Series(index=benchmark_frame.index, dtype=float)
+            benchmark_close = pd.to_numeric(
+                benchmark_frame.get("close"), errors="coerce",
+            ) if "close" in benchmark_frame else pd.Series(index=benchmark_frame.index, dtype=float)
+            benchmark_price = benchmark_adjusted.fillna(benchmark_close)
+            benchmark_price = benchmark_price[benchmark_price.notna() & (benchmark_price > 0)]
+            benchmark_price = benchmark_price.reindex(df.index).ffill()
+
     if not combined:
-        base_signal, indicators, effective_params = build_signal(df, strategy_id, params)
+        signal_kwargs = {"benchmark_price": benchmark_price} if benchmark_price is not None else {}
+        base_signal, indicators, effective_params = build_signal(
+            df, strategy_id, params, **signal_kwargs,
+        )
         strategy_description = STRATEGIES[strategy_id].as_dict()
     else:
         component_signals: list[pd.Series] = []
@@ -188,8 +224,9 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
         params_by_strategy = params or {}
         for component_id in component_ids:
             component_params = params_by_strategy.get(component_id, {}) if isinstance(params_by_strategy, dict) else {}
+            signal_kwargs = {"benchmark_price": benchmark_price} if benchmark_price is not None else {}
             component_signal, component_indicators, component_effective_params = build_signal(
-                df, component_id, component_params,
+                df, component_id, component_params, **signal_kwargs,
             )
             component_signals.append(component_signal.rename(component_id))
             indicator_frames.append(component_indicators.add_prefix(f"{component_id} · "))
@@ -220,7 +257,7 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
         }
     signal, filter_indicators, effective_filters, filter_diagnostics = apply_backtest_filters(
         df, base_signal, filters, requested_start=requested_start, requested_end=requested_end,
-        fundamental_snapshots=fundamental_snapshots,
+        fundamental_snapshots=fundamental_snapshots, benchmark_price=benchmark_price,
     )
     if not filter_indicators.empty:
         indicators = pd.concat([indicators, filter_indicators.loc[:, ~filter_indicators.columns.isin(indicators.columns)]], axis=1)
@@ -256,12 +293,18 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
     bt["cash_return"] = (1.0 - bt["position"]) * cash_daily
     bt["strategy_return"] = bt["position"] * bt["asset_return"] + bt["cash_return"] - bt["turnover"] * cost_rate
     bt["equity"] = initial_capital * (1.0 + bt["strategy_return"]).cumprod()
-    bt["benchmark"] = initial_capital * (1.0 + bt["asset_return"]).cumprod()
+    # Preserve the historical meaning of the public benchmark metrics: buying
+    # and holding the tested asset.  An external index is a signal/reference
+    # input for relative-strength strategies, not a silent replacement for the
+    # performance comparison users already know.
+    benchmark_return = bt["asset_return"]
+    bt["benchmark_return"] = benchmark_return
+    bt["benchmark"] = initial_capital * (1.0 + bt["benchmark_return"]).cumprod()
     bt["drawdown_pct"] = (bt["equity"] / bt["equity"].cummax() - 1.0) * 100.0
 
     trades = _extract_trades(bt, initial_capital, cost_rate)
     metrics = _performance_metrics(
-        bt["equity"], bt["strategy_return"], bt["position"], bt["benchmark"], bt["asset_return"],
+        bt["equity"], bt["strategy_return"], bt["position"], bt["benchmark"], bt["benchmark_return"],
         trades, risk_free_rate_pct, bt["turnover"], cost_rate,
     )
 
@@ -348,6 +391,13 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
         "as_of": bt.index[-1].isoformat(),
         "reason": signal_reason,
         "execution": "ordem no pregão seguinte ao sinal",
+        "position_state": "invested" if int(bt["execution_state"].iloc[-1]) > 0 else "out",
+    }
+    action_signal = dict(signal_snapshot)
+    position_state = {
+        "status": signal_snapshot["position_state"],
+        "as_of": signal_snapshot["as_of"],
+        "label": "Comprado" if signal_snapshot["position_state"] == "invested" else "Fora da posição",
     }
 
     return {
@@ -358,12 +408,17 @@ def run_backtest(bars: list[dict], *, strategy_id: str, requested_start: datetim
         "requested_start": start.isoformat(), "requested_end": end.isoformat(),
         "actual_start": bt.index[0].isoformat(), "actual_end": bt.index[-1].isoformat(),
         "metrics": metrics, "equity_curve": curve, "trades": trades, "events": events,
+        # current_signal remains for persisted records and older clients.
         "current_signal": signal_snapshot,
+        "action_signal": action_signal,
+        "position_state": position_state,
         "filters": effective_filters, "filter_diagnostics": filter_diagnostics, "signal_diagnostics": signal_diagnostics,
         "assumptions": {
             "positioning": "long_only",
             "signal_execution": "sinal no fechamento t; execução no fechamento t+1; exposição a partir do retorno seguinte (sem preenchimento no mesmo fechamento)",
             "price_series": "adjusted_close quando disponível; close como fallback",
+            "benchmark_series": "buy-and-hold do próprio ativo",
+            "signal_reference_series": "benchmark externo alinhado por pregão" if benchmark_price is not None else None,
             "fee_pct_per_turnover": fee_pct,
             "slippage_pct_per_turnover": slippage_pct,
             "risk_free_rate_pct_annual": float(risk_free_rate_pct),

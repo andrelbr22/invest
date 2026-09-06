@@ -7,11 +7,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_metadata_and_operational_guides_are_v1207():
-    assert __version__ == "1.20.7"
+    assert tuple(map(int, __version__.split("."))) >= (1, 20, 7)
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     publisher = (ROOT / "PUBLICAR_GITHUB.ps1").read_text(encoding="utf-8")
-    assert 'version = "1.20.7"' in pyproject
-    assert "V1.20.7" in publisher
+    assert f'version = "{__version__}"' in pyproject
+    assert f"V{__version__}" in publisher
     for name in (
         "V1_20_7.md",
         "PATCH_V1207.md",

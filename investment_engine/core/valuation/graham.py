@@ -18,6 +18,7 @@ def implied_eps(price: float | None, pe: float | None) -> float | None:
 
 
 def graham_number(eps: float | None, bvps: float | None, constant: float = 22.5) -> ValuationResult:
+    """Return the Graham Number reference, not a universal fair price."""
     if eps is None or bvps is None:
         return ValuationResult(method="graham_number", value=None, valid=False, reason="missing_inputs")
     if eps <= 0 or bvps <= 0:

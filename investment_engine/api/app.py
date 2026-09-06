@@ -13,7 +13,7 @@ import re
 import threading
 from time import monotonic
 from uuid import UUID, uuid4
-from typing import Literal
+from typing import Any, Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -26,6 +26,13 @@ from sqlalchemy.orm import Session
 
 from ..core.valuation.graham import graham_number, add_upside
 from ..core.valuation.dividend_target import dividend_yield_target_price
+from ..core.valuation.catalog import (
+    VALUATION_FAMILIES,
+    VALUATION_METHODS,
+    applicability_dict,
+    method_metadata_dict,
+    valuation_method_metadata,
+)
 from ..core.strategies.presets import STOCK_STRATEGIES, FII_STRATEGIES
 from ..core.screening.filters import stock_passes, fii_passes
 from ..core.screening.advanced import advanced_screen, row_from_orm, technical_features
@@ -54,7 +61,7 @@ from ..core.portfolio.custom_investments import (
 )
 from ..core.finance.service import FINANCE_CATEGORIES, FinanceRepository, month_start, transaction_dict
 from ..core.backtesting.service import BacktestService, PERIOD_LABELS
-from ..core.backtesting.strategies import STRATEGIES, strategy_catalog
+from ..core.backtesting.strategies import STRATEGIES, strategy_catalog, validate_strategy_params
 from ..core.backtesting.batch import BacktestBatchService, OFFICIAL_OWNER
 from ..integrations.backtest_delivery import CALLBACK_API_VERSION, delivery_checksum
 from ..core.backtesting.study import build_strategy_configuration_catalog, build_strategy_study
@@ -499,16 +506,41 @@ class BacktestFiltersRequest(BaseModel):
     trend_combination: str = Field(default="all", pattern="^(all|any|majority)$")
     adx_min: float | None = Field(default=None, ge=0, le=100)
     volume_ratio_min: float | None = Field(default=None, ge=0.1, le=10)
+    volume_period: Literal[9, 20, 50] = 20
+    volume_timeframe: Literal["daily", "weekly", "monthly"] = "daily"
     rsi_min: float | None = Field(default=None, ge=0, le=100)
     rsi_max: float | None = Field(default=None, ge=0, le=100)
     atr_pct_min: float | None = Field(default=None, ge=0, le=100)
     atr_pct_max: float | None = Field(default=None, ge=0, le=100)
+    macd_condition: Literal["any", "above", "below", "cross_up", "cross_down"] = "any"
+    bollinger_percent_b_min: float | None = Field(default=None, ge=-5, le=5)
+    bollinger_percent_b_max: float | None = Field(default=None, ge=-5, le=5)
+    bollinger_bandwidth_min: float | None = Field(default=None, ge=0, le=500)
+    bollinger_bandwidth_max: float | None = Field(default=None, ge=0, le=500)
+    relative_strength_min: float | None = Field(default=None, ge=-200, le=500)
+    relative_strength_lookback: int = Field(default=126, ge=20, le=504)
+    pivot_zone: Literal["any", "below_s3", "s3_s2", "s2_s1", "s1_pp", "pp_r1", "r1_r2", "r2_r3", "above_r3"] = "any"
+    near_pivot_level: Literal["none", "s3", "s2", "s1", "pp", "r1", "r2", "r3"] = "none"
+    pivot_tolerance_pct: float = Field(default=0.5, ge=0, le=20)
+    daily_liquidity_min: float | None = Field(default=None, ge=0)
     exit_on_filter_failure: bool = False
     fundamental_entry: dict[str, BacktestNumericRangeRequest] = Field(default_factory=dict)
     fundamental_exit: dict[str, BacktestNumericRangeRequest] = Field(default_factory=dict)
     fundamental_exit_logic: str = Field(default="any", pattern="^(any|all)$")
     fundamental_min_coverage_pct: float = Field(default=70.0, ge=1, le=100)
     fundamental_max_age_days: int = Field(default=45, ge=1, le=365)
+
+    @model_validator(mode="after")
+    def valid_ranges(self):
+        for low_name, high_name in (
+            ("rsi_min", "rsi_max"), ("atr_pct_min", "atr_pct_max"),
+            ("bollinger_percent_b_min", "bollinger_percent_b_max"),
+            ("bollinger_bandwidth_min", "bollinger_bandwidth_max"),
+        ):
+            low, high = getattr(self, low_name), getattr(self, high_name)
+            if low is not None and high is not None and low > high:
+                raise ValueError(f"invalid_filter_range:{low_name}")
+        return self
 
 
 class BacktestRequest(BaseModel):
@@ -542,6 +574,7 @@ class BacktestCompareRequest(BaseModel):
     risk_free_rate_pct: float = Field(default=0.0, ge=-20, le=100)
     apply_cash_yield: bool = False
     cash_yield_rate_pct: float = Field(default=0.0, gt=-100, le=100)
+    strategy_params: dict[str, dict] = Field(default_factory=dict)
     filters: BacktestFiltersRequest = Field(default_factory=BacktestFiltersRequest)
 
 
@@ -565,6 +598,7 @@ class BacktestBasketRequest(BaseModel):
 class BacktestMatrixRequest(BaseModel):
     tickers: list[str] = Field(min_length=1, max_length=10)
     strategy_ids: list[str] = Field(min_length=1, max_length=5)
+    strategy_params: dict[str, dict] = Field(default_factory=dict)
     execution_mode: Literal["compare", "combined"] = "compare"
     combination_rule: Literal["all", "any", "majority"] = "all"
     asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other)$")
@@ -632,10 +666,11 @@ class AdvancedTechnicalFiltersRequest(BaseModel):
 
 
 class AdvancedScreenRequest(BaseModel):
-    asset_type: str = Field(default="stock", pattern="^(stock|fii|other_b3)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|fii|etf|bdr|future|other_b3)$")
     fundamental_filters: dict[str, NumericRangeRequest] = Field(default_factory=dict)
     score_filters: dict[str, NumericRangeRequest] = Field(default_factory=dict)
-    valuation_flags: dict[str, bool] = Field(default_factory=dict)
+    valuation_flags: dict[str, Any] = Field(default_factory=dict)
+    valuation_assumptions: dict[str, Any] = Field(default_factory=dict)
     technical_filters: AdvancedTechnicalFiltersRequest = Field(default_factory=AdvancedTechnicalFiltersRequest)
     trend_period: int = Field(default=21, ge=20, le=21)
     pivot_timeframe: str = Field(default="daily", pattern="^(daily|weekly|monthly)$")
@@ -644,6 +679,119 @@ class AdvancedScreenRequest(BaseModel):
     allowed_tickers: list[str] | None = Field(default=None, max_length=1200)
     company_sizes: list[str] = Field(default_factory=list, max_length=3)
     ibov_membership: Literal["any", "inside", "outside"] = "any"
+
+    @field_validator("valuation_flags", mode="before")
+    @classmethod
+    def validate_valuation_flags(cls, value):
+        flags = dict(value or {})
+        allowed = {
+            "below_graham", "below_graham_number",
+            "below_dividend_yield_ceiling", "below_dividend_target", "below_barsi_6pct",
+            "below_relative_value", "below_relative_peers",
+            "below_economic_value", "below_gordon_ddm",
+            "logic", "valuation_logic", "minimum_upside_pct",
+        }
+        unknown = sorted(set(flags) - allowed)
+        if unknown:
+            raise ValueError(f"unsupported_valuation_flags:{','.join(unknown)}")
+        logic = str(flags.get("logic") or flags.get("valuation_logic") or "all").casefold()
+        if logic not in {"all", "any"}:
+            raise ValueError("invalid_valuation_logic")
+        flags["logic"] = logic
+        flags.pop("valuation_logic", None)
+        thresholds = flags.get("minimum_upside_pct")
+        if isinstance(thresholds, dict):
+            allowed_families = set(VALUATION_FAMILIES)
+            if set(thresholds) - allowed_families:
+                raise ValueError("unsupported_valuation_upside_family")
+            clean_thresholds = {key: float(number) for key, number in thresholds.items()}
+            if any(not math.isfinite(number) or not -100 <= number <= 10_000 for number in clean_thresholds.values()):
+                raise ValueError("invalid_valuation_upside_threshold")
+            flags["minimum_upside_pct"] = clean_thresholds
+        elif thresholds is not None:
+            threshold = float(thresholds)
+            if not math.isfinite(threshold) or not -100 <= threshold <= 10_000:
+                raise ValueError("invalid_valuation_upside_threshold")
+            flags["minimum_upside_pct"] = threshold
+        return flags
+
+    @field_validator("valuation_assumptions", mode="before")
+    @classmethod
+    def validate_valuation_assumptions(cls, value):
+        assumptions = dict(value or {})
+        unknown = sorted(set(assumptions) - {"relative_peers", "economic_value", "gordon_growth_ddm"})
+        if unknown:
+            raise ValueError(f"unsupported_valuation_assumptions:{','.join(unknown)}")
+        relative = dict(assumptions.get("relative_peers") or {})
+        if relative:
+            min_peers = int(relative.get("minimum_peers", 5))
+            if not 3 <= min_peers <= 30:
+                raise ValueError("relative_minimum_peers_out_of_range")
+            limits = relative.get("winsor_limits", (0.10, 0.90))
+            if not isinstance(limits, (list, tuple)) or len(limits) != 2:
+                raise ValueError("invalid_winsor_limits")
+            low, high = float(limits[0]), float(limits[1])
+            if not math.isfinite(low) or not math.isfinite(high) or not 0 <= low < high <= 1:
+                raise ValueError("invalid_winsor_limits")
+            assumptions["relative_peers"] = {
+                "minimum_peers": min_peers, "winsor_limits": [low, high],
+            }
+        economic_key = "economic_value" if "economic_value" in assumptions else "gordon_growth_ddm"
+        economic = dict(assumptions.get(economic_key) or {})
+        if economic:
+            allowed_economic = {
+                "use_ttm_dividend", "margin_of_safety_pct", "scenarios",
+                "normalized_dividend_per_share_by_ticker",
+                "conservative", "base", "optimistic",
+            }
+            extra = sorted(set(economic) - allowed_economic)
+            if extra:
+                raise ValueError(f"unsupported_economic_assumptions:{','.join(extra)}")
+            margin = economic.get("margin_of_safety_pct")
+            if margin is not None:
+                margin = float(margin)
+                if not math.isfinite(margin) or not 0 <= margin < 100:
+                    raise ValueError("invalid_margin_of_safety")
+                economic["margin_of_safety_pct"] = margin
+            scenarios = economic.get("scenarios")
+            if scenarios is None and any(name in economic for name in ("conservative", "base", "optimistic")):
+                scenarios = {name: economic.get(name) for name in ("conservative", "base", "optimistic")}
+            if scenarios is not None:
+                if not isinstance(scenarios, dict) or set(scenarios) != {"conservative", "base", "optimistic"}:
+                    raise ValueError("three_explicit_scenarios_required")
+                clean_scenarios = {}
+                for name, raw in scenarios.items():
+                    spec = dict(raw or {})
+                    if set(spec) != {"required_return_pct", "growth_pct"}:
+                        raise ValueError(f"scenario_assumptions_invalid:{name}")
+                    required_return = float(spec["required_return_pct"])
+                    growth = float(spec["growth_pct"])
+                    if (
+                        not math.isfinite(required_return) or not math.isfinite(growth)
+                        or not 0 < required_return <= 100 or not 0 <= growth < required_return
+                    ):
+                        raise ValueError(f"scenario_assumptions_invalid:{name}")
+                    clean_scenarios[name] = {
+                        "required_return_pct": required_return, "growth_pct": growth,
+                    }
+                economic["scenarios"] = clean_scenarios
+                for name in ("conservative", "base", "optimistic"):
+                    economic.pop(name, None)
+            dividends = economic.get("normalized_dividend_per_share_by_ticker")
+            if dividends is not None:
+                if not isinstance(dividends, dict) or len(dividends) > 1200:
+                    raise ValueError("invalid_dividend_input_map")
+                clean_dividends = {}
+                for ticker, amount in dividends.items():
+                    clean_ticker = str(ticker).strip().upper()
+                    number = float(amount)
+                    if clean_ticker and math.isfinite(number) and number > 0:
+                        clean_dividends[clean_ticker] = number
+                economic["normalized_dividend_per_share_by_ticker"] = clean_dividends
+            economic["use_ttm_dividend"] = bool(economic.get("use_ttm_dividend", False))
+            assumptions["economic_value"] = economic
+            assumptions.pop("gordon_growth_ddm", None)
+        return assumptions
 
     @field_validator("company_sizes", mode="before")
     @classmethod
@@ -677,6 +825,8 @@ class AccessPolicyUpdateRequest(BaseModel):
     can_use_alb_analysis: bool | None = None
     can_use_graham_valuation: bool | None = None
     can_use_dividend_ceiling: bool | None = None
+    can_use_relative_valuation: bool | None = None
+    can_use_economic_valuation: bool | None = None
     can_view_portfolio: bool | None = None
     can_write_portfolio: bool | None = None
     can_view_finances: bool | None = None
@@ -929,12 +1079,15 @@ def update_access_user(
     changes = req.model_dump(exclude_none=True)
     if any(changes.get(field) for field in (
         "can_use_advanced_filters", "can_use_fdi_analysis", "can_use_alb_analysis",
-        "can_use_graham_valuation", "can_use_dividend_ceiling", "can_sync_market",
+        "can_use_graham_valuation", "can_use_dividend_ceiling",
+        "can_use_relative_valuation", "can_use_economic_valuation", "can_sync_market",
     )) or int(changes.get("custom_filter_limit") or 0)>0:
         changes["can_view_market"] = True
     if changes.get("can_use_alb_analysis"):
         changes["can_use_graham_valuation"] = True
         changes["can_use_dividend_ceiling"] = True
+        changes["can_use_relative_valuation"] = True
+        changes["can_use_economic_valuation"] = True
     if changes.get("can_write_portfolio") or changes.get("can_view_news_insights") or changes.get("can_use_price_alerts"):
         changes["can_view_portfolio"] = True
     if changes.get("can_write_finances"):
@@ -952,6 +1105,8 @@ def update_access_user(
         changes["can_use_alb_analysis"] = False
         changes["can_use_graham_valuation"] = False
         changes["can_use_dividend_ceiling"] = False
+        changes["can_use_relative_valuation"] = False
+        changes["can_use_economic_valuation"] = False
         changes["can_sync_market"] = False
         changes["custom_filter_limit"] = 0
     if changes.get("can_view_portfolio") is False:
@@ -1016,7 +1171,7 @@ def _validated_saved_filters(asset_type: str, payload: dict) -> dict:
         raw_configuration = payload.get("configuration") or {}
     elif any(key in payload for key in (
         "fundamental_filters", "score_filters", "valuation_flags", "technical_filters",
-        "company_sizes", "ibov_membership", "pivot_timeframe", "trend_period",
+        "valuation_assumptions", "company_sizes", "ibov_membership", "pivot_timeframe", "trend_period",
     )):
         raw_configuration = payload
     else:
@@ -1373,6 +1528,37 @@ def asset_detail(ticker: str, access=Depends(require_permission("can_view_market
     technical = repo.latest_technical(asset.id)
     score = repo.latest_scores(asset.id)
     derived = row_from_orm(asset, fundamentals, technical, score)
+    derived_fundamentals = dict(derived.get("fundamentals") or {})
+    # The one-asset page uses the same full peer universe and the same
+    # fail-closed calculations as the screener. No economic-growth or return
+    # assumption is invented on behalf of the user.
+    try:
+        valuation_rows = advanced_screen(
+            repo,
+            asset_type=asset.asset_type,
+            allowed_tickers=[asset.ticker],
+            include_technical_columns=False,
+            limit=1,
+        ).get("rows", [])
+        if valuation_rows:
+            valuation_row = valuation_rows[0]
+            valuation_fields = {
+                key: value
+                for key, value in valuation_row.items()
+                if key == "valuation_methods"
+                or key.endswith("_status")
+                or key.endswith("_upside_pct")
+                or key in {
+                    "graham_number", "barsi_ceiling_price",
+                    "dividend_yield_ceiling_value", "relative_peers_value", "economic_value",
+                }
+            }
+            derived_fundamentals.update(valuation_fields)
+    except Exception:
+        # Asset detail remains usable when a peer calculation cannot complete.
+        # The base row already carries explicit N/D statuses.
+        pass
+    derived_fundamentals = _authorized_valuation_row(derived_fundamentals, access)
     history = repo.price_history(asset.id, limit=760)
     features = technical_features(history, trend_period=21, pivot_timeframe="daily")
     leaders = []
@@ -1393,7 +1579,7 @@ def asset_detail(ticker: str, access=Depends(require_permission("can_view_market
         },
         "fundamentals": _fundamental_dict(fundamentals),
         "technical": _technical_dict(technical),
-        "derived": derived.get("fundamentals") or {},
+        "derived": derived_fundamentals,
         "technical_analysis": features,
         "scores": derived.get("scores") or {},
         "backtests": leaders,
@@ -1410,13 +1596,35 @@ def fii_strategies(_access=Depends(require_permission("can_view_market"))):
     return [s.model_dump() for s in FII_STRATEGIES.values()]
 
 
+@app.get("/valuation/methods")
+def valuation_methods(_access=Depends(require_permission("can_view_market"))):
+    """Describe the four families and fail-closed applicability by class."""
+    return {
+        "families": [
+            {
+                "id": family.id,
+                "label": family.label,
+                "description": family.description,
+                "filter_key": family.filter_key,
+                "permission_key": family.permission_key,
+            }
+            for family in VALUATION_FAMILIES.values()
+        ],
+        "methods": [method_metadata_dict(method_id) for method_id in VALUATION_METHODS],
+        "applicability": {
+            asset_type: applicability_dict(asset_type)
+            for asset_type in ("stock", "fii", "etf", "bdr", "future")
+        },
+    }
+
+
 @app.post("/valuation/graham")
-def valuation_graham(req: GrahamRequest, _access=Depends(require_permission("can_view_market"))):
+def valuation_graham(req: GrahamRequest, _access=Depends(require_permission("can_use_graham_valuation"))):
     return add_upside(graham_number(req.eps, req.bvps), req.market_price)
 
 
 @app.post("/valuation/dividend-target")
-def valuation_dividend_target(req: DividendTargetRequest, _access=Depends(require_permission("can_view_market"))):
+def valuation_dividend_target(req: DividendTargetRequest, _access=Depends(require_permission("can_use_dividend_ceiling"))):
     result = dividend_yield_target_price(req.dividend_per_share, req.target_yield_pct)
     return add_upside(result, req.market_price)
 
@@ -1438,7 +1646,7 @@ def screen_fiis(req: ScreenRequest, _access=Depends(require_permission("can_view
 
 
 @app.get("/assets/{ticker}/intelligence")
-def asset_intelligence(ticker: str, _access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
+def asset_intelligence(ticker: str, access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
     repo=AssetRepository(db); asset=repo.get_by_ticker(ticker)
     if asset is None: raise HTTPException(404,"asset_not_found")
     f=repo.latest_fundamentals(asset.id)
@@ -1452,7 +1660,7 @@ def asset_intelligence(ticker: str, _access=Depends(require_permission("can_view
         "technical":x["technical"].as_dict(),"risk":x["risk"].as_dict(),
         "liquidity":x["liquidity"].as_dict(),"explanation":x["explanation"],
     }
-    return {
+    payload = {
         "ticker":asset.ticker,"model_version":x["model_version"],
         "profile":{"key":x["profile"].key,"label":x["profile"].label,"notes":x["profile"].notes,"weights":x["profile"].alb_weights},
         "graham_number":x["graham_number"],"graham_upside_pct":x["graham_upside_pct"],
@@ -1466,6 +1674,10 @@ def asset_intelligence(ticker: str, _access=Depends(require_permission("can_view
         "data_quality":x["data_quality"].as_dict(),"explanation":x["explanation"],
         "components":details,
     }
+    # The intelligence endpoint predates granular valuation permissions. Keep
+    # its public shape compatible, but never let the historical route bypass
+    # the same Graham grant enforced by the screener and asset detail.
+    return _authorized_valuation_row(payload, access)
 
 @app.post("/assets/{ticker}/prices/ingest")
 def ingest_prices(ticker: str, _access=Depends(require_permission("can_sync_market")), db: Session = Depends(get_db)):
@@ -1533,15 +1745,42 @@ def _stock_screen_row(asset, fundamental, score):
     }
 
 
-def _authorized_stock_row(row: dict, access: dict | None) -> dict:
+def _authorized_valuation_row(row: dict, access: dict | None) -> dict:
     access = access or {}
-    if not (access.get("can_use_graham_valuation") or access.get("can_use_alb_analysis")):
-        row.pop("graham_number", None)
-        row.pop("graham_upside_pct", None)
-    if not (access.get("can_use_dividend_ceiling") or access.get("can_use_alb_analysis")):
-        row.pop("barsi_ceiling_price", None)
-        row.pop("barsi_upside_pct", None)
+    alb = bool(access.get("can_use_alb_analysis"))
+    permissions = {
+        "graham_reference": alb or bool(access.get("can_use_graham_valuation")),
+        "dividend_yield_ceiling": alb or bool(access.get("can_use_dividend_ceiling")),
+        "relative_peers": alb or bool(access.get("can_use_relative_valuation")),
+        "economic_value": alb or bool(access.get("can_use_economic_valuation")),
+    }
+    protected_fields = {
+        "graham_reference": ("graham_number", "graham_upside_pct", "graham_reference_status"),
+        "dividend_yield_ceiling": (
+            "barsi_ceiling_price", "barsi_upside_pct", "dividend_yield_ceiling_value",
+            "dividend_yield_ceiling_upside_pct", "dividend_yield_ceiling_status",
+        ),
+        "relative_peers": ("relative_peers_value", "relative_peers_upside_pct", "relative_peers_status"),
+        "economic_value": ("economic_value", "economic_value_upside_pct", "economic_value_status"),
+    }
+    for family_id, allowed in permissions.items():
+        if allowed:
+            continue
+        for field in protected_fields[family_id]:
+            row.pop(field, None)
+    methods = row.get("valuation_methods")
+    if isinstance(methods, dict):
+        row["valuation_methods"] = {
+            family_id: payload
+            for family_id, payload in methods.items()
+            if permissions.get(family_id, False)
+        }
     return row
+
+
+# Internal compatibility name retained for older tests/imports.
+def _authorized_stock_row(row: dict, access: dict | None) -> dict:
+    return _authorized_valuation_row(row, access)
 
 
 def _stock_screen_result(rows, access: dict | None = None):
@@ -1556,10 +1795,14 @@ def _require_system_analysis_access(strategy_id: str, access: dict) -> None:
 
 def _require_valuation_access(flags: dict[str, bool], access: dict) -> None:
     alb = bool(access.get("can_use_alb_analysis"))
-    if flags.get("below_graham") and not (alb or access.get("can_use_graham_valuation")):
+    if any(flags.get(name) for name in ("below_graham", "below_graham_number")) and not (alb or access.get("can_use_graham_valuation")):
         raise HTTPException(403, detail={"permission_required": "can_use_graham_valuation"})
-    if flags.get("below_barsi_6pct") and not (alb or access.get("can_use_dividend_ceiling")):
+    if any(flags.get(name) for name in ("below_barsi_6pct", "below_dividend_target", "below_dividend_yield_ceiling")) and not (alb or access.get("can_use_dividend_ceiling")):
         raise HTTPException(403, detail={"permission_required": "can_use_dividend_ceiling"})
+    if any(flags.get(name) for name in ("below_relative_value", "below_relative_peers")) and not (alb or access.get("can_use_relative_valuation")):
+        raise HTTPException(403, detail={"permission_required": "can_use_relative_valuation"})
+    if any(flags.get(name) for name in ("below_economic_value", "below_gordon_ddm")) and not (alb or access.get("can_use_economic_valuation")):
+        raise HTTPException(403, detail={"permission_required": "can_use_economic_valuation"})
 
 
 def _fii_screen_row(asset, fundamental, score):
@@ -1722,6 +1965,7 @@ def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permissi
         result = advanced_screen(
             AssetRepository(db), asset_type=req.asset_type, fundamental_filters=fundamental_filters,
             score_filters=score_filters, valuation_flags=req.valuation_flags,
+            valuation_assumptions=req.valuation_assumptions,
             technical_filters=req.technical_filters.model_dump(exclude_none=True), trend_period=req.trend_period,
             pivot_timeframe=req.pivot_timeframe, include_technical_columns=req.include_technical_columns, limit=req.limit,
             allowed_tickers=req.allowed_tickers,
@@ -1730,8 +1974,7 @@ def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permissi
         result.setdefault("meta", {})["warnings"] = warnings
         result["meta"]["requested_ibov_membership"] = req.ibov_membership
         result["meta"]["effective_ibov_membership"] = effective_ibov_membership
-        if req.asset_type == "stock":
-            result["rows"] = [_authorized_stock_row(dict(row), _access) for row in result.get("rows", [])]
+        result["rows"] = [_authorized_valuation_row(dict(row), _access) for row in result.get("rows", [])]
         return result
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
@@ -1765,13 +2008,32 @@ def asset_score_history(ticker: str, limit: int = Query(default=120, ge=1, le=10
         "data_quality_score": _num(r.data_quality_score),
     } for r in rows]
 
+def _valuation_method_permission(method: str) -> str | None:
+    try:
+        family_id = valuation_method_metadata(method).family_id
+    except KeyError:
+        return None
+    return VALUATION_FAMILIES[family_id].permission_key
+
+
+def _can_read_valuation_method(method: str, access: dict) -> bool:
+    if access.get("is_owner") or access.get("can_use_alb_analysis"):
+        return True
+    permission = _valuation_method_permission(method)
+    return bool(permission and access.get(permission))
+
+
 @app.get("/assets/{ticker}/valuations")
-def asset_valuations(ticker: str, method: str | None = None, limit: int = Query(default=120, ge=1, le=1000), _access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
+def asset_valuations(ticker: str, method: str | None = None, limit: int = Query(default=120, ge=1, le=1000), access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
     repo = AssetRepository(db)
     asset = repo.get_by_ticker(ticker)
     if asset is None:
         raise HTTPException(404, "asset_not_found")
+    if method and not _can_read_valuation_method(method, access):
+        permission = _valuation_method_permission(method) or "owner_access_required"
+        raise HTTPException(403, detail={"permission_required": permission})
     rows = repo.valuation_history(asset.id, method=method, limit=limit)
+    rows = [row for row in rows if _can_read_valuation_method(row.method, access)]
     return [{
         "method": r.method, "method_version": r.method_version, "as_of": r.as_of,
         "value": _num(r.value), "upside_pct": _num(r.upside_pct), "status": r.status,
@@ -2758,10 +3020,21 @@ def backtest_strategies(_access=Depends(require_permission("can_view_backtests")
     return {"periods": PERIOD_LABELS, "strategies": strategy_catalog()}
 
 
+def _require_owner_inline_backtest(access: dict) -> None:
+    """Keep legacy synchronous endpoints from bypassing quotas or blocking UI workers."""
+    if not access.get("is_owner"):
+        raise HTTPException(403, detail={
+            "permission_required": "owner_inline_backtest",
+            "message": "Use a análise em segundo plano.",
+        })
+
+
 @app.post("/backtests/run")
 def backtest_run(req: BacktestRequest, access=Depends(require_permission("can_run_backtests")), db: Session = Depends(get_db)):
+    _require_owner_inline_backtest(access)
     if req.strategy_id not in STRATEGIES: raise HTTPException(404, "strategy_not_found")
     try:
+        validate_strategy_params(req.strategy_id, req.params)
         result = BacktestService(db).run(
             ticker=req.ticker.upper(), asset_type=req.asset_type, strategy_id=req.strategy_id, period=req.period,
             start=req.start, end=req.end, initial_capital=req.initial_capital, fee_pct=req.fee_pct,
@@ -2779,16 +3052,21 @@ def backtest_run(req: BacktestRequest, access=Depends(require_permission("can_ru
 
 @app.post("/backtests/compare")
 def backtest_compare(req: BacktestCompareRequest, access=Depends(require_permission("can_run_backtests")), db: Session = Depends(get_db)):
+    _require_owner_inline_backtest(access)
     unknown = [s for s in req.strategy_ids if s not in STRATEGIES]
     if unknown: raise HTTPException(404, detail={"strategies_not_found": unknown})
     try:
+        params_by_strategy = {
+            strategy_id: validate_strategy_params(strategy_id, req.strategy_params.get(strategy_id))
+            for strategy_id in req.strategy_ids
+        }
         rows = BacktestService(db).compare(
             ticker=req.ticker.upper(), asset_type=req.asset_type, strategy_ids=req.strategy_ids, period=req.period,
             start=req.start, end=req.end, initial_capital=req.initial_capital, fee_pct=req.fee_pct,
             slippage_pct=req.slippage_pct, risk_free_rate_pct=req.risk_free_rate_pct,
             cash_yield_rate_pct=req.cash_yield_rate_pct, apply_cash_yield=req.apply_cash_yield,
             filters=req.filters.model_dump(exclude_none=True),
-            owner_email=access["email"],
+            owner_email=access["email"], params_by_strategy=params_by_strategy,
         )
         db.commit(); return rows
     except ValueError as exc:
@@ -2809,6 +3087,16 @@ def backtest_matrix(
     unknown = [strategy for strategy in strategies if strategy not in STRATEGIES]
     if unknown:
         raise HTTPException(404, detail={"strategies_not_found": unknown})
+    unknown_param_strategies = sorted(set(req.strategy_params) - set(strategies))
+    if unknown_param_strategies:
+        raise HTTPException(422, detail={"parameters_for_unselected_strategies": unknown_param_strategies})
+    try:
+        strategy_params = {
+            strategy: validate_strategy_params(strategy, req.strategy_params.get(strategy))
+            for strategy in strategies
+        }
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
     asset_limit = int(access.get("backtest_asset_limit") or 0)
     daily_limit = int(access.get("backtest_daily_limit") or 0)
     strategy_limit = int(access.get("backtest_strategy_limit") or 0)
@@ -2878,6 +3166,7 @@ def backtest_matrix(
         **configuration,
         "usage_id": str(usage.id), "owner_email": access["email"],
         "tickers": tickers, "strategy_ids": strategies,
+        "strategy_params": strategy_params,
         "filters": req.filters.model_dump(exclude_none=True, mode="json"),
     }
     job, _created = BackgroundJobRepository(db).enqueue(
@@ -2986,9 +3275,11 @@ def export_personal_backtest_job(
 
 
 @app.post("/backtests/basket")
-def backtest_basket(req: BacktestBasketRequest, _access=Depends(require_permission("can_run_backtests")), db: Session = Depends(get_db)):
+def backtest_basket(req: BacktestBasketRequest, access=Depends(require_permission("can_run_backtests")), db: Session = Depends(get_db)):
+    _require_owner_inline_backtest(access)
     if req.strategy_id not in STRATEGIES: raise HTTPException(404, "strategy_not_found")
     try:
+        validate_strategy_params(req.strategy_id, req.params)
         result = BacktestService(db).basket(
             tickers=req.tickers, asset_type=req.asset_type, strategy_id=req.strategy_id, period=req.period,
             start=req.start, end=req.end, initial_capital=req.initial_capital,

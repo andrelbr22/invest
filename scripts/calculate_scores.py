@@ -1,9 +1,7 @@
 from investment_engine.infrastructure.db.session import get_session_factory
-from investment_engine.infrastructure.config import settings
 from investment_engine.core.repositories.assets import AssetRepository
 from investment_engine.core.services_v14 import calculate_asset_intelligence
 from investment_engine.core.valuation.dividend_target import implied_dividend_per_share, dividend_yield_target_price
-from investment_engine.core.valuation.gordon import gordon_growth_value, price_ceiling_with_margin
 
 s=get_session_factory()(); repo=AssetRepository(s)
 try:
@@ -18,45 +16,34 @@ try:
         repo.upsert_valuation(
           a, method="graham_number", as_of=f.reference_date, method_version="1.4",
           value=x["graham_number"], upside_pct=x["graham_upside_pct"],
-          inputs={"price":x["data"].get("price"),"pe":x["data"].get("pe"),"pbv":x["data"].get("pbv")}
+          inputs={
+            "price":x["data"].get("price"),"pe":x["data"].get("pe"),"pbv":x["data"].get("pbv"),
+            "family_id":"graham_reference","canonical_method":"graham_number","label":"Número de Graham",
+          }
         )
       price=x["data"].get("price")
       dy=x["data"].get("dividend_yield_pct")
       dps=implied_dividend_per_share(price,dy)
 
-      # Bazin/Barsi: preço-teto clássico por dividend yield mínimo de 6%.
+      # Identificador legado preservado; o nome preciso descreve o cálculo TTM.
       barsi=dividend_yield_target_price(dps,target_yield_pct=6.0)
       if barsi.valid and barsi.value is not None:
         barsi_upside=None if not price else (barsi.value/price-1)*100
         repo.upsert_valuation(
           a, method="dividend_yield_target", as_of=f.reference_date, method_version="1.1",
           value=barsi.value, upside_pct=barsi_upside,
-          inputs={"price":price,"dividend_yield_pct":dy,"dividend_per_share":dps,"target_yield_pct":6.0,"label":"Preço Teto Bazin/Barsi"}
+          inputs={
+            "price":price,"dividend_yield_pct":dy,"dividend_per_share":dps,"target_yield_pct":6.0,
+            "family_id":"dividend_yield_ceiling","canonical_method":"dividend_yield_ceiling_ttm",
+            "legacy_method":"dividend_yield_target",
+            "label":"Preço-teto por dividend yield-alvo (6%, proventos de 12 meses)",
+          }
         )
 
-      # Gordon Growth / DDM: somente ações. Premissas são explícitas e configuráveis no .env.
-      if asset_type == "stock" and dps is not None:
-        intrinsic=gordon_growth_value(
-          dps,
-          required_return_pct=settings.gordon_required_return_pct,
-          growth_pct=settings.gordon_growth_pct,
-        )
-        if intrinsic.valid and intrinsic.value is not None:
-          ceiling=price_ceiling_with_margin(intrinsic.value,settings.valuation_margin_of_safety_pct)
-          if ceiling.valid and ceiling.value is not None:
-            ceiling_upside=None if not price else (ceiling.value/price-1)*100
-            repo.upsert_valuation(
-              a, method="gordon_ddm_ceiling", as_of=f.reference_date, method_version="1.0",
-              value=ceiling.value, upside_pct=ceiling_upside,
-              inputs={
-                "price":price,
-                "dividend_per_share_d0":dps,
-                "required_return_pct":settings.gordon_required_return_pct,
-                "growth_pct":settings.gordon_growth_pct,
-                "margin_of_safety_pct":settings.valuation_margin_of_safety_pct,
-                "intrinsic_value_before_margin":intrinsic.value,
-              }
-            )
+      # O valor econômico não é persistido com premissas globais. O screener
+      # V1.21 calcula Gordon somente quando o usuário informa três cenários
+      # explícitos; DCF/NAV continuam indisponíveis até haver os insumos
+      # específicos da empresa ou do fundo.
 
       scores={
         "quality_score":x["quality"].score,

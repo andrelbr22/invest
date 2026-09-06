@@ -5,7 +5,7 @@ from itertools import product
 from .strategies import STRATEGIES
 
 
-OFFICIAL_GRID_VERSION = "1.0"
+OFFICIAL_GRID_VERSION = "2.0"
 DEFAULT_MAX_COMBINATIONS = 200
 
 
@@ -29,7 +29,14 @@ def official_filter_presets() -> list[dict]:
         {**empty, "daily_trend": _trend(True, 50, "price_above_or_sma_rising", 10)},
         {**empty, "weekly_trend": _trend(True, 50, "price_above_and_sma_rising", 4)},
         {**empty, "adx_min": 25.0},
-        {**empty, "volume_ratio_min": 1.0},
+        {**empty, "volume_ratio_min": 1.0, "volume_period": 20, "volume_timeframe": "daily"},
+        {**empty, "volume_ratio_min": 1.2, "volume_period": 20, "volume_timeframe": "daily"},
+        {**empty, "volume_ratio_min": 1.0, "volume_period": 9, "volume_timeframe": "monthly"},
+        {**empty, "rsi_min": 35.0, "rsi_max": 70.0},
+        {**empty, "atr_pct_min": 1.0, "atr_pct_max": 8.0},
+        {**empty, "macd_condition": "above"},
+        {**empty, "bollinger_bandwidth_min": 2.0},
+        {**empty, "relative_strength_min": 0.0, "relative_strength_lookback": 126},
     ]
 
 
@@ -52,6 +59,29 @@ def strategy_parameter_variants() -> dict[str, list[dict]]:
             ("close", "low_touch", "close_reentry"),
         )
     ]
+    variants["supertrend_atr"] = [
+        {"atr_period": period, "multiplier": multiplier}
+        for period, multiplier in product((7, 10, 14), (2.0, 3.0))
+    ]
+    variants["dual_momentum_relative"] = [
+        {
+            "lookback": lookback, "skip_recent": skip_recent,
+            "min_absolute_return_pct": 0.0, "min_excess_return_pct": 0.0,
+            "benchmark_ticker": "auto",
+        }
+        for lookback, skip_recent in ((126, 21), (189, 21), (252, 21), (252, 0))
+    ]
+    variants["bollinger_squeeze_breakout"] = [
+        {
+            "period": 20, "stddev": stddev, "squeeze_lookback": lookback,
+            "squeeze_quantile": quantile, "volume_period": 20, "volume_ratio_min": volume,
+        }
+        for stddev, lookback, quantile, volume in (
+            (2.0, 60, 0.20, 0.0), (2.0, 120, 0.20, 0.0),
+            (2.0, 120, 0.20, 1.0), (2.0, 120, 0.30, 1.0),
+            (2.5, 120, 0.20, 1.0), (2.0, 252, 0.20, 1.0),
+        )
+    ]
     return variants
 
 
@@ -68,17 +98,18 @@ def official_grid(limit: int = DEFAULT_MAX_COMBINATIONS) -> list[dict]:
         ]
     result = []
     strategy_ids = list(STRATEGIES)
-    cursor = 0
-    while len(result) < maximum:
-        added = False
-        for sid in strategy_ids:
-            rows = candidates[sid]
-            if cursor < len(rows):
-                result.append(rows[cursor])
-                added = True
-                if len(result) >= maximum:
-                    break
-        if not added:
-            break
-        cursor += 1
+    base_quota, remainder = divmod(maximum, len(strategy_ids))
+    for position, sid in enumerate(strategy_ids):
+        rows = candidates[sid]
+        quota = min(len(rows), base_quota + (1 if position < remainder else 0))
+        if quota <= 0:
+            continue
+        if quota == 1:
+            result.append(rows[0])
+            continue
+        # Sample the complete candidate space instead of taking only its first
+        # filters. This is deterministic and keeps each strategy family within
+        # one execution of every other family in a 200-run official grid.
+        indexes = [round(index * (len(rows) - 1) / (quota - 1)) for index in range(quota)]
+        result.extend(rows[index] for index in indexes)
     return result

@@ -1,6 +1,19 @@
-# Formação do Investidor • V1.20.3
+# Formação do Investidor • V1.21.0
 
-O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`.
+O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
+
+## Valoração e backtests V1.21
+
+A V1.21.0 preserva os módulos homologados da V1.20.7 e acrescenta controles auditáveis, sem preencher lacunas de dados com estimativas silenciosas:
+
+- quatro famílias combináveis de valoração: Número de Graham, preço-teto por dividend yield-alvo, valuation relativo por pares e valor econômico por classe;
+- cenários conservador, base e otimista, qualidade da amostra, premissas visíveis e estado `N/D` quando faltarem dados;
+- aplicação correta por classe: ações e FIIs recebem apenas os métodos compatíveis; ETFs, BDRs e futuros ficam em `N/D` até existirem NAV, composição, lastro/câmbio ou dados de carry apropriados;
+- permissões independentes para as quatro famílias, com herança automática completa para usuários ALB;
+- 13 estratégias de backtest, incluindo Supertrend ATR, Momentum dual relativo e Bollinger Squeeze com rompimento;
+- filtros comuns de tendência, volume, RSI, ADX, ATR, MACD, Bandas de Bollinger, força relativa, liquidez, pivôs e fundamentos históricos ponto no tempo;
+- validação forte de parâmetros, execução no pregão seguinte ao sinal, preços ajustados, benchmark por classe e separação entre ação atual e posição da estratégia;
+- grade oficial determinística e equilibrada, mantendo o limite de 200 combinações por ativo.
 
 ## Fundação V1.20
 
@@ -42,11 +55,11 @@ Cloud, usa FastAPI, PostgreSQL e uma interface web própria.
 - painel de mercado com fontes identificadas, cache persistente e atualização em segundo plano;
 - ações, FIIs, ETFs, BDRs e futuros organizados em abas;
 - filtros fundamentalistas e técnicos combináveis;
-- preço justo de Graham, preço-teto de dividendos e porte da empresa;
+- quatro famílias de valoração com cenários, qualidade, permissões e porte da empresa;
 - pivôs clássicos PP, S1–S3 e R1–R3, RSI, tendências e volume/média 9;
 - três melhores backtests e sinal atual por ativo;
 - carteiras e permissões isoladas por conta Google;
-- comparação de até três estratégias para até 30 ativos, conforme autorização;
+- comparação e combinação de estratégias conforme os limites de autorização;
 - limites individuais de ativos e solicitações diárias de backtest;
 - alertas de preço e variação enviados por e-mail;
 - ambiente de teste isolado em `/testefdi/` e promoção manual para produção.
@@ -63,7 +76,7 @@ manualmente para:
 `https://formacaodoinvestidor.com.br/`
 
 As credenciais, o banco e os backups permanecem somente no servidor. Consulte
-`INSTRUCOES_ORACLE_V1170.md` para a primeira migração.
+`INSTRUCOES_ORACLE_V1210.md` para a homologação desta versão.
 
 ## Segurança e escopo
 
