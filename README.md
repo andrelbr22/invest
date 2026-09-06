@@ -1,14 +1,15 @@
-# Formação do Investidor • V1.21.1
+# Formação do Investidor • V1.21.2
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
 
 ## Valoração e backtests V1.21
 
-A V1.21.1 preserva os módulos homologados da V1.20.7 e acrescenta controles auditáveis, sem preencher lacunas de dados com estimativas silenciosas. Esta revisão também torna os cenários visíveis, libera presets técnicos honestos nas cinco classes e reduz consultas repetidas ao trocar de painel:
+A V1.21.2 preserva os módulos homologados da V1.20.7 e a base da V1.21.1, sem preencher lacunas com estimativas silenciosas. Além dos cenários visíveis e presets técnicos nas cinco classes, esta revisão ativa referências de valor próprias para ETFs, BDRs e futuros quando os insumos observáveis estiverem disponíveis:
 
 - quatro famílias combináveis de valoração: Número de Graham, preço-teto por dividend yield-alvo, valuation relativo por pares e valor econômico por classe;
 - cenários conservador, base e otimista, qualidade da amostra, premissas visíveis e estado `N/D` quando faltarem dados;
-- aplicação correta por classe: ações e FIIs recebem apenas os métodos compatíveis; ETFs, BDRs e futuros ficam em `N/D` até existirem NAV, composição, lastro/câmbio ou dados de carry apropriados;
+- aplicação correta por classe: ETF usa NAV e prêmio/desconto ao NAV; BDR usa P/VP de pares do mesmo setor/indústria e só calcula paridade com lastro, câmbio e razão verificados; futuro usa contrato frontal, vencimento, preço à vista e custo de carregamento;
+- estado `N/D` individual e explicado quando um ativo não possui o insumo próprio, sem reutilizar fórmulas de empresas em fundos ou derivativos;
 - permissões independentes para as quatro famílias, com herança automática completa para usuários ALB;
 - 13 estratégias de backtest, incluindo Supertrend ATR, Momentum dual relativo e Bollinger Squeeze com rompimento;
 - filtros comuns de tendência, volume, RSI, ADX, ATR, MACD, Bandas de Bollinger, força relativa, liquidez, pivôs e fundamentos históricos ponto no tempo;
@@ -76,7 +77,7 @@ manualmente para:
 `https://formacaodoinvestidor.com.br/`
 
 As credenciais, o banco e os backups permanecem somente no servidor. Consulte
-`INSTRUCOES_ORACLE_V1211.md` para a homologação desta versão.
+`INSTRUCOES_ORACLE_V1212.md` para a homologação desta versão.
 
 ## Segurança e escopo
 

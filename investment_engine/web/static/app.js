@@ -565,10 +565,10 @@ function renderFilterInputs() {
     <div class="field stock-only-filter"><label>Porte da empresa</label><select id="company-sizes" multiple size="3"><option value="large">Blue Chip / Large Cap</option><option value="mid">Mid Cap</option><option value="small">Small Cap</option></select></div>
     <div class="field wide-action valuation-filter"><label>Metodologias de valor ${helpMark("Combine até quatro famílias. Um método sem dados suficientes reprova o critério ativo, sem estimativas artificiais.")}</label>
       <div class="valuation-choice-grid">
-        <label class="check" data-valuation-types="stock"><input id="below-graham" type="checkbox"><span>Número de Graham<small data-valuation-status></small></span></label>
-        <label class="check" data-valuation-types="stock,fii"><input id="below-barsi" type="checkbox"><span>Preço-teto por dividend yield-alvo (6%, últimos 12 meses)<small data-valuation-status></small></span></label>
-        <label class="check" data-valuation-types="stock,fii"><input id="below-relative" type="checkbox"><span>Valuation relativo por pares comparáveis<small data-valuation-status></small></span></label>
-        <label class="check" data-valuation-types="stock"><input id="below-economic" type="checkbox"><span>Valor econômico (Gordon com cenários explícitos)<small data-valuation-status></small></span></label>
+        <label class="check" data-valuation-types="stock"><input id="below-graham" type="checkbox"><span><span data-valuation-label>Número de Graham</span><small data-valuation-status></small></span></label>
+        <label class="check" data-valuation-types="stock,fii"><input id="below-barsi" type="checkbox"><span><span data-valuation-label>Preço-teto por dividend yield-alvo (6%, últimos 12 meses)</span><small data-valuation-status></small></span></label>
+        <label class="check" data-valuation-types="stock,fii,etf,bdr"><input id="below-relative" type="checkbox"><span><span data-valuation-label>Valuation relativo por pares comparáveis</span><small data-valuation-status></small></span></label>
+        <label class="check" data-valuation-types="stock,etf,bdr,future"><input id="below-economic" type="checkbox"><span><span data-valuation-label>Valor econômico (Gordon com cenários explícitos)</span><small data-valuation-status></small></span></label>
       </div>
       <div class="filter-grid compact-grid valuation-controls">
         <div class="field"><label>Combinação</label><select id="valuation-logic"><option value="all">Todos os métodos selecionados</option><option value="any">Ao menos um método</option></select></div>
@@ -587,6 +587,7 @@ function renderFilterInputs() {
           <div class="field"><label>Margem de segurança (%)</label><input id="economic-margin" type="number" min="0" max="99" step="0.1" value="20"></div>
         </div>
       </details>
+      <div id="class-valuation-note" class="notice info hidden"></div>
       <small id="valuation-permission-note"></small>
     </div>
     <details class="filter-subgroup" open><summary>Indicadores fundamentalistas</summary><div class="filter-grid">${filterDefinitions.fundamental.map(([key,label,help])=>numericRange(key,label,"filter",help)).join("")}</div></details>
@@ -614,17 +615,25 @@ function updateFilterAvailability() {
   $$("#technical-filters input,#technical-filters select").forEach(node=>node.disabled=!supportsTechnical);
   if($("#analysis-limit"))$("#analysis-limit").disabled=false;
   const permissions={"below-graham":alb||access.can_use_graham_valuation,"below-barsi":alb||access.can_use_dividend_ceiling,"below-relative":alb||access.can_use_relative_valuation,"below-economic":alb||access.can_use_economic_valuation};
-  const dataReasons={
-    etf:"N/D: requer NAV/iNAV e composição da carteira.",
-    bdr:"N/D: requer ativo-lastro, razão do programa e câmbio.",
-    future:"N/D: requer preço à vista, carrego e basis do contrato.",
+  const valuationLabels={
+    stock:{"below-graham":"Número de Graham","below-barsi":"Preço-teto por dividend yield-alvo (6%, últimos 12 meses)","below-relative":"Valuation relativo por pares comparáveis","below-economic":"Valor econômico (Gordon com cenários explícitos)"},
+    fii:{"below-graham":"Número de Graham","below-barsi":"Preço-teto por dividend yield-alvo (6%, últimos 12 meses)","below-relative":"Valuation relativo por FIIs comparáveis","below-economic":"Valor econômico por classe"},
+    etf:{"below-graham":"Número de Graham","below-barsi":"Preço-teto por dividend yield-alvo","below-relative":"Prêmio/desconto relativo ao NAV dos ETFs pares","below-economic":"Referência patrimonial do ETF (NAV)"},
+    bdr:{"below-graham":"Número de Graham no ativo-lastro","below-barsi":"Preço-teto de proventos do ativo-lastro","below-relative":"Valuation relativo P/VP entre BDRs comparáveis","below-economic":"Paridade do BDR com o ativo-lastro"},
+    future:{"below-graham":"Número de Graham","below-barsi":"Preço-teto por dividendos","below-relative":"Valuation relativo por pares","below-economic":"Preço teórico por custo de carregamento"},
+  };
+  const classNotes={
+    etf:"ETFs: o valor patrimonial recupera o NAV por cota a partir do prêmio/desconto informado; o relativo compara esse prêmio apenas com ETFs na mesma moeda.",
+    bdr:"BDRs: o relativo usa P/VP de BDRs do mesmo setor ou indústria. A paridade econômica só é calculada quando preço do lastro, câmbio e razão do programa estiverem verificados.",
+    future:"Futuros: o preço teórico usa o contrato frontal, seu vencimento, o ativo à vista e a taxa de carregamento. Contratos sem lastro identificado continuam N/D.",
   };
   Object.entries(permissions).forEach(([id,allowed])=>{
     const input=$(`#${id}`),holder=input?.closest("[data-valuation-types]");
     const applicable=Boolean(holder?.dataset.valuationTypes.split(",").includes(type));
     if(input)input.disabled=!allowed||!applicable;
     if(holder){
-      const unavailable=!applicable, reason=unavailable?(dataReasons[type]||"N/D: esta metodologia não representa corretamente esta classe."):!allowed?"Disponível mediante autorização individual.":"Disponível para esta conta.";
+      const label=holder.querySelector("[data-valuation-label]");if(label)label.textContent=valuationLabels[type]?.[id]||label.textContent;
+      const unavailable=!applicable, reason=unavailable?"N/D: esta metodologia não representa corretamente esta classe.":!allowed?"Disponível mediante autorização individual.":"Disponível para esta conta; cada ativo ainda precisa ter os insumos necessários.";
       holder.classList.toggle("unavailable",unavailable||!allowed);
       holder.title=reason;
       const status=holder.querySelector("[data-valuation-status]");if(status)status.textContent=reason;
@@ -632,6 +641,8 @@ function updateFilterAvailability() {
   });
   const canEconomic=Boolean(permissions["below-economic"]&&type==="stock");
   $$("#economic-assumptions input").forEach(node=>node.disabled=!canEconomic);
+  if($("#economic-assumptions"))$("#economic-assumptions").classList.toggle("hidden",type!=="stock");
+  if($("#class-valuation-note")){const note=classNotes[type]||"";$("#class-valuation-note").textContent=note;$("#class-valuation-note").classList.toggle("hidden",!note);}
   if($("#valuation-logic"))$("#valuation-logic").disabled=false;
   if($("#valuation-min-upside"))$("#valuation-min-upside").disabled=false;
   if($("#valuation-permission-note"))$("#valuation-permission-note").textContent="Cada metodologia exige autorização própria; ALB libera as quatro. Métodos sem dados suficientes aparecem como N/D e nunca aprovam artificialmente um ativo.";
@@ -642,7 +653,7 @@ function updateFilterAvailability() {
     node.title=node.disabled&&permission?"Análise disponível mediante autorização do administrador.":!supportsFundamentals&&permission?"Versão técnica desta análise para a classe selecionada.":"";
   });
   if($("#analysis-filter-notice")) {
-    $("#analysis-filter-notice").textContent=!supportsFundamentals?"Padrão, FDI e ALB usam critérios técnicos próprios nesta classe. Os filtros fundamentalistas permanecem visíveis, porém inativos enquanto não houver demonstrações comparáveis; cada metodologia de valor informa por que está N/D.":"Filtros fundamentalistas e técnicos estão ativos. As quatro metodologias de valor respeitam autorizações e aplicabilidade.";
+    $("#analysis-filter-notice").textContent=!supportsFundamentals?"Padrão, FDI e ALB usam critérios técnicos próprios nesta classe. As metodologias compatíveis agora usam dados específicos do ativo; cada linha continua N/D quando seu insumo não estiver disponível.":"Filtros fundamentalistas e técnicos estão ativos. As metodologias de valor respeitam autorizações e aplicabilidade.";
   }
 }
 
@@ -734,7 +745,7 @@ function analysisRequestFromForm() {
   const valuation_flags={below_graham:Boolean($("#below-graham")?.checked),below_barsi_6pct:Boolean($("#below-barsi")?.checked),below_relative_value:Boolean($("#below-relative")?.checked),below_economic_value:Boolean($("#below-economic")?.checked),logic:$("#valuation-logic")?.value||"all"};
   if($("#valuation-min-upside")?.value!=="")valuation_flags.minimum_upside_pct=Number($("#valuation-min-upside").value);
   const valuation_assumptions={relative_peers:{minimum_peers:5,winsor_limits:[0.10,0.90]}};
-  if(valuation_flags.below_economic_value)valuation_assumptions.economic_value={use_ttm_dividend:Boolean($("#economic-use-ttm")?.checked),margin_of_safety_pct:Number($("#economic-margin")?.value||20),scenarios:{conservative:{required_return_pct:Number($("#economic-conservative-return")?.value),growth_pct:Number($("#economic-conservative-growth")?.value)},base:{required_return_pct:Number($("#economic-base-return")?.value),growth_pct:Number($("#economic-base-growth")?.value)},optimistic:{required_return_pct:Number($("#economic-optimistic-return")?.value),growth_pct:Number($("#economic-optimistic-growth")?.value)}}};
+  if(valuation_flags.below_economic_value&&analysisType()==="stock")valuation_assumptions.economic_value={use_ttm_dividend:Boolean($("#economic-use-ttm")?.checked),margin_of_safety_pct:Number($("#economic-margin")?.value||20),scenarios:{conservative:{required_return_pct:Number($("#economic-conservative-return")?.value),growth_pct:Number($("#economic-conservative-growth")?.value)},base:{required_return_pct:Number($("#economic-base-return")?.value),growth_pct:Number($("#economic-base-growth")?.value)},optimistic:{required_return_pct:Number($("#economic-optimistic-return")?.value),growth_pct:Number($("#economic-optimistic-growth")?.value)}}};
   return {asset_type:analysisType(),fundamental_filters,score_filters,valuation_flags,valuation_assumptions,technical_filters,trend_period:Number($("#trend-period")?.value||21),pivot_timeframe:$("#pivot-timeframe")?.value||"daily",include_technical_columns:true,limit:state.analysisLimit,company_sizes:$("#company-sizes")?[...$("#company-sizes").selectedOptions].map(option=>option.value):[],ibov_membership:$("#ibov-membership")?.value||"any"};
 }
 
@@ -743,7 +754,7 @@ function validateAnalysisRequest(request) {
   const selected=["below_graham","below_barsi_6pct","below_relative_value","below_economic_value"].filter(key=>flags[key]);
   if(!nullable(flags.minimum_upside_pct)&&!selected.length)throw new Error("Selecione ao menos uma metodologia antes de exigir um potencial mínimo.");
   if(!nullable(flags.minimum_upside_pct)&&Number(flags.minimum_upside_pct)<0)throw new Error("O potencial mínimo deve ser zero ou positivo.");
-  if(!flags.below_economic_value)return;
+  if(!flags.below_economic_value||request.asset_type!=="stock")return;
   const economic=request.valuation_assumptions?.economic_value||{};
   if(!economic.use_ttm_dividend)throw new Error("Para usar o valor econômico nesta tela, confirme o uso do provento dos últimos 12 meses como D0.");
   for(const [name,label] of [["conservative","Conservador"],["base","Base"],["optimistic","Otimista"]]){
@@ -754,7 +765,8 @@ function validateAnalysisRequest(request) {
 
 function revealSelectedValuationColumns(request) {
   const type=analysisType(),columns=analysisColumns(type),active=new Set(visibleAnalysisColumns(type,columns).map(column=>column.id));
-  const map={below_graham:["graham","graham_upside"],below_barsi_6pct:["barsi","barsi_upside"],below_relative_value:["relative","relative_upside"],below_economic_value:["economic","economic_upside"]};
+  const economicColumns={stock:["economic","economic_upside"],etf:["nav","nav_upside"],bdr:["parity","parity_upside"],future:["carry","basis"]}[type]||[];
+  const map={below_graham:["graham","graham_upside"],below_barsi_6pct:["barsi","barsi_upside"],below_relative_value:["relative","relative_upside"],below_economic_value:economicColumns};
   Object.entries(map).forEach(([flag,ids])=>{if(request.valuation_flags?.[flag])ids.forEach(id=>active.add(id));});
   state.visibleColumns[type]=columns.filter(column=>column.always||active.has(column.id)).map(column=>column.id);
   localStorage.setItem("fdi-visible-columns",JSON.stringify(state.visibleColumns));
@@ -920,8 +932,8 @@ function renderIndicatorGuide() {
   const indicators=[...filterDefinitions.fundamental.map(([,label,description])=>({label,description})),
     {label:"Número de Graham",description:"Raiz quadrada de 22,5 × lucro por ação × valor patrimonial por ação. É uma referência conservadora para ações com lucro e patrimônio positivos, não um preço justo universal."},
     {label:"Preço-teto por dividend yield-alvo",description:"Proventos por ação dos últimos 12 meses divididos pela taxa-alvo explícita de 6%. Não é chamado de Bazin quando não há normalização histórica dos proventos."},
-    {label:"Valuation relativo por pares",description:"Compara ações do mesmo setor ou FIIs do mesmo segmento. Exige ao menos cinco pares, elimina múltiplos inválidos e reduz o efeito de extremos antes de formar cenários conservador, base e otimista."},
-    {label:"Valor econômico por classe",description:"Ações podem usar Gordon somente com D0 e três cenários explícitos de retorno e crescimento. FIIs exigirão NAV/NOI/AFFO ou carteira de crédito; ETFs exigem NAV e composição; BDRs exigem lastro, câmbio e razão; futuros usam fair value/carry. Sem esses insumos, aparece N/D."},
+    {label:"Valuation relativo por pares",description:"Compara ações do mesmo setor, FIIs do mesmo segmento, ETFs pelo prêmio/desconto ao NAV na mesma moeda e BDRs pelo P/VP no mesmo setor ou indústria. Exige ao menos cinco pares e reduz o efeito de extremos antes dos cenários."},
+    {label:"Valor econômico por classe",description:"Ações usam Gordon somente com D0 e três cenários explícitos. ETFs usam NAV por cota informado ou recuperado do prêmio/desconto. BDRs usam paridade apenas com lastro, câmbio e razão verificados. Futuros usam ativo à vista, carrego e vencimento do contrato frontal. Sem o insumo próprio, aparece N/D."},
     {label:"Potencial mínimo (%)",description:"Valorização mínima exigida entre a referência calculada e o preço atual: 100 × (valor de referência ÷ preço atual − 1). Se ficar vazio, o filtro exige apenas preço abaixo da referência. Com Todos, cada método deve atingir o mínimo; com Qualquer, basta um."},
     {label:"RSI 14",description:"Compara ganhos e perdas em 14 pregões pelo suavizamento de Wilder; extremos merecem contexto, não são ordem automática."},
     {label:"Tendências",description:"Alta quando o preço atual está acima da média simples de 20 ou 21 períodos. Semanas e meses em formação são excluídos."},
@@ -964,11 +976,14 @@ function analysisColumns(type) {
     ].filter(column=>!(["graham","graham_upside"].includes(column.id)&&!canGraham)&&!(["barsi","barsi_upside"].includes(column.id)&&!canDividend)&&!(["relative","relative_upside"].includes(column.id)&&!canRelative)&&!(["economic","economic_upside"].includes(column.id)&&!canEconomic));
   }
   if(type==="fii") return [common[0],{id:"segment",label:"Segmento",render:r=>esc(r.segment_label||r.classification||"—")},common[1],{id:"pbv",label:"P/VP",render:r=>number(r.pbv)},{id:"dy",label:"DY",render:r=>pct(r.dy??r.dividend_yield_pct)},{id:"ffo",label:"FFO yield",render:r=>pct(r.ffo_yield??r.ffo_yield_pct)},{id:"vacancy",label:"Vacância",render:r=>pct(r.vacancy??r.vacancy_pct)},{id:"barsi",label:"Preço-teto DY-alvo",render:r=>valuationCell(r,"dividend_yield_ceiling","dividend_yield_ceiling_value")},{id:"barsi_upside",label:"Potencial DY-alvo",render:r=>upsideCell(r,"dividend_yield_ceiling","dividend_yield_ceiling_upside_pct")},{id:"relative",label:"Valor relativo",render:r=>valuationCell(r,"relative_peers","relative_peers_value")},{id:"relative_upside",label:"Potencial relativo",render:r=>upsideCell(r,"relative_peers","relative_peers_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},common[2]].filter(column=>!(["barsi","barsi_upside"].includes(column.id)&&!canDividend)&&!(["relative","relative_upside"].includes(column.id)&&!canRelative));
+  if(type==="etf") return [common[0],common[1],{id:"nav",label:"NAV por cota",render:r=>valuationCell(r,"economic_value","economic_value")},{id:"nav_upside",label:"Desconto/potencial ao NAV",render:r=>upsideCell(r,"economic_value","economic_value_upside_pct")},{id:"premium",label:"Prêmio/desconto informado",render:r=>pct(r.nav_discount_premium_pct,true)},{id:"expense",label:"Taxa de administração",render:r=>pct(r.expense_ratio_pct)},{id:"relative",label:"Referência pelos pares",render:r=>valuationCell(r,"relative_peers","relative_peers_value")},{id:"relative_upside",label:"Potencial relativo",render:r=>upsideCell(r,"relative_peers","relative_peers_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},common[2]].filter(column=>!(["nav","nav_upside"].includes(column.id)&&!canEconomic)&&!(["relative","relative_upside"].includes(column.id)&&!canRelative));
+  if(type==="bdr") return [common[0],{id:"sector",label:"Setor",render:r=>esc(r.sector_label||r.sector||"—")},common[1],{id:"pbv",label:"P/VP informado",render:r=>number(r.pbv)},{id:"relative",label:"Referência P/VP dos pares",render:r=>valuationCell(r,"relative_peers","relative_peers_value")},{id:"relative_upside",label:"Potencial relativo",render:r=>upsideCell(r,"relative_peers","relative_peers_upside_pct")},{id:"parity",label:"Paridade com o lastro",render:r=>valuationCell(r,"economic_value","economic_value")},{id:"parity_upside",label:"Potencial pela paridade",render:r=>upsideCell(r,"economic_value","economic_value_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},common[2]].filter(column=>!(["relative","relative_upside"].includes(column.id)&&!canRelative)&&!(["parity","parity_upside"].includes(column.id)&&!canEconomic));
+  if(type==="future") return [common[0],common[1],{id:"front",label:"Contrato frontal",render:r=>esc(r.front_contract||"—")},{id:"expiry",label:"Vencimento",render:r=>esc(r.expiration_date||"—")},{id:"spot",label:"Ativo à vista",render:r=>r.underlying_ticker?`${esc(r.underlying_ticker)} • ${money(r.underlying_spot_price)}`:"—"},{id:"carry",label:"Preço teórico",render:r=>valuationCell(r,"economic_value","economic_value")},{id:"basis",label:"Potencial / basis",render:r=>upsideCell(r,"economic_value","economic_value_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},common[2]].filter(column=>!(["carry","basis"].includes(column.id)&&!canEconomic));
   return [common[0],{id:"category",label:"Categoria",render:r=>esc(r.asset_type_label||r.classification||"—")},common[1],{id:"signal",label:"Sinal",render:r=>esc(r.signal_tv||"—")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},{id:"technical",label:"Nota técnica",render:r=>number(r.technical_score,1)},common[2]];
 }
 
 function visibleAnalysisColumns(type, columns) {
-  const defaults={stock:["ticker","sector","price","pe","pbv","dy","roe","graham_upside","barsi","relative","best_signal"],fii:["ticker","segment","price","pbv","dy","ffo","vacancy","barsi","relative","best_signal"]};
+  const defaults={stock:["ticker","sector","price","pe","pbv","dy","roe","graham_upside","barsi","relative","best_signal"],fii:["ticker","segment","price","pbv","dy","ffo","vacancy","barsi","relative","best_signal"],etf:["ticker","price","nav","nav_upside","premium","relative","best_signal"],bdr:["ticker","sector","price","pbv","relative","relative_upside","best_signal"],future:["ticker","price","front","expiry","spot","carry","basis","best_signal"]};
   const saved=state.visibleColumns[type];
   const active=new Set(Array.isArray(saved)?saved:(defaults[type]||columns.map(column=>column.id)));
   return columns.filter(column=>column.always||active.has(column.id));
@@ -1008,13 +1023,14 @@ async function openAsset(ticker) {
     const a=data.asset||{}, f=data.fundamentals||{}, t=data.technical||{}, d=data.derived||{}, tech=data.technical_analysis||{}, scores=data.scores||{}, leaders=data.backtests||[];
     const valuationLabels={graham_reference:"Número de Graham",dividend_yield_ceiling:"Preço-teto por DY-alvo",relative_peers:"Valuation relativo",economic_value:"Valor econômico"};
     const valuationStatus=result=>result.status==="not_applicable"?"Não se aplica":result.status==="valid"?"Calculado":"Dados insuficientes";
-    const valuationReason=result=>({requires_positive_eps_and_bvps:"Exige lucro e patrimônio por ação positivos.",dividend_per_share_ttm_required:"Exige proventos válidos dos últimos 12 meses.",normalized_dividend_per_share_required:"Exige um dividendo D0 explícito; nenhum valor foi presumido.",three_explicit_scenarios_required:"Exige os três cenários completos."})[result.reason]||result.reason||"Os insumos próprios desta metodologia ainda não estão disponíveis.";
+    const valuationReason=result=>({requires_positive_eps_and_bvps:"Exige lucro e patrimônio por ação positivos.",dividend_per_share_ttm_required:"Exige proventos válidos dos últimos 12 meses.",normalized_dividend_per_share_required:"Exige um dividendo D0 explícito; nenhum valor foi presumido.",three_explicit_scenarios_required:"Exige os três cenários completos.",etf_nav_or_premium_required:"A fonte ainda não informou NAV por cota nem prêmio/desconto ao NAV.",insufficient_etf_nav_peers:"Ainda não há ETFs comparáveis suficientes com prêmio/desconto ao NAV.",bdr_book_value_or_pbv_required:"A fonte ainda não informou P/VP ou valor patrimonial deste BDR.",insufficient_bdr_pbv_peers:"Ainda não há BDRs suficientes do mesmo setor ou indústria com P/VP válido.",bdr_peer_classification_required:"O BDR ainda não tem setor ou indústria confiável para formar o grupo de comparação.",bdr_underlying_price_fx_and_ratio_required:"A paridade exige preço do ativo-lastro, câmbio e razão verificada do programa de BDR.",future_spot_carry_and_expiry_required:"O preço teórico exige ativo à vista, taxa de carregamento e vencimento do contrato frontal."})[result.reason]||result.reason||"Os insumos próprios desta metodologia ainda não estão disponíveis.";
     const valuationMethods=d.valuation_methods||{};
-    const valuationCards=Object.entries(valuationMethods).map(([family,result])=>metricCard(valuationLabels[family]||result.label||family,result.status==="valid"?money(result.value):valuationStatus(result),result.status==="valid"?`Potencial ${pct(result.upside_pct,true)}`:"Sem estimativa artificial",result.upside_pct)).join("");
+    const valuationCards=Object.entries(valuationMethods).map(([family,result])=>metricCard(result.label||valuationLabels[family]||family,result.status==="valid"?money(result.value):valuationStatus(result),result.status==="valid"?`Potencial ${pct(result.upside_pct,true)}`:"Sem estimativa artificial",result.upside_pct)).join("");
     const valuationDetail=Object.entries(valuationMethods).map(([family,result])=>{
       const scenarios=Object.entries(result.scenarios||{});
       const scenarioBody=scenarios.length?`<div class="detail-list">${scenarios.map(([name,item])=>{const assumptions=item.assumptions||{},premises=!nullable(assumptions.required_return_pct)?`<small>Retorno ${pct(assumptions.required_return_pct)} • crescimento ${pct(assumptions.growth_pct)}${nullable(assumptions.margin_of_safety_pct)?"":` • margem ${pct(assumptions.margin_of_safety_pct)}`}</small>`:"";return `<div><span>${esc(({conservative:"Conservador",base:"Base",optimistic:"Otimista"})[name]||name)}${premises}</span><strong>${money(item.value)} <small>${pct(item.upside_pct,true)}</small></strong></div>`;}).join("")}</div>`:"";
-      return `<article class="valuation-method-card"><div><strong>${esc(valuationLabels[family]||result.label||family)}</strong><span class="pill">${esc(valuationStatus(result))}</span></div>${result.status==="valid"?`<p>Referência base: <strong>${money(result.value)}</strong> • potencial ${pct(result.upside_pct,true)}</p>`:`<p>${esc(valuationReason(result))} O sistema não criou uma estimativa artificial.</p>`}${scenarioBody}${!nullable(result.quality?.coverage_pct)?`<small>Cobertura: ${pct(result.quality.coverage_pct)} • amostra: ${number(result.quality.sample_size||0,0)}</small>`:""}</article>`;
+      const audit=[result.metadata?.source,result.metadata?.as_of?`dados de ${dateTime(result.metadata.as_of)}`:null].filter(Boolean).join(" • ");
+      return `<article class="valuation-method-card"><div><strong>${esc(result.label||valuationLabels[family]||family)}</strong><span class="pill">${esc(valuationStatus(result))}</span></div>${result.status==="valid"?`<p>Referência base: <strong>${money(result.value)}</strong> • potencial ${pct(result.upside_pct,true)}</p>`:`<p>${esc(valuationReason(result))} O sistema não criou uma estimativa artificial.</p>`}${scenarioBody}${!nullable(result.quality?.coverage_pct)?`<small>Cobertura: ${pct(result.quality.coverage_pct)} • amostra: ${number(result.quality.sample_size||0,0)}</small>`:""}${audit?`<small>${esc(audit)}</small>`:""}</article>`;
     }).join("");
     const fundamentals=[
       ["P/L",f.pe],["P/VP",f.pbv],["EV/EBITDA",f.ev_ebitda],["Dividend yield (%)",f.dividend_yield_pct],
@@ -1656,7 +1672,7 @@ function bindEvents() {
   $("#save-custom-filter").addEventListener("click",saveCustomFilter);
   $("#delete-custom-filter").addEventListener("click",deleteCustomFilter);
   document.addEventListener("change",event=>{
-    if(event.target.id==="below-economic"&&event.target.checked){const details=$("#economic-assumptions");if(details){details.open=true;details.scrollIntoView({behavior:"smooth",block:"nearest"});}}
+    if(event.target.id==="below-economic"&&event.target.checked&&analysisType()==="stock"){const details=$("#economic-assumptions");if(details){details.open=true;details.scrollIntoView({behavior:"smooth",block:"nearest"});}}
     if(event.target.matches('#finance-transaction-form [name="kind"]')){
       const kind=event.target.value,form=event.target.form;
       form.querySelectorAll("[data-finance-category-kind]").forEach(option=>{const active=option.dataset.financeCategoryKind===kind;option.hidden=!active;option.disabled=!active;});

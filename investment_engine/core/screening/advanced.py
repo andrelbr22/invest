@@ -16,6 +16,13 @@ from investment_engine.core.valuation.catalog import (
     valuation_method_metadata,
 )
 from investment_engine.core.valuation.gordon import gordon_growth_scenarios
+from investment_engine.core.valuation.multiasset import (
+    bdr_pbv_relative,
+    bdr_underlying_parity,
+    etf_nav_reference,
+    etf_relative_nav_premium,
+    future_cost_of_carry,
+)
 from investment_engine.core.valuation.relative import relative_valuation
 
 
@@ -441,6 +448,32 @@ def row_from_orm(asset, fund, tech, score) -> dict:
         # price * DY is an exact unit conversion, not a growth assumption.
         fund_dict["dividend_per_share_ttm"] = price * dy / 100.0
 
+    # ETF, BDR and future valuation inputs arrive with the latest technical
+    # market snapshot. Only the small, named subset below enters the screener;
+    # the complete provider payload remains stored for auditing.
+    technical_raw = getattr(tech, "raw_payload", None) if tech is not None else None
+    technical_raw = technical_raw if isinstance(technical_raw, dict) else {}
+    metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+    valuation_inputs = {**metadata, **technical_raw}
+    numeric_inputs = (
+        "nav_per_share", "nav_discount_premium_pct", "expense_ratio_pct", "price_book_fq",
+        "book_value_per_share", "underlying_price", "fx_brl_per_underlying_currency",
+        "bdr_underlying_share_ratio", "front_contract_price", "days_to_expiry",
+        "underlying_spot_price", "underlying_income_yield_pct", "carry_rate_pct",
+    )
+    for key in numeric_inputs:
+        number = _f(valuation_inputs.get(key))
+        if number is not None:
+            fund_dict[key] = number
+    for key in (
+        "fundamental_currency_code", "front_contract", "expiration_date", "underlying_ticker",
+        "carry_rate_source", "valuation_source", "valuation_inputs_as_of", "root_symbol",
+    ):
+        if valuation_inputs.get(key) not in (None, ""):
+            fund_dict[key] = valuation_inputs.get(key)
+    if asset.asset_type == "bdr" and fund_dict.get("pbv") is None:
+        fund_dict["pbv"] = _f(valuation_inputs.get("price_book_fq"))
+
     valuation_methods = {
         family_id: _unavailable_valuation(family_id, asset.asset_type)
         for family_id in VALUATION_FAMILIES
@@ -477,6 +510,7 @@ def row_from_orm(asset, fund, tech, score) -> dict:
             "id": str(asset.id), "ticker": asset.ticker, "name": asset.name, "asset_type": asset.asset_type,
             "asset_type_label": {"stock": "Ação", "fii": "FII", "etf": "ETF", "bdr": "BDR", "future": "Futuro / derivativo"}.get(asset.asset_type, "Outro"),
             "sector": asset.sector, "industry": asset.industry, "segment": asset.segment,
+            "currency": getattr(asset, "currency", None),
             "classification": classification_for(
                 asset.asset_type, asset.sector, asset.segment,
                 industry=asset.industry, category=asset.market_cap_category,
@@ -544,7 +578,7 @@ def _scenario_family_result(result) -> dict:
         "asset_type": payload.get("asset_type"),
         "asset_class": payload.get("asset_class"),
     }
-    return _valuation_result(
+    converted = _valuation_result(
         result.family_id,
         method=result.method,
         status=result.status,
@@ -555,6 +589,8 @@ def _scenario_family_result(result) -> dict:
         quality=payload.get("quality"),
         metadata=metadata,
     )
+    converted["label"] = payload.get("label") or converted["label"]
+    return converted
 
 
 def _valuation_options(options: Mapping | None) -> tuple[dict, dict]:
@@ -607,12 +643,6 @@ def _enrich_valuation_rows(
         fund = row["fundamentals"]
         asset_class = _asset_valuation_class(asset)
         target = {**row["asset"], **fund, "asset_class": asset_class}
-        # Only stocks and FIIs currently have the accounting inputs and peer
-        # taxonomy required by this engine.  For ETFs, BDRs and futures keep
-        # the more informative class-specific data requirement or
-        # ``not_applicable`` result
-        # produced by the applicability catalog instead of overwriting it
-        # with a generic unsupported-type response.
         if asset.asset_type in {"stock", "fii"}:
             relative = relative_valuation(
                 target,
@@ -621,6 +651,16 @@ def _enrich_valuation_rows(
                 asset_class=asset_class,
                 min_peers=min_peers,
                 winsor_limits=winsor_limits,
+            )
+            _set_valuation_result(fund, "relative_peers", _scenario_family_result(relative))
+        elif asset.asset_type == "etf":
+            relative = etf_relative_nav_premium(
+                target, peers, min_peers=min_peers, winsor_limits=winsor_limits,
+            )
+            _set_valuation_result(fund, "relative_peers", _scenario_family_result(relative))
+        elif asset.asset_type == "bdr":
+            relative = bdr_pbv_relative(
+                target, peers, min_peers=min_peers, winsor_limits=winsor_limits,
             )
             _set_valuation_result(fund, "relative_peers", _scenario_family_result(relative))
 
@@ -654,6 +694,12 @@ def _enrich_valuation_rows(
                 economic_payload.setdefault("quality", {}).setdefault("warnings", []).append(
                     "ttm_dividend_is_not_normalized"
                 )
+        elif asset.asset_type == "etf":
+            economic_payload = _scenario_family_result(etf_nav_reference(target))
+        elif asset.asset_type == "bdr":
+            economic_payload = _scenario_family_result(bdr_underlying_parity(target))
+        elif asset.asset_type == "future":
+            economic_payload = _scenario_family_result(future_cost_of_carry(target))
         else:
             economic_payload = _unavailable_valuation("economic_value", asset.asset_type, asset_class)
         _set_valuation_result(fund, "economic_value", economic_payload)

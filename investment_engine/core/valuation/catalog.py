@@ -133,6 +133,50 @@ VALUATION_METHODS: dict[str, ValuationMethodMetadata] = {
         version="1.0",
         required_inputs=("asset_type", "asset_class", "class_specific_financials"),
     ),
+    "etf_nav_reference": ValuationMethodMetadata(
+        canonical_id="etf_nav_reference",
+        family_id="economic_value",
+        label="Referência patrimonial do ETF (NAV)",
+        version="1.0",
+        formula="market_price / (1 + premium_discount_pct / 100)",
+        required_inputs=("market_price", "nav_discount_premium_pct"),
+        note="Compara a cota com o patrimônio líquido por cota informado pela fonte.",
+    ),
+    "etf_peer_nav_premium": ValuationMethodMetadata(
+        canonical_id="etf_peer_nav_premium",
+        family_id="relative_peers",
+        label="Prêmio/desconto relativo ao NAV dos ETFs pares",
+        version="1.0",
+        formula="target_nav * (1 + peer_premium_discount_pct / 100)",
+        required_inputs=("target_nav", "peer_nav_discount_premiums"),
+    ),
+    "bdr_pbv_peers": ValuationMethodMetadata(
+        canonical_id="bdr_pbv_peers",
+        family_id="relative_peers",
+        label="Valuation relativo P/VP entre BDRs comparáveis",
+        version="1.0",
+        formula="book_value_per_bdr * peer_pbv",
+        required_inputs=("market_price", "book_value_per_bdr", "peer_pbv"),
+        note="Usa apenas BDRs do mesmo setor ou indústria e não reaproveita P/L possivelmente incompatível.",
+    ),
+    "bdr_underlying_parity": ValuationMethodMetadata(
+        canonical_id="bdr_underlying_parity",
+        family_id="economic_value",
+        label="Paridade do BDR com o ativo-lastro",
+        version="1.0",
+        formula="underlying_price * brl_fx * underlying_shares_per_bdr",
+        required_inputs=("underlying_price", "brl_fx", "underlying_shares_per_bdr"),
+    ),
+    "future_cost_of_carry": ValuationMethodMetadata(
+        canonical_id="future_cost_of_carry",
+        family_id="economic_value",
+        label="Preço teórico do futuro por custo de carregamento",
+        version="1.0",
+        legacy_ids=("fair_value_cost_of_carry",),
+        formula="spot * ((1 + carry_rate) / (1 + income_yield)) ** (days / 365)",
+        required_inputs=("spot_price", "carry_rate", "days_to_expiry"),
+        note="Aplicado somente quando contrato frontal, vencimento e ativo à vista são identificados.",
+    ),
 }
 
 
@@ -222,16 +266,16 @@ VALUATION_APPLICABILITY: dict[str, dict[str, dict[str, Applicability]]] = {
         "default": {
             "graham_reference": NA,
             "dividend_yield_ceiling": NA,
-            "relative_peers": _rule("requires_data", "look_through_relative", "Requer composição e pesos da carteira."),
-            "economic_value": _rule("requires_data", "nav_inav", "Requer NAV/iNAV, cotas e passivos do fundo."),
+            "relative_peers": _rule("conditional", "etf_peer_nav_premium", "Usa prêmio/desconto ao NAV entre ETFs na mesma moeda quando há amostra suficiente."),
+            "economic_value": _rule("conditional", "etf_nav_reference", "Usa NAV por cota ou prêmio/desconto ao NAV efetivamente informado pela fonte."),
         },
     },
     "bdr": {
         "default": {
             "graham_reference": _rule("requires_data", "underlying_graham", "Calcular no ativo-lastro e converter pela razão e câmbio."),
             "dividend_yield_ceiling": _rule("requires_data", "underlying_dividend_ceiling", "Usar proventos do lastro, tributação, razão e câmbio."),
-            "relative_peers": _rule("requires_data", "underlying_relative", "Requer demonstrações e pares no mercado de origem."),
-            "economic_value": _rule("requires_data", "underlying_value_fx_ratio", "Valor do lastro multiplicado por FX e razão do programa."),
+            "relative_peers": _rule("conditional", "bdr_pbv_peers", "Compara P/VP somente entre BDRs do mesmo setor ou indústria quando há amostra suficiente."),
+            "economic_value": _rule("requires_data", "bdr_underlying_parity", "Valor do lastro multiplicado por câmbio e razão verificada do programa."),
         },
         "etf": {
             "graham_reference": NA,
@@ -245,7 +289,7 @@ VALUATION_APPLICABILITY: dict[str, dict[str, dict[str, Applicability]]] = {
             "graham_reference": NA,
             "dividend_yield_ceiling": NA,
             "relative_peers": NA,
-            "economic_value": _rule("not_applicable", "fair_value_cost_of_carry", "Usar módulo separado de fair value, basis e curva."),
+            "economic_value": _rule("conditional", "future_cost_of_carry", "Calcula o preço teórico quando ativo à vista, taxa de carrego e vencimento do contrato frontal estão disponíveis."),
         },
     },
 }

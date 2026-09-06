@@ -69,7 +69,7 @@ def test_specific_universe_endpoint_does_not_load_all_other_b3(monkeypatch):
     assert calls == [("bdr", 50)]
 
 
-def test_non_company_valuation_keeps_class_specific_data_requirement():
+def test_non_company_valuation_fails_closed_without_class_specific_inputs():
     asset = _asset("etf")
 
     class Repository:
@@ -85,8 +85,8 @@ def test_non_company_valuation_keeps_class_specific_data_requirement():
     )["rows"][0]
     result = row["valuation_methods"]["relative_peers"]
     assert result["status"] == "insufficient_data"
-    assert result["metadata"]["applicability"] == "requires_data"
-    assert "composição" in result["reason"].lower()
+    assert result["reason"] == "etf_nav_or_premium_required"
+    assert row["valuation_methods"]["economic_value"]["status"] == "insufficient_data"
 
 
 def test_browser_makes_scenarios_help_and_fast_class_queries_discoverable():

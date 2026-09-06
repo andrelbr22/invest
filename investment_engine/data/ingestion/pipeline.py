@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from ...core.repositories.assets import AssetRepository
+from ...core.repositories.economic_series import SharedSnapshotRepository
 from ...core.screening.universe import company_size_from_market_cap
 from ...core.instruments import is_supported_ticker, ticker_exclusion_reason
 from ...infrastructure.db.models import IngestionRunORM
@@ -38,6 +39,70 @@ class MarketIngestionPipeline:
     @staticmethod
     def _now() -> datetime:
         return datetime.now(timezone.utc)
+
+    def _current_selic_carry_rate(self) -> tuple[float | None, str | None]:
+        snapshot = SharedSnapshotRepository(self.session).get("market:selic-current")
+        payload = snapshot.payload_json if snapshot is not None and isinstance(snapshot.payload_json, dict) else {}
+        selic = payload.get("selic") if isinstance(payload.get("selic"), dict) else {}
+        try:
+            value = float(selic.get("current"))
+        except (TypeError, ValueError):
+            return None, None
+        return value, "Banco Central do Brasil • meta Selic vigente"
+
+    def _current_di_curve(self) -> tuple[list[dict], str | None]:
+        snapshot = SharedSnapshotRepository(self.session).get("market:rates-calendar")
+        payload = snapshot.payload_json if snapshot is not None and isinstance(snapshot.payload_json, dict) else {}
+        curve = payload.get("curve") if isinstance(payload.get("curve"), dict) else {}
+        points = curve.get("points") if isinstance(curve.get("points"), list) else []
+        return points, str(curve.get("source") or "").strip() or None
+
+    @staticmethod
+    def _carry_rate_for_days(points: list[dict], calendar_days) -> float | None:
+        try:
+            target = float(calendar_days) * 252.0 / 365.0
+        except (TypeError, ValueError):
+            return None
+        clean = []
+        for point in points or []:
+            if not isinstance(point, dict):
+                continue
+            try:
+                days = float(point.get("business_days"))
+                rate = float(point.get("di_rate") if point.get("di_rate") is not None else point.get("nominal_rate"))
+            except (TypeError, ValueError):
+                continue
+            if days > 0:
+                clean.append((days, rate))
+        clean.sort()
+        if not clean:
+            return None
+        if target <= clean[0][0]:
+            return clean[0][1]
+        if target >= clean[-1][0]:
+            return clean[-1][1]
+        for (left_days, left_rate), (right_days, right_rate) in zip(clean, clean[1:]):
+            if left_days <= target <= right_days:
+                weight = (target - left_days) / (right_days - left_days)
+                return left_rate + (right_rate - left_rate) * weight
+        return None
+
+    @staticmethod
+    def _valuation_metadata(raw: dict, asset_type: str, as_of: datetime) -> dict:
+        keys_by_type = {
+            "etf": ("nav_discount_premium_pct", "expense_ratio_pct", "fundamental_currency_code"),
+            "bdr": ("price_book_fq", "book_value_per_share", "fundamental_currency_code"),
+            "future": (
+                "root_symbol", "front_contract", "front_contract_price", "expiration_date", "days_to_expiry",
+                "front_open_interest", "underlying_ticker", "underlying_spot_price",
+                "underlying_income_yield_pct", "carry_rate_pct", "carry_rate_source",
+            ),
+        }
+        return {
+            **{key: raw.get(key) for key in keys_by_type.get(asset_type, ()) if raw.get(key) is not None},
+            "valuation_inputs_as_of": as_of.isoformat(),
+            "valuation_source": raw.get("valuation_source") or "TradingView scanner",
+        }
 
     def _new_run(self, name: str) -> IngestionRunORM:
         run = IngestionRunORM(pipeline=name, started_at=self._now(), status="running")
@@ -195,6 +260,21 @@ class MarketIngestionPipeline:
                 summary.warnings += 1
                 source_errors.append({"asset_type": saved_type, "error": str(exc)})
                 continue
+            if saved_type == "future":
+                references = self.repo.latest_market_references_by_ticker(
+                    [row.get("underlying_ticker") for row in rows]
+                )
+                curve_points, curve_source = self._current_di_curve()
+                selic_rate, selic_source = self._current_selic_carry_rate()
+                for row in rows:
+                    reference = references.get(str(row.get("underlying_ticker") or "").upper()) or {}
+                    row["underlying_spot_price"] = reference.get("price")
+                    row["underlying_income_yield_pct"] = reference.get("dividend_yield_pct")
+                    curve_rate = self._carry_rate_for_days(curve_points, row.get("days_to_expiry"))
+                    row["carry_rate_pct"] = curve_rate if curve_rate is not None else selic_rate
+                    row["carry_rate_source"] = curve_source if curve_rate is not None else selic_source
+            for row in rows:
+                row["valuation_inputs_as_of"] = now.isoformat()
             summary.rows_received += len(rows)
             for raw in rows:
                 if not is_supported_ticker(raw.get("ticker"), saved_type):
@@ -233,6 +313,7 @@ class MarketIngestionPipeline:
                         "b3_category": saved_type,
                         "instrument_type": raw.get("instrument_type") or provider_type,
                         "type_specs": raw.get("type_specs") or [],
+                        **self._valuation_metadata(raw, saved_type, now),
                     },
                 )
                 self.repo.upsert_technical(

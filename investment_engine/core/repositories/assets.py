@@ -423,6 +423,33 @@ class AssetRepository:
         )
         return list(self.session.execute(stmt).all())
 
+    def latest_market_references_by_ticker(self, tickers) -> dict[str, dict]:
+        """Load current spot and income references for many tickers at once."""
+        clean = sorted({str(ticker or "").strip().upper() for ticker in (tickers or []) if str(ticker or "").strip()})
+        if not clean:
+            return {}
+        f, fq = self._latest_fundamental_alias()
+        t, tq = self._latest_technical_alias("1D")
+        stmt = (
+            select(AssetORM, f, t)
+            .outerjoin(f, and_(f.asset_id == AssetORM.id, fq.c.rn == 1))
+            .outerjoin(t, and_(t.asset_id == AssetORM.id, tq.c.rn == 1))
+            .where(AssetORM.ticker.in_(clean), AssetORM.is_active.is_(True))
+        )
+        result = {}
+        for asset, fundamental, technical in self.session.execute(stmt):
+            fundamental_price = getattr(fundamental, "price", None) if fundamental is not None else None
+            technical_price = getattr(technical, "close", None) if technical is not None else None
+            dividend_yield = getattr(fundamental, "dividend_yield_pct", None) if fundamental is not None else None
+            result[asset.ticker] = {
+                # Carry should use the newest market quote. Fundamentals are
+                # only the fallback when the daily technical snapshot is absent.
+                "price": float(technical_price if technical_price is not None else fundamental_price) if (fundamental_price is not None or technical_price is not None) else None,
+                "dividend_yield_pct": float(dividend_yield) if dividend_yield is not None else None,
+                "asset_type": asset.asset_type,
+            }
+        return result
+
     def price_histories_batch(self, asset_ids, *, start=None, end=None, timeframe="1D"):
         """Load price histories for a candidate set with one query, avoiding screener N+1 reads."""
         ids = list(asset_ids or [])

@@ -14,7 +14,7 @@ from investment_engine.core.valuation.graham import graham_number
 
 
 def test_release_is_exactly_v1210_and_new_suite_is_discoverable():
-    assert __version__ == "1.21.1"
+    assert __version__ == "1.21.2"
 
 
 def test_four_families_and_legacy_method_names_are_canonicalized():
@@ -30,7 +30,7 @@ def test_four_families_and_legacy_method_names_are_canonicalized():
     assert dividend_yield_target_price(1.2, 6).method == "dividend_yield_target"
 
 
-def test_applicability_fails_closed_and_never_values_futures_like_companies():
+def test_applicability_fails_closed_and_values_futures_only_by_carry():
     bank = valuation_applicability("stock", "bank")
     assert bank["relative_peers"].method == "pbv_peers"
     assert bank["economic_value"].method == "fcfe_ddm"
@@ -38,8 +38,9 @@ def test_applicability_fails_closed_and_never_values_futures_like_companies():
     assert brick["graham_reference"].status == "not_applicable"
     assert brick["economic_value"].method == "nav_noi_cap_rate"
     future = valuation_applicability("future")
-    assert all(rule.status == "not_applicable" for rule in future.values())
-    assert future["economic_value"].method == "fair_value_cost_of_carry"
+    assert all(future[family].status == "not_applicable" for family in ("graham_reference", "dividend_yield_ceiling", "relative_peers"))
+    assert future["economic_value"].status == "conditional"
+    assert future["economic_value"].method == "future_cost_of_carry"
     assert all(rule.status == "not_applicable" for rule in valuation_applicability("crypto").values())
 
 
