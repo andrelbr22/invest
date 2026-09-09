@@ -6,6 +6,7 @@ from decimal import Decimal
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from ..alert_policy import B3_ALERT_INTERVAL_MINUTES, MARKET_ALERT_INTERVAL_MINUTES
 from ...infrastructure.db.models import PriceAlertEventORM, PriceAlertORM, UserAlertPreferenceORM
 
 
@@ -136,13 +137,13 @@ class AlertRepository:
         self.session.flush()
 
     def due_alerts(self, now: datetime) -> list[PriceAlertORM]:
-        market_cutoff = now - timedelta(minutes=10)
-        b3_cutoff = now - timedelta(minutes=5)
+        market_cutoff = now - timedelta(minutes=MARKET_ALERT_INTERVAL_MINUTES)
+        b3_cutoff = now - timedelta(minutes=B3_ALERT_INTERVAL_MINUTES)
         stmt = select(PriceAlertORM).where(
             PriceAlertORM.status == "active",
             or_(
                 (PriceAlertORM.market_scope == "b3") & or_(PriceAlertORM.last_checked_at.is_(None), PriceAlertORM.last_checked_at <= b3_cutoff),
-                (PriceAlertORM.market_scope == "market") & or_(PriceAlertORM.last_checked_at.is_(None), PriceAlertORM.last_checked_at <= market_cutoff),
+                (PriceAlertORM.market_scope != "b3") & or_(PriceAlertORM.last_checked_at.is_(None), PriceAlertORM.last_checked_at <= market_cutoff),
             ),
         ).order_by(PriceAlertORM.market_scope, PriceAlertORM.provider_symbol)
         return list(self.session.scalars(stmt))

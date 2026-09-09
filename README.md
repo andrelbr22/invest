@@ -1,10 +1,21 @@
-# Formação do Investidor • V1.21.2
+# Formação do Investidor • V1.21.3
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
 
+## Administração, alertas e notícias V1.21.3
+
+A V1.21.3 acrescenta uma camada operacional completa sem remover os recursos homologados:
+
+- interface integral de alertas com cadastro, edição, pausa, reativação, destinatários, teste de e-mail e histórico;
+- B3 monitorada a cada 5 minutos no horário do pregão e demais mercados a cada 30 minutos continuamente;
+- notícias da carteira e notícias de recomendações em áreas distintas, atualizadas uma vez ao dia já no primeiro acesso autenticado e sem bloquear a navegação;
+- níveis compartilhados Convidado, Acesso básico, Membro e Membro VIP, com todas as permissões e limites administráveis em um único lugar;
+- atribuição individual ou em lote, busca, filtros, paginação e preservação das permissões antigas até que um nível seja escolhido;
+- console com as 13 rotinas automáticas, atualização manual por grupo ou completa, monitor de alertas e fila de trabalhos com reprocessamento seguro.
+
 ## Valoração e backtests V1.21
 
-A V1.21.2 preserva os módulos homologados da V1.20.7 e a base da V1.21.1, sem preencher lacunas com estimativas silenciosas. Além dos cenários visíveis e presets técnicos nas cinco classes, esta revisão ativa referências de valor próprias para ETFs, BDRs e futuros quando os insumos observáveis estiverem disponíveis:
+A V1.21.3 preserva os módulos homologados da V1.20.7 e toda a base de valoração da V1.21.2, sem preencher lacunas com estimativas silenciosas. Além dos cenários visíveis e presets técnicos nas cinco classes, permanecem ativas referências de valor próprias para ETFs, BDRs e futuros quando os insumos observáveis estiverem disponíveis:
 
 - quatro famílias combináveis de valoração: Número de Graham, preço-teto por dividend yield-alvo, valuation relativo por pares e valor econômico por classe;
 - cenários conservador, base e otimista, qualidade da amostra, premissas visíveis e estado `N/D` quando faltarem dados;
@@ -77,7 +88,7 @@ manualmente para:
 `https://formacaodoinvestidor.com.br/`
 
 As credenciais, o banco e os backups permanecem somente no servidor. Consulte
-`INSTRUCOES_ORACLE_V1212.md` para a homologação desta versão.
+`INSTRUCOES_ORACLE_V1213.md` para a homologação desta versão.
 
 ## Segurança e escopo
 

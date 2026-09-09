@@ -197,6 +197,54 @@ class ScoreSnapshotORM(Base):
     asset: Mapped[AssetORM]=relationship(back_populates="scores")
 
 
+class AccessLevelORM(Base):
+    """Reusable authorization profile shared by many user accounts."""
+
+    __tablename__ = "access_levels"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    slug: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(500))
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    can_view_market: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    can_use_advanced_filters: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_fdi_analysis: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_alb_analysis: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_graham_valuation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_dividend_ceiling: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_relative_valuation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_economic_valuation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_view_portfolio: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_write_portfolio: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_view_finances: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_write_finances: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_view_backtests: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_run_backtests: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_refresh_backtest_signals: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_view_backtest_studies: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_view_news_insights: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_price_alerts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_alert_price_above: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_alert_price_below: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_alert_change_positive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_alert_change_negative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_sync_market: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_manage_users: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    custom_filter_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    alert_asset_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backtest_asset_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backtest_daily_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backtest_strategy_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backtest_cooldown_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    users: Mapped[list["UserAccessPolicyORM"]] = relationship(back_populates="access_level")
+
+
 class UserAccessPolicyORM(Base):
     """Authorization policy for a Google account.
 
@@ -209,7 +257,11 @@ class UserAccessPolicyORM(Base):
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True, index=True)
     display_name: Mapped[str | None] = mapped_column(String(180))
     role: Mapped[str] = mapped_column(String(24), nullable=False, default="visitor")
-    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", index=True)
+    access_level_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("access_levels.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    access_overrides_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     can_view_market: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     can_use_advanced_filters: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_use_fdi_analysis: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -243,6 +295,8 @@ class UserAccessPolicyORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    access_level: Mapped[AccessLevelORM | None] = relationship(back_populates="users")
 
 
 class BacktestRequestUsageORM(Base):

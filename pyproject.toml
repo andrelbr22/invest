@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
-version = "1.21.2"
-description = "Formação do Investidor V1.21.2 with class-specific ETF, BDR and futures valuation references."
+version = "1.21.3"
+description = "Formação do Investidor V1.21.3 with complete alerts, daily recommendation news, shared access levels and an operational administration console."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

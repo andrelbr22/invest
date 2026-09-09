@@ -41,7 +41,17 @@ from ..core.repositories.assets import AssetRepository
 from ..core.repositories.portfolio import PortfolioRepository
 from ..core.repositories.screening_filters import SavedScreeningFilterRepository
 from ..core.repositories.backtests import BacktestRepository, backtest_market_date, run_summary
-from ..core.repositories.access import AccessPolicyRepository, PERMISSION_FIELDS, full_owner_policy, policy_dict
+from ..core.repositories.access import (
+    ACCESS_RULE_FIELDS,
+    LIMIT_FIELDS,
+    PERMISSION_FIELDS,
+    AccessLevelRepository,
+    AccessPolicyRepository,
+    access_level_dict,
+    full_owner_policy,
+    policy_dict,
+    validate_access_rules,
+)
 from ..core.repositories.news_cache import NewsCacheRepository, news_cache_dict, news_market_date
 from ..core.repositories.alerts import AlertRepository, alert_dict, event_dict
 from ..core.repositories.background_jobs import BackgroundJobRepository, background_job_dict
@@ -234,11 +244,20 @@ def _access_policy(db: Session, email: str) -> dict:
         return {
             "email": email,
             "display_name": None,
-            "role": "visitor",
+            "role": "guest",
             "status": "pending",
             "can_view_market": True,
             "custom_filter_limit": 0,
+            "alert_asset_limit": 0,
+            "backtest_asset_limit": 0,
+            "backtest_daily_limit": 0,
+            "backtest_strategy_limit": 0,
+            "backtest_cooldown_seconds": 60,
             **{field: False for field in PERMISSION_FIELDS if field != "can_view_market"},
+            "access_level_slug": "guest",
+            "access_level_name": "Convidado",
+            "access_inheritance": True,
+            "access_overrides": {},
             "is_owner": False,
         }
     return policy_dict(row)
@@ -817,7 +836,7 @@ class AccessRegisterRequest(BaseModel):
 
 
 class AccessPolicyUpdateRequest(BaseModel):
-    role: str | None = Field(default=None, pattern="^(visitor|member|admin)$")
+    role: str | None = Field(default=None, pattern="^(visitor|guest|basic|member|vip|admin)$")
     status: str | None = Field(default=None, pattern="^(pending|approved|blocked)$")
     can_view_market: bool | None = None
     can_use_advanced_filters: bool | None = None
@@ -842,12 +861,72 @@ class AccessPolicyUpdateRequest(BaseModel):
     can_alert_change_positive: bool | None = None
     can_alert_change_negative: bool | None = None
     can_sync_market: bool | None = None
+    can_manage_users: bool | None = None
     custom_filter_limit: int | None = Field(default=None, ge=0, le=3)
     alert_asset_limit: int | None = Field(default=None)
     backtest_asset_limit: int | None = Field(default=None)
     backtest_daily_limit: int | None = Field(default=None)
     backtest_strategy_limit: int | None = Field(default=None)
     backtest_cooldown_seconds: int | None = Field(default=None, ge=60, le=3600)
+
+
+class AccessLevelCreateRequest(BaseModel):
+    slug: str = Field(min_length=2, max_length=32, pattern=r"^[a-z][a-z0-9_-]{1,31}$")
+    name: str = Field(min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=500)
+    is_active: bool = True
+    sort_order: int = Field(default=100, ge=0, le=10000)
+    permissions: dict[str, bool] = Field(default_factory=dict)
+    limits: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_rules(self):
+        validate_access_rules({**self.permissions, **self.limits}, partial=True)
+        return self
+
+
+class AccessLevelUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=500)
+    is_active: bool | None = None
+    sort_order: int | None = Field(default=None, ge=0, le=10000)
+    permissions: dict[str, bool] | None = None
+    limits: dict[str, int] | None = None
+
+    @model_validator(mode="after")
+    def validate_rules(self):
+        validate_access_rules({**(self.permissions or {}), **(self.limits or {})}, partial=True)
+        return self
+
+
+class AccessUserLevelRequest(BaseModel):
+    level_slug: str = Field(min_length=2, max_length=32, pattern=r"^[a-z][a-z0-9_-]{1,31}$")
+    clear_overrides: bool = True
+
+
+class AccessUserOverridesRequest(BaseModel):
+    permissions: dict[str, bool] = Field(default_factory=dict)
+    limits: dict[str, int] = Field(default_factory=dict)
+    replace: bool = True
+
+    @model_validator(mode="after")
+    def validate_rules(self):
+        validate_access_rules({**self.permissions, **self.limits}, partial=True)
+        return self
+
+
+class AccessBulkLevelRequest(BaseModel):
+    emails: list[str] = Field(min_length=1, max_length=500)
+    level_slug: str = Field(min_length=2, max_length=32, pattern=r"^[a-z][a-z0-9_-]{1,31}$")
+    clear_overrides: bool = True
+
+    @field_validator("emails")
+    @classmethod
+    def normalize_emails(cls, values: list[str]) -> list[str]:
+        clean = sorted({str(value or "").strip().lower() for value in values if str(value or "").strip()})
+        if not clean:
+            raise ValueError("email_required")
+        return clean
 
 
 class AlertPreferenceRequest(BaseModel):
@@ -1033,7 +1112,7 @@ def retry_background_job(
 
 @app.get("/debug/db-counts")
 def debug_db_counts(_access=Depends(require_owner), db: Session = Depends(get_db)):
-    names = ["assets", "fundamental_snapshots", "technical_snapshots", "score_snapshots", "valuation_snapshots", "price_bars", "portfolios", "portfolio_positions", "portfolio_custom_investments", "finance_transactions", "finance_monthly_budgets", "interest_curve_snapshots", "backtest_runs", "backtest_trades", "backtest_batch_jobs"]
+    names = ["assets", "fundamental_snapshots", "technical_snapshots", "score_snapshots", "valuation_snapshots", "price_bars", "portfolios", "portfolio_positions", "portfolio_custom_investments", "finance_transactions", "finance_monthly_budgets", "interest_curve_snapshots", "backtest_runs", "backtest_trades", "backtest_batch_jobs", "access_levels", "user_access_policies", "user_news_cache", "price_alerts", "price_alert_events", "background_jobs"]
     counts = {}
     for name in names:
         counts[name] = db.execute(text(f"SELECT COUNT(*) FROM {name}")).scalar_one()
@@ -1059,18 +1138,39 @@ def my_access(email: str = Depends(_request_email), db: Session = Depends(get_db
 
 @app.get("/access/users")
 def list_access_users(
-    _access=Depends(require_owner),
+    _access=Depends(require_permission("can_manage_users")),
     db: Session = Depends(get_db),
 ):
     repo = AccessPolicyRepository(db)
     return [policy_dict(row, is_owner=row.email in settings.owner_emails) for row in repo.list_all()]
 
 
+@app.get("/access/users/manage")
+def manage_access_users(
+    q: str | None = Query(default=None, max_length=160),
+    status: str | None = Query(default=None, pattern="^(pending|approved|blocked)$"),
+    level: str | None = Query(default=None, max_length=32),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    _access=Depends(require_permission("can_manage_users")),
+    db: Session = Depends(get_db),
+):
+    rows, total = AccessPolicyRepository(db).list_page(
+        query=q, status=status, level_slug=level, limit=limit, offset=offset,
+    )
+    return {
+        "items": [policy_dict(row, is_owner=row.email in settings.owner_emails) for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 @app.put("/access/users/{email}")
 def update_access_user(
     email: str,
     req: AccessPolicyUpdateRequest,
-    _access=Depends(require_owner),
+    _access=Depends(require_permission("can_manage_users")),
     db: Session = Depends(get_db),
 ):
     clean = email.strip().lower()
@@ -1156,6 +1256,198 @@ def update_access_user(
     )
     db.commit()
     return updated_policy
+
+
+def _enforce_user_alert_access(db: Session, row) -> None:
+    effective = policy_dict(row)
+    AlertRepository(db).enforce_policy(
+        row.email,
+        limit=int(effective.get("alert_asset_limit") or 0) if effective.get("can_use_price_alerts") else 0,
+        permissions=_alert_rule_permissions(effective),
+    )
+
+
+@app.get("/access/levels")
+def list_access_levels(
+    include_inactive: bool = Query(default=True),
+    _access=Depends(require_permission("can_manage_users")),
+    db: Session = Depends(get_db),
+):
+    repository = AccessLevelRepository(db)
+    return [
+        access_level_dict(row, member_count=repository.member_count(row.id))
+        for row in repository.list_all(include_inactive=include_inactive)
+    ]
+
+
+@app.post("/access/levels")
+def create_access_level(
+    request: AccessLevelCreateRequest,
+    _access=Depends(require_permission("can_manage_users")),
+    db: Session = Depends(get_db),
+):
+    repository = AccessLevelRepository(db)
+    try:
+        row = repository.create(
+            slug=request.slug,
+            name=request.name,
+            description=request.description,
+            is_active=request.is_active,
+            sort_order=request.sort_order,
+            rules={**request.permissions, **request.limits},
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409 if str(exc) == "access_level_already_exists" else 422, str(exc))
+    return access_level_dict(row, member_count=0)
+
+
+@app.put("/access/levels/{level_slug}")
+def update_access_level(
+    level_slug: str,
+    request: AccessLevelUpdateRequest,
+    _access=Depends(require_permission("can_manage_users")),
+    db: Session = Depends(get_db),
+):
+    repository = AccessLevelRepository(db)
+    fields = request.model_fields_set
+    changes = {
+        key: getattr(request, key)
+        for key in ("name", "description", "is_active", "sort_order")
+        if key in fields
+    }
+    changes["rules"] = {**(request.permissions or {}), **(request.limits or {})}
+    try:
+        row = repository.update(level_slug, **changes)
+        if row is None:
+            raise HTTPException(404, "access_level_not_found")
+        members = repository.members(row.id)
+        for member in members:
+            _enforce_user_alert_access(db, member)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc))
+    return access_level_dict(row, member_count=len(members))
+
+
+@app.put("/access/users/{email}/level")
+def assign_user_access_level(
+    email: str,
+    request: AccessUserLevelRequest,
+    _access=Depends(require_permission("can_manage_users")),
+    db: Session = Depends(get_db),
+):
+    clean = email.strip().lower()
+    if clean in settings.owner_emails:
+        raise HTTPException(400, "owner_permissions_are_permanent")
+    level_repository = AccessLevelRepository(db)
+    try:
+        level = level_repository.get(request.level_slug)
+        if level is None:
+            raise HTTPException(404, "access_level_not_found")
+        row = AccessPolicyRepository(db).assign_level(
+            clean, level, clear_overrides=request.clear_overrides,
+        )
+        if row is None:
+            raise HTTPException(404, "user_not_found")
+        _enforce_user_alert_access(db, row)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc))
+    return policy_dict(row)
+
+
+@app.put("/access/users/level/bulk")
+def assign_access_level_in_bulk(
+    request: AccessBulkLevelRequest,
+    _access=Depends(require_permission("can_manage_users")),
+    db: Session = Depends(get_db),
+):
+    level_repository = AccessLevelRepository(db)
+    try:
+        level = level_repository.get(request.level_slug)
+        if level is None:
+            raise HTTPException(404, "access_level_not_found")
+        updated, missing, protected = [], [], []
+        policies = AccessPolicyRepository(db)
+        for email in request.emails:
+            if email in settings.owner_emails:
+                protected.append(email)
+                continue
+            row = policies.assign_level(email, level, clear_overrides=request.clear_overrides)
+            if row is None:
+                missing.append(email)
+                continue
+            _enforce_user_alert_access(db, row)
+            updated.append(policy_dict(row))
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc))
+    return {"updated": updated, "updated_count": len(updated), "missing": missing, "protected": protected}
+
+
+@app.put("/access/users/{email}/overrides")
+def update_user_access_overrides(
+    email: str,
+    request: AccessUserOverridesRequest,
+    _access=Depends(require_permission("can_manage_users")),
+    db: Session = Depends(get_db),
+):
+    clean = email.strip().lower()
+    if clean in settings.owner_emails:
+        raise HTTPException(400, "owner_permissions_are_permanent")
+    try:
+        row = AccessPolicyRepository(db).set_overrides(
+            clean, {**request.permissions, **request.limits}, replace=request.replace,
+        )
+        if row is None:
+            raise HTTPException(404, "user_not_found")
+        _enforce_user_alert_access(db, row)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc))
+    return policy_dict(row)
+
+
+@app.delete("/access/users/{email}/overrides")
+def clear_user_access_overrides(
+    email: str,
+    _access=Depends(require_permission("can_manage_users")),
+    db: Session = Depends(get_db),
+):
+    clean = email.strip().lower()
+    if clean in settings.owner_emails:
+        raise HTTPException(400, "owner_permissions_are_permanent")
+    try:
+        row = AccessPolicyRepository(db).clear_overrides(clean)
+        if row is None:
+            raise HTTPException(404, "user_not_found")
+        _enforce_user_alert_access(db, row)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc))
+    return policy_dict(row)
 
 
 def _saved_filter_dict(row):

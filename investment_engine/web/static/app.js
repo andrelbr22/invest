@@ -5,7 +5,7 @@ const BASE_PATH = location.pathname === "/testefdi" || location.pathname.startsW
 const state = {
   session: null,
   view: "dashboard",
-  tabs: { dashboard: "overview", analysis: "stocks", analysisMode: "list", portfolio: "positions", finances: "monthly", backtests: "history", admin: "users" },
+  tabs: { dashboard: "overview", analysis: "stocks", analysisMode: "list", portfolio: "positions", finances: "monthly", backtests: "history", admin: "levels" },
   market: null,
   marketEnvelope: null,
   comparison: null,
@@ -38,6 +38,15 @@ const state = {
   visibleColumns: JSON.parse(localStorage.getItem("fdi-visible-columns") || "{}"),
   portfolios: [],
   portfolioId: null,
+  portfolioNewsMode: "portfolio",
+  recommendationCategory: "all",
+  newsRefreshTimer: null,
+  alertCatalog: null,
+  alertData: null,
+  adminUsersOffset: 0,
+  adminUsersQuery: "",
+  adminUsersStatus: "",
+  adminUsersLevel: "",
   financeMonth: new Date().toISOString().slice(0,7),
   officialBacktestJobs: new Map(),
   backtestCatalog: null,
@@ -75,8 +84,24 @@ function readableApiError(detail,status){
     invalid_competence_month:"O mês informado é inválido.",
     unsupported_or_duplicate_ticker:"Use o código principal do ativo. Mercados fracionários e códigos temporários não são cadastrados separadamente.",
     active_personal_backtest_exists:"Já existe uma análise em processamento. Aguarde a conclusão.",
+    invalid_secondary_email:"Informe um segundo e-mail válido ou deixe o campo vazio.",
+    price_alert_limit_not_granted:"Sua conta ainda não possui uma quantidade de ativos liberada para alertas.",
+    price_alert_requires_condition:"Preencha ao menos uma condição para este ativo.",
+    unsupported_market_alert_symbol:"Escolha um dos ativos disponíveis no catálogo de mercados.",
+    b3_alert_asset_not_found:"Este código não está disponível no catálogo principal da B3.",
+    alert_email_delivery_not_configured:"O envio de e-mails ainda não foi configurado pelo administrador.",
+    price_alert_not_found:"Este alerta não existe mais ou pertence a outra conta.",
+    access_level_not_found:"O nível de acesso selecionado não foi encontrado.",
+    access_level_is_inactive:"Este nível está inativo e não pode receber novos usuários.",
+    access_level_already_exists:"Já existe um nível com esse identificador.",
+    owner_permissions_are_permanent:"As permissões do proprietário são permanentes.",
+    owner_access_level_is_permanent:"O nível do proprietário é permanente.",
+    access_level_required_for_overrides:"Atribua um nível antes de criar ajustes individuais.",
+    background_job_not_found:"Este trabalho não está mais disponível na fila.",
   };
   if(typeof detail==="object"&&detail?.permission_required)return messages.permission_required;
+  if(typeof detail==="object"&&detail?.price_alert_limit_reached)return `O limite de ${detail.price_alert_limit_reached} ativo(s) com alerta foi atingido.`;
+  if(typeof detail==="object"&&detail?.alert_conditions_not_granted)return "Uma das condições escolhidas não está liberada para sua conta.";
   if(messages[code])return messages[code];
   if(status>=500)return "O serviço está temporariamente indisponível. Seus dados foram preservados; tente novamente em instantes.";
   if(status===404)return "A informação solicitada não foi encontrada.";
@@ -128,6 +153,11 @@ async function api(path, options = {}) {
   return body;
 }
 
+function safeExternalUrl(value) {
+  try { const url=new URL(String(value||"")); return ["http:","https:"].includes(url.protocol)?url.href:"#"; }
+  catch (_) { return "#"; }
+}
+
 function showLogin() {
   $("#app-shell").classList.add("hidden");
   $("#login-view").classList.remove("hidden");
@@ -141,7 +171,7 @@ function showApp() {
 function configureAccess() {
   const { user, access } = state.session;
   $("#profile-name").textContent = user.name || user.email;
-  $("#profile-role").textContent = access.is_owner ? "Administrador master" : access.status === "approved" ? "Acesso aprovado" : "Acesso visitante";
+  $("#profile-role").textContent = access.is_owner ? "Administrador master" : access.access_level_name || (access.access_inheritance?"Acesso por nível":"Acesso personalizado");
   const avatar = $("#profile-avatar");
   avatar.textContent = (user.name || user.email || "U").slice(0, 1).toUpperCase();
   if (user.picture) avatar.innerHTML = `<img src="${esc(user.picture)}" alt="">`;
@@ -158,6 +188,11 @@ function configureAccess() {
     const item = $(`.nav-item[data-view="${view}"]`);
     if (item) item.classList.toggle("hidden", !allowed);
   });
+  const adminItem=$('.nav-item[data-view="admin"]');
+  if(adminItem)adminItem.classList.toggle("hidden",!(access.is_owner||access.can_manage_users));
+  const adminDataTab=$('.tabs[data-tabs="admin"] [data-tab="data"]');
+  if(adminDataTab)adminDataTab.classList.toggle("hidden",!(access.is_owner||access.can_sync_market));
+  for(const tab of ["jobs","system"]){const node=$(`.tabs[data-tabs="admin"] [data-tab="${tab}"]`);if(node)node.classList.toggle("hidden",!access.is_owner);}
 }
 
 function setView(view, tab = null) {
@@ -1061,7 +1096,12 @@ async function loadPortfolios() {
   const root=$("#portfolio-tab-content"); root.innerHTML=loadingCards(5);
   try {
     state.portfolios=await api("/portfolios",{requestKey:"portfolios",cacheTtlMs:30000});
-    if (!state.portfolios.length) { root.innerHTML='<div class="data-card empty-state"><strong>Você ainda não criou uma carteira</strong>A criação estará disponível aqui para contas com permissão de edição.</div>'; return; }
+    if (!state.portfolios.length) {
+      state.portfolioId=null;$("#portfolio-selector-wrap").innerHTML="";
+      if(state.tabs.portfolio==="alerts"){await renderAlerts(root);return;}
+      if(state.tabs.portfolio==="news"){await renderNewsWorkspace(root);return;}
+      root.innerHTML='<div class="data-card empty-state"><strong>Você ainda não criou uma carteira</strong>A criação estará disponível aqui para contas com permissão de edição.</div>'; return;
+    }
     if (!state.portfolioId || !state.portfolios.some(p=>p.id===state.portfolioId)) state.portfolioId=state.portfolios[0].id;
     $("#portfolio-selector-wrap").innerHTML=`<select id="portfolio-selector" class="button secondary">${state.portfolios.map(p=>`<option value="${esc(p.id)}" ${p.id===state.portfolioId?"selected":""}>${esc(p.name)}</option>`).join("")}</select>`;
     await renderPortfolioTab();
@@ -1074,6 +1114,60 @@ function allocationDonut(items) {
   const colors=["#0b5d4b","#c79b3b","#4f7cac","#9b5de5","#e07a5f","#2a9d8f","#6c757d","#f4a261"];
   let cursor=0;const stops=rows.map((item,index)=>{const start=cursor;cursor+=Number(item.weight_pct||0);return `${colors[index%colors.length]} ${start}% ${cursor}%`;});
   return `<div class="allocation-visual"><div class="allocation-donut" style="background:conic-gradient(${stops.join(",")})"><span>${money(rows.reduce((sum,item)=>sum+Number(item.value||0),0))}</span></div><div class="allocation-legend">${rows.map((item,index)=>`<div><i class="legend-dot" style="background:${colors[index%colors.length]}"></i><span>${esc(item.label)}</span><strong>${pct(item.weight_pct)}</strong></div>`).join("")}</div></div>`;
+}
+
+function newsCacheStatus(cache) {
+  const labels={not_requested:"Aguardando primeira atualização",pending:"Na fila",queued:"Na fila",running:"Atualizando",completed:"Atualizado",failed:"Falha na última tentativa"};
+  return labels[cache?.status]||cache?.status||"Aguardando";
+}
+
+function newsHeadline(item,index,{recommendation=false}={}) {
+  const institution=recommendation?(item.institution||item.bank_group_label):null;
+  const metadata=[institution,item.source,item.published_at?dateTime(item.published_at):null].filter(Boolean);
+  const tickers=(item.mentioned_tickers||[]).map(ticker=>`<span class="pill">${esc(ticker)}</span>`).join("");
+  return `<a class="headline" href="${esc(safeExternalUrl(item.url))}" target="_blank" rel="noopener noreferrer"><span class="headline-number">${index+1}</span><span><strong>${esc(item.title)}</strong><small>${esc(metadata.join(" • "))}</small>${tickers?`<span class="headline-tags">${tickers}</span>`:""}</span><small>Abrir fonte</small></a>`;
+}
+
+function queueNewsPanelReload(cache) {
+  clearTimeout(state.newsRefreshTimer);
+  if(!["pending","queued","running"].includes(cache?.status))return;
+  state.newsRefreshTimer=setTimeout(()=>{
+    if(state.view==="portfolio"&&state.tabs.portfolio==="news")renderPortfolioTab();
+  },4500);
+}
+
+async function renderPortfolioNews(root) {
+  if(!state.portfolioId) {
+    root.innerHTML='<div class="data-card empty-state"><strong>Nenhuma carteira cadastrada</strong>Crie uma carteira para receber notícias relacionadas aos ativos. As notícias de recomendações continuam disponíveis acima.</div>';
+    return;
+  }
+  const cache=await api(`/insights/news/cache/portfolios/${state.portfolioId}`,{cacheTtlMs:15000,bypassCache:true});
+  const data=cache.data||{},groups=data.assets||data.items||[];
+  const update=`<div class="update-panel"><div class="update-summary"><span><strong>Notícias dos ativos da carteira</strong><small>${cache.finished_at?`Última atualização: ${dateTime(cache.finished_at)}`:"A atualização diária será iniciada no primeiro acesso autenticado."}</small></span><span><span class="pill ${cache.status==="failed"?"danger":""}">${esc(newsCacheStatus(cache))}</span><button class="button secondary compact" data-portfolio-news-refresh="${esc(state.portfolioId)}" ${["pending","queued","running"].includes(cache.status)?"disabled":""}>Atualizar novamente hoje</button></span></div>${cache.error?`<div class="notice danger">A última tentativa não foi concluída. Os dados anteriores foram preservados.</div>`:""}</div>`;
+  const content=groups.length?groups.map(group=>`<div class="card-section"><div class="card-heading"><h3>${esc(group.ticker||group.label||"Ativo")}</h3><small>${(group.items||group.news||[]).length} notícia(s)</small></div><div class="headline-list">${(group.items||group.news||[]).map((item,index)=>newsHeadline(item,index)).join("")}</div></div>`).join(""):'<div class="empty-state"><strong>Notícias sendo preparadas</strong>O carregamento ocorre em segundo plano e a página continua disponível para outras tarefas.</div>';
+  root.innerHTML=update+sectionCard("Notícias da carteira",content,"Até 3 notícias relevantes por ativo, sem bloquear a navegação");
+  queueNewsPanelReload(cache);
+}
+
+async function renderRecommendationNews(root) {
+  const category=state.recommendationCategory;
+  const cache=await api(`/insights/news/cache/recommendations?category=${encodeURIComponent(category)}`,{cacheTtlMs:15000,bypassCache:true});
+  const data=cache.data||{},items=data.items||[];
+  const categories=[{id:"all",label:"Todas"},{id:"brazil",label:"Instituições brasileiras"},{id:"global",label:"Instituições globais"}];
+  const controls=`<div class="recommendation-controls"><div class="segmented-control">${categories.map(item=>`<button class="button ${item.id===category?"primary":"ghost"} compact" data-recommendation-category="${item.id}">${item.label}</button>`).join("")}</div><button class="button secondary compact" data-recommendation-news-refresh="${esc(category)}" ${["pending","queued","running"].includes(cache.status)?"disabled":""}>Atualizar novamente hoje</button></div>`;
+  const update=`<div class="update-panel"><div class="update-summary"><span><strong>Notícias de recomendações</strong><small>${cache.finished_at?`Última atualização: ${dateTime(cache.finished_at)}`:"A primeira busca do dia será feita automaticamente."}</small></span><span class="pill ${cache.status==="failed"?"danger":""}">${esc(newsCacheStatus(cache))}</span></div>${cache.error?'<div class="notice danger">A fonte não respondeu na última tentativa. Uma nova tentativa pode ser solicitada sem apagar os dados anteriores.</div>':""}</div>`;
+  const content=items.length?`<div class="headline-list"><div class="headline headline-header"><span>#</span><span>Manchete • instituição • fonte • publicação</span><span>Link</span></div>${items.map((item,index)=>newsHeadline(item,index,{recommendation:true})).join("")}</div>`:'<div class="empty-state"><strong>Recomendações sendo pesquisadas</strong>As fontes públicas estão sendo consultadas em segundo plano.</div>';
+  root.innerHTML=controls+update+sectionCard("Recomendações de instituições",content,"Links informativos encontrados em fontes públicas; não constituem recomendação do Formação do Investidor.");
+  queueNewsPanelReload(cache);
+}
+
+async function renderNewsWorkspace(root) {
+  const allowed=state.session.access.can_view_news_insights;
+  if(!allowed){root.innerHTML='<div class="data-card empty-state"><strong>Notícias não liberadas para esta conta</strong>O administrador pode liberar este módulo no nível de acesso do usuário.</div>';return;}
+  root.innerHTML=`<div class="subtabs"><button class="tab ${state.portfolioNewsMode==="portfolio"?"active":""}" data-portfolio-news-mode="portfolio">Ativos da carteira</button><button class="tab ${state.portfolioNewsMode==="recommendations"?"active":""}" data-portfolio-news-mode="recommendations">Recomendações</button></div><div id="portfolio-news-content">${loadingCards(4)}</div>`;
+  const content=$("#portfolio-news-content",root);
+  if(state.portfolioNewsMode==="recommendations")await renderRecommendationNews(content);
+  else await renderPortfolioNews(content);
 }
 
 async function renderPortfolioTab() {
@@ -1097,12 +1191,7 @@ async function renderPortfolioTab() {
       const form=state.session.access.can_write_portfolio?`<details class="data-card" ${rows.length?"":"open"}><summary><strong>Adicionar investimento sem ticker</strong></summary><form id="custom-investment-form" class="filter-grid" style="margin-top:16px"><div class="field"><label>Tipo</label><select name="category" required>${catalog.map(item=>`<option value="${esc(item.id)}">${esc(item.label)}</option>`).join("")}</select></div><div class="field"><label>Nome do investimento</label><input name="name" required maxlength="200" placeholder="Ex.: CDB Banco X 110% CDI"></div><div class="field"><label>Instituição</label><input name="institution" maxlength="160" placeholder="Banco ou corretora"></div><div class="field"><label>Setor</label><input name="sector" maxlength="120" placeholder="Ex.: Renda fixa"></div><div class="field"><label>Segmento</label><input name="segment" maxlength="120" placeholder="Ex.: Bancário pós-fixado"></div><div class="field"><label>Data da aplicação</label><input type="date" name="application_date" required value="${today}"></div><div class="field"><label>Vencimento (opcional)</label><input type="date" name="maturity_date"></div><div class="field"><label>Valor aplicado</label><input type="number" name="invested_value" min="0.01" step="0.01" required></div><div class="field"><label>Valor atual</label><input type="number" name="current_value" min="0" step="0.01" required></div><div class="field"><label>Data do valor atual</label><input type="date" name="current_value_as_of" required value="${today}"></div><div class="field"><label>Indexador / referência</label><input name="benchmark" maxlength="80" placeholder="Ex.: 110% do CDI"></div><div class="field"><label>Liquidez</label><input name="liquidity" maxlength="120" placeholder="Ex.: no vencimento ou D+1"></div><div class="field wide-action"><label>Observações</label><textarea name="notes" rows="2"></textarea></div><button class="button primary wide-action" type="submit">Salvar investimento</button></form></details>`:"";
       root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Patrimônio conhecido",money(summary.known_total_value))}${metricCard("Investimentos sem ticker",money(data.custom_summary?.current_value||0),`${rows.length} cadastro(s)`)}${metricCard("Valor aplicado",money(data.custom_summary?.invested_value||0))}${metricCard("Variação",pct(data.custom_summary?.variation_pct,true))}</div>${sectionCard("Composição consolidada",allocationDonut(data.consolidated_allocation||[]),summary.allocation_complete?"Valores de mercado e valores informados manualmente":"Composição parcial: existe posição sem cotação")}${sectionCard("Renda fixa, fundos e outros",marketTable(rows,[{label:"Investimento",render:r=>`<strong>${esc(r.name)}</strong><br><small>${esc(r.category_label)}</small>`},{label:"Setor / segmento",render:r=>`${esc(r.sector||"—")}<br><small>${esc(r.segment||"—")}</small>`},{label:"Instituição",render:r=>esc(r.institution||"—")},{label:"Aplicação",render:r=>dateOnly(r.application_date)},{label:"Vencimento",render:r=>dateOnly(r.maturity_date)},{label:"Aplicado",render:r=>money(r.invested_value)},{label:"Atual",render:r=>`${money(r.current_value)}<br><small>${dateOnly(r.current_value_as_of)}</small>`},{label:"Variação",render:r=>pct(r.variation_pct,true),className:r=>variationClass(r.variation_pct)},{label:"",render:r=>state.session.access.can_write_portfolio?`<span class="row-actions"><button class="button ghost compact" data-update-custom-investment="${esc(r.id)}" data-current-value="${esc(r.current_value)}">Atualizar valor</button><button class="button ghost compact danger" data-delete-custom-investment="${esc(r.id)}">Arquivar</button></span>`:""}]),"O histórico preserva cada valor informado por data")}${form}`;
     } else if (tab==="news") {
-      const cache=await api(`/insights/news/cache/portfolios/${state.portfolioId}`,{cacheTtlMs:30000});
-      const data=cache.data||{};
-      const groups=data.assets||data.items||[];
-      const newsUpdate=`<div class="update-panel"><div class="update-summary"><span><strong>Notícias da carteira</strong><small>${cache.finished_at?`Atualizadas em ${dateTime(cache.finished_at)}`:"Primeira atualização pendente"}</small></span><button class="button secondary compact" data-portfolio-news-refresh="${esc(state.portfolioId)}" ${["queued","running"].includes(cache.status)?"disabled":""}>Atualizar agora</button></div></div>`;
-      root.innerHTML=newsUpdate+sectionCard("Notícias da carteira",groups.length?groups.map(group=>`<div class="card-section"><div class="card-heading"><h3>${esc(group.ticker||group.label||"Ativo")}</h3></div><div class="headline-list">${(group.items||group.news||[]).map((item,i)=>`<a class="headline" href="${esc(item.url)}" target="_blank" rel="noopener"><span class="headline-number">${i+1}</span><span><strong>${esc(item.title)}</strong><small>${esc(item.source||"")}</small></span></a>`).join("")}</div></div>`).join(""):'<div class="empty-state"><strong>Notícias sendo preparadas</strong>A primeira consulta do dia é feita automaticamente em segundo plano.</div>',"Até 3 notícias relevantes por ativo");
-      api("/insights/news/refresh-daily",{method:"POST"}).catch(()=>{});
+      await renderNewsWorkspace(root);
     } else {
       await renderAlerts(root);
     }
@@ -1112,11 +1201,104 @@ async function renderPortfolioTab() {
 async function renderAlerts(root) {
   const access=state.session.access;
   if (!access.can_use_price_alerts) { root.innerHTML='<div class="data-card empty-state"><strong>Alertas não liberados para esta conta</strong>O administrador pode conceder um limite de 1, 3, 5 ou 10 ativos.</div>'; return; }
-  const data=await api("/alerts",{cacheTtlMs:15000});
-  const active=data.active||data.alerts||[];
-  root.innerHTML=`<div class="notice info" style="margin-bottom:14px">B3: monitoramento em dias úteis, das 10h às 18h, a cada 5 minutos. Outros mercados: a cada 10 minutos, com candles de 5 minutos.</div>${sectionCard("Alertas ativos",marketTable(active,[{label:"Ativo",render:r=>`<strong>${esc(r.symbol)}</strong>`},{label:"Acima de",render:r=>money(r.price_above)},{label:"Abaixo de",render:r=>money(r.price_below)},{label:"Variação positiva",render:r=>pct(r.change_positive_pct)},{label:"Variação negativa",render:r=>pct(r.change_negative_pct)},{label:"Última verificação",render:r=>r.last_checked_at?dateTime(r.last_checked_at):"—"},{label:"Status",render:r=>`<span class="pill">${esc(r.status||"ativo")}</span>`}]),`Limite autorizado: ${data.limit??access.alert_asset_limit} ativos`)}`;
+  const [catalog,data,history]=await Promise.all([
+    api("/alerts/catalog",{cacheTtlMs:300000}),
+    api("/alerts",{cacheTtlMs:10000,bypassCache:true}),
+    api("/alerts/history?limit=100",{cacheTtlMs:10000,bypassCache:true}),
+  ]);
+  state.alertCatalog=catalog;state.alertData={...data,history};
+  const alerts=data.alerts||[],active=alerts.filter(item=>item.status==="active");
+  const permissions=catalog.permissions||data.permissions||{};
+  const conditionFields=[
+    {key:"price_above",label:"Preço subindo até ou acima de",placeholder:"Ex.: 42,50",suffix:"valor"},
+    {key:"price_below",label:"Preço caindo até ou abaixo de",placeholder:"Ex.: 38,00",suffix:"valor"},
+    {key:"change_positive_pct",label:"Variação positiva desde o fechamento",placeholder:"Ex.: 3,00",suffix:"%"},
+    {key:"change_negative_pct",label:"Variação negativa desde o fechamento",placeholder:"Ex.: 2,50",suffix:"%"},
+  ];
+  const ruleInputs=conditionFields.map(field=>`<div class="field alert-condition ${permissions[field.key]?"":"disabled-condition"}"><label>${esc(field.label)} ${permissions[field.key]?"":'<span class="pill">Não liberado</span>'}</label><div class="input-suffix"><input name="${field.key}" type="number" min="0.000001" step="any" placeholder="${esc(field.placeholder)}" ${permissions[field.key]?"":"disabled"}><span>${field.suffix}</span></div></div>`).join("");
+  const alertForm=`<form id="price-alert-form" class="alert-form"><div class="filter-grid"><div class="field"><label>Mercado</label><select name="market_scope" id="alert-market-scope"><option value="b3">Ativos negociados na B3</option><option value="market">Índices, moedas, criptos e commodities</option></select></div><div class="field alert-symbol-field"><label>Código ou nome do ativo</label><input name="symbol" id="alert-symbol" autocomplete="off" required maxlength="32" placeholder="Digite, por exemplo, BBAS3"><div id="alert-symbol-suggestions" class="alert-suggestions hidden"></div></div>${ruleInputs}<button class="button primary wide-action" type="submit">Criar ou atualizar alerta</button></div><div class="notice info alert-form-help">Cada ativo consome uma vaga, mesmo quando possui mais de uma condição. Campos vazios não serão monitorados. Regravar um ativo atualiza o alerta existente.</div></form>`;
+  const preferenceForm=`<form id="alert-preference-form" class="filter-grid"><div class="field"><label>E-mail principal do cadastro</label><input value="${esc(data.primary_email||state.session.user.email)}" disabled></div><div class="field"><label>Segundo e-mail (opcional)</label><input name="secondary_email" type="email" maxlength="320" value="${esc(data.secondary_email||"")}" placeholder="outro@email.com"></div><button class="button primary" type="submit">Salvar e-mails</button><button class="button secondary" type="button" data-alert-test-email ${data.delivery_configured?"":"disabled"}>Enviar e-mail de teste</button></form>`;
+  const alertTable=marketTable(alerts,[
+    {label:"Ativo",render:r=>`<strong>${esc(r.symbol)}</strong><br><small>${esc(r.display_name||"")}</small>`},
+    {label:"Condições",render:r=>alertConditionSummary(r)},
+    {label:"Última cotação",render:r=>`${nullable(r.last_price)?"—":number(r.last_price,4)}${nullable(r.last_change_pct)?"":`<br><small class="${variationClass(r.last_change_pct)}">${pct(r.last_change_pct,true)}</small>`}`},
+    {label:"Verificado em",render:r=>dateTime(r.last_checked_at)},
+    {label:"Situação",render:r=>`<span class="pill ${r.status==="disabled"?"warning":r.status==="triggered"?"danger":""}">${esc(alertStatusLabel(r.status))}</span>`},
+    {label:"Ações",render:r=>`<span class="row-actions"><button class="button ghost compact" data-edit-alert="${esc(r.id)}">Editar</button><button class="button ${r.status==="active"?"ghost danger":"secondary"} compact" data-alert-status="${esc(r.id)}" data-next-status="${r.status==="active"?"disabled":"active"}">${r.status==="active"?"Desativar":"Reativar"}</button></span>`},
+  ]);
+  const historyTable=marketTable(history,[
+    {label:"Ativo",render:r=>`<strong>${esc(r.symbol)}</strong><br><small>${esc(r.display_name||"")}</small>`},
+    {label:"O que ocorreu",render:r=>alertEventSummary(r)},
+    {label:"Cotação",render:r=>`${nullable(r.observed?.price)?"—":number(r.observed.price,4)}${nullable(r.observed?.change_pct)?"":`<br><small class="${variationClass(r.observed.change_pct)}">${pct(r.observed.change_pct,true)}</small>`}`},
+    {label:"Disparo",render:r=>dateTime(r.sent_at||r.created_at)},
+    {label:"Destinatários",render:r=>(r.recipients||[]).map(esc).join("<br>")||"—"},
+    {label:"Entrega",render:r=>`<span class="pill ${r.delivery_status==="failed"?"danger":""}">${esc(({sent:"E-mail enviado",pending:"Envio pendente",failed:"Falha no envio"})[r.delivery_status]||r.delivery_status||"—")}</span>`},
+  ]);
+  root.innerHTML=`<div class="notice info alert-schedule"><strong>Como funciona:</strong> ${esc(catalog.b3_schedule)} ${esc(catalog.market_schedule)}<br><small>${esc(catalog.quote_notice||"")}</small></div><div class="metric-grid summary-grid">${metricCard("Alertas ativos",`${active.length} / ${data.limit??access.alert_asset_limit}`,"Cada ativo conta como um alerta")}${metricCard("Condições liberadas",String(Object.values(permissions).filter(Boolean).length),"Até quatro por ativo")}${metricCard("Envio por e-mail",data.delivery_configured?"Configurado":"Pendente",data.secondary_email?"Dois destinatários":"E-mail principal")}${metricCard("Alertas disparados",String(history.length),"Histórico preservado")}</div><div class="alerts-workspace">${sectionCard("Novo alerta",alertForm,"B3 a cada 5 minutos; mercados internacionais a cada 30 minutos")}${sectionCard("Destinatários",preferenceForm,"O e-mail principal é o mesmo utilizado no acesso à plataforma")}</div>${sectionCard("Alertas cadastrados",alerts.length?alertTable:'<div class="empty-state compact"><strong>Nenhum alerta cadastrado</strong>Escolha um ativo e ao menos uma condição acima.</div>',`Limite autorizado: ${data.limit??access.alert_asset_limit} ativo(s)`)}`+
+    `<details class="data-card alert-history" ${history.length?"":"open"}><summary><strong>Histórico de alertas disparados</strong><span class="pill">${history.length}</span></summary><div class="alert-history-body">${history.length?historyTable:'<div class="empty-state compact">Nenhum alerta foi disparado até agora.</div>'}</div></details>`;
   $("#notification-count").textContent=active.length;
   $("#notification-count").classList.toggle("hidden",!active.length);
+}
+
+function alertStatusLabel(status){return ({active:"Ativo",disabled:"Desativado",triggered:"Disparado"})[status]||status||"—";}
+function alertConditionSummary(alert){
+  const parts=[];
+  if(!nullable(alert.price_above))parts.push(`Preço ≥ ${number(alert.price_above,4)}`);
+  if(!nullable(alert.price_below))parts.push(`Preço ≤ ${number(alert.price_below,4)}`);
+  if(!nullable(alert.change_positive_pct))parts.push(`Alta ≥ ${pct(alert.change_positive_pct)}`);
+  if(!nullable(alert.change_negative_pct))parts.push(`Queda ≥ ${pct(alert.change_negative_pct)}`);
+  return parts.length?parts.map(esc).join("<br>"):"—";
+}
+function alertEventSummary(event){
+  const configured=event.configured_values||{};
+  return (event.triggered_rules||[]).map(rule=>({price_above:`Preço atingiu ou superou ${number(configured.price_above,4)}`,price_below:`Preço atingiu ou caiu abaixo de ${number(configured.price_below,4)}`,change_positive_pct:`Alta atingiu ${pct(configured.change_positive_pct)}`,change_negative_pct:`Queda atingiu ${pct(configured.change_negative_pct)}`})[rule]||rule).map(esc).join("<br>")||"Condição atingida";
+}
+function alertCatalogItems(){
+  const scope=$("#alert-market-scope")?.value||"b3";
+  return state.alertCatalog?.[scope]||[];
+}
+function renderAlertSuggestions(query=""){
+  const root=$("#alert-symbol-suggestions");if(!root)return;
+  const term=String(query||"").trim().toLocaleUpperCase("pt-BR");
+  if(!term){root.classList.add("hidden");root.innerHTML="";return;}
+  const items=alertCatalogItems().filter(item=>`${item.key} ${item.label}`.toLocaleUpperCase("pt-BR").includes(term)).slice(0,12);
+  root.innerHTML=items.length?items.map(item=>`<button type="button" data-alert-suggestion="${esc(item.key)}"><strong>${esc(item.key)}</strong><span>${esc(item.label||item.key)}</span><small>${esc(item.asset_type||item.group||"")}</small></button>`).join(""):'<div class="empty-state compact">Nenhum ativo correspondente.</div>';
+  root.classList.remove("hidden");
+}
+async function savePriceAlert(form){
+  const values=Object.fromEntries(new FormData(form));
+  const payload={market_scope:values.market_scope,symbol:String(values.symbol||"").trim().toUpperCase()};
+  for(const key of ["price_above","price_below","change_positive_pct","change_negative_pct"])payload[key]=values[key]?Number(String(values[key]).replace(",",".")):null;
+  const button=form.querySelector('button[type="submit"]');button.disabled=true;button.textContent="Salvando…";
+  try{await api("/alerts",{method:"POST",body:JSON.stringify(payload)});toast("Alerta salvo e monitoramento ativado.","success");await renderPortfolioTab();}
+  catch(error){toast(error.message,"error");button.disabled=false;button.textContent="Criar ou atualizar alerta";}
+}
+async function saveAlertPreferences(form){
+  const secondary=String(new FormData(form).get("secondary_email")||"").trim()||null;
+  try{await api("/alerts/preferences",{method:"PUT",body:JSON.stringify({secondary_email:secondary})});toast("Destinatários atualizados.","success");await renderPortfolioTab();}
+  catch(error){toast(error.message,"error");}
+}
+async function sendAlertTestEmail(button){
+  button.disabled=true;
+  try{const result=await api("/alerts/test-email",{method:"POST"});toast(`E-mail de teste enviado para ${(result.recipients||[]).length||1} destinatário(s).`,"success");}
+  catch(error){toast(error.message,"error");}
+  finally{button.disabled=false;}
+}
+async function setAlertStatus(button){
+  button.disabled=true;
+  try{await api(`/alerts/${encodeURIComponent(button.dataset.alertStatus)}/status`,{method:"PATCH",body:JSON.stringify({status:button.dataset.nextStatus})});toast(button.dataset.nextStatus==="active"?"Alerta reativado.":"Alerta desativado.","success");await renderPortfolioTab();}
+  catch(error){toast(error.message,"error");button.disabled=false;}
+}
+function editPriceAlert(alertId){
+  const alert=(state.alertData?.alerts||[]).find(item=>item.id===alertId),form=$("#price-alert-form");if(!alert||!form)return;
+  form.elements.market_scope.value=alert.market_scope;form.elements.symbol.value=alert.symbol;
+  for(const key of ["price_above","price_below","change_positive_pct","change_negative_pct"])if(form.elements[key])form.elements[key].value=nullable(alert[key])?"":alert[key];
+  form.scrollIntoView({behavior:"smooth",block:"start"});form.elements.symbol.focus();
+}
+
+async function refreshRecommendationNews(category){
+  try{const result=await api(`/insights/news/cache/recommendations/refresh?category=${encodeURIComponent(category)}`,{method:"POST"});toast(result.scheduled===false?"As recomendações já estão sendo atualizadas.":"Atualização das recomendações solicitada.",result.scheduled===false?"info":"success");setTimeout(()=>renderPortfolioTab(),2500);}
+  catch(error){toast(error.message,"error");}
 }
 
 async function refreshPortfolioNews(portfolioId) {
@@ -1523,35 +1705,163 @@ async function archiveFinanceTransaction(button){
   catch(error){toast(error.message,"error");}
 }
 
+const accessPermissionSections=[
+  {title:"Mercado e análises",items:[["can_view_market","Ver Painel de Mercado"],["can_use_advanced_filters","Usar filtros avançados"],["can_use_fdi_analysis","Análise FDI"],["can_use_alb_analysis","Análise ALB"],["can_use_graham_valuation","Número de Graham"],["can_use_dividend_ceiling","Preço-teto por dividendos"],["can_use_relative_valuation","Valuation relativo"],["can_use_economic_valuation","Valor econômico"]]},
+  {title:"Carteira, notícias e alertas",items:[["can_view_portfolio","Ver carteiras"],["can_write_portfolio","Editar carteiras"],["can_view_news_insights","Notícias e recomendações"],["can_use_price_alerts","Usar alertas"],["can_alert_price_above","Preço acima"],["can_alert_price_below","Preço abaixo"],["can_alert_change_positive","Variação positiva"],["can_alert_change_negative","Variação negativa"]]},
+  {title:"Finanças e backtests",items:[["can_view_finances","Ver finanças"],["can_write_finances","Editar finanças"],["can_view_backtests","Ver backtests"],["can_run_backtests","Executar backtests"],["can_refresh_backtest_signals","Atualizar sinais"],["can_view_backtest_studies","Ver estudos"]]},
+  {title:"Administração",items:[["can_sync_market","Atualizar dados de mercado"],["can_manage_users","Gerenciar usuários e níveis"]]},
+];
+const accessLimitDefinitions=[
+  {key:"custom_filter_limit",label:"Análises personalizadas",values:[0,1,2,3]},
+  {key:"alert_asset_limit",label:"Ativos com alertas",values:[0,1,3,5,10]},
+  {key:"backtest_asset_limit",label:"Ativos por backtest",values:[0,1,3,5,10]},
+  {key:"backtest_strategy_limit",label:"Estratégias combinadas",values:[0,1,2,3,5]},
+  {key:"backtest_daily_limit",label:"Backtests por dia",values:[0,1,5,10,20]},
+  {key:"backtest_cooldown_seconds",label:"Intervalo mínimo (segundos)",values:[60,120,300,600,1800,3600]},
+];
+const adminRefreshGroups=[
+  {key:"selic_current",section:"Juros e macro",frequency:"06h e 13h"},{key:"selic_focus",section:"Juros e macro",frequency:"Diária, 04h"},{key:"macro",section:"Juros e macro",frequency:"Diária, 04h"},{key:"rates_calendar",section:"Juros e macro",frequency:"06h e 13h"},
+  {key:"global_markets",section:"Mercados",frequency:"06h e 13h"},{key:"crypto",section:"Mercados",frequency:"A cada 30 min"},{key:"fx",section:"Mercados",frequency:"A cada 2 horas"},
+  {key:"headlines",section:"Notícias e históricos",frequency:"A cada hora"},{key:"comparison",section:"Notícias e históricos",frequency:"Diária, 05h"},
+  {key:"catalog",section:"Catálogo e análises",frequency:"Dias úteis, 08h30"},{key:"fundamentals",section:"Catálogo e análises",frequency:"Dias úteis, 19h"},{key:"technical_daily",section:"Catálogo e análises",frequency:"Dias úteis, 18h15"},{key:"technical_intraday",section:"Catálogo e análises",frequency:"Pregão, a cada 15 min"},
+];
+
+function accessRuleEditor(level,disabled=false){
+  const permissions=level.permissions||{},limits=level.limits||{};
+  const sections=accessPermissionSections.map((section,index)=>`<details class="permission-section" ${index<2?"open":""}><summary>${esc(section.title)}<span>${section.items.filter(([key])=>permissions[key]).length} liberada(s)</span></summary><div class="permission-matrix">${section.items.map(([key,label])=>`<label class="check"><input type="checkbox" data-level-permission="${key}" ${permissions[key]?"checked":""} ${disabled?"disabled":""}><span>${esc(label)}</span></label>`).join("")}</div></details>`).join("");
+  const limitFields=accessLimitDefinitions.map(field=>`<div class="field"><label>${esc(field.label)}</label><select data-level-limit="${field.key}" ${disabled?"disabled":""}>${field.values.map(value=>`<option value="${value}" ${Number(limits[field.key]||0)===value?"selected":""}>${value}</option>`).join("")}</select></div>`).join("");
+  return `${sections}<div class="access-limit-grid">${limitFields}</div>`;
+}
+
+function accessLevelCard(level){
+  const locked=level.slug==="owner";
+  return `<details class="access-level-card" data-level-card="${esc(level.slug)}"><summary><span><strong>${esc(level.name)}</strong><small>${esc(level.description||"")}</small></span><span><span class="pill">${number(level.member_count||0,0)} usuário(s)</span>${level.is_active?'<span class="pill">Ativo</span>':'<span class="pill warning">Inativo</span>'}</span></summary><form class="access-level-form" data-access-level-form="${esc(level.slug)}"><div class="access-level-meta"><div class="field"><label>Nome do nível</label><input name="name" maxlength="80" value="${esc(level.name)}" ${locked?"disabled":""}></div><div class="field"><label>Descrição</label><input name="description" maxlength="500" value="${esc(level.description||"")}" ${locked?"disabled":""}></div>${locked?"":`<label class="check access-active"><input name="is_active" type="checkbox" ${level.is_active?"checked":""}> Nível disponível para novas atribuições</label>`}</div>${accessRuleEditor(level,locked)}${locked?'<div class="notice info">O nível do proprietário é permanente e não pode ser reduzido.</div>':'<button class="button primary" type="submit">Salvar regras deste nível</button>'}</form></details>`;
+}
+
+async function loadAccessLevels(root){
+  const levels=await api("/access/levels",{cacheTtlMs:10000,bypassCache:true});
+  root.innerHTML=`<div class="notice info"><strong>Permissões por nível:</strong> altere uma vez aqui e a mudança será aplicada imediatamente a todos os usuários vinculados. Contas antigas só mudam quando você atribuir um nível.</div><div class="access-level-list">${levels.map(accessLevelCard).join("")}</div><details class="data-card create-level-card"><summary><strong>Criar nível adicional</strong></summary><form id="create-access-level-form" class="filter-grid"><div class="field"><label>Identificador interno</label><input name="slug" required pattern="[a-z][a-z0-9_-]{1,31}" placeholder="ex.: parceiro"></div><div class="field"><label>Nome exibido</label><input name="name" required maxlength="80" placeholder="Ex.: Parceiro"></div><div class="field wide-action"><label>Descrição</label><input name="description" maxlength="500"></div><button class="button primary wide-action" type="submit">Criar nível sem permissões</button></form></details>`;
+}
+
+function userStatusLabel(status){return ({pending:"Pendente",approved:"Aprovado",blocked:"Bloqueado"})[status]||status;}
+async function loadAdminUsers(root){
+  const params=new URLSearchParams({limit:"100",offset:String(state.adminUsersOffset)});if(state.adminUsersQuery)params.set("q",state.adminUsersQuery);if(state.adminUsersStatus)params.set("status",state.adminUsersStatus);if(state.adminUsersLevel)params.set("level",state.adminUsersLevel);
+  const [payload,levels]=await Promise.all([api(`/access/users/manage?${params}`,{bypassCache:true}),api("/access/levels?include_inactive=true",{cacheTtlMs:10000})]);
+  const users=payload.items||[],activeLevels=levels.filter(level=>level.slug!=="owner"&&level.is_active),from=payload.total?payload.offset+1:0,to=Math.min(payload.offset+payload.limit,payload.total);
+  const levelOptions=user=>{
+    const legacy=!user.access_level_slug?'<option value="legacy" selected disabled>Personalizado legado (preservado)</option>':"";
+    const current=levels.find(level=>level.slug===user.access_level_slug);
+    const inactive=current&&!current.is_active?`<option value="${esc(current.slug)}" selected disabled>${esc(current.name)} (inativo)</option>`:"";
+    return legacy+inactive+activeLevels.map(level=>`<option value="${esc(level.slug)}" ${user.access_level_slug===level.slug?"selected":""}>${esc(level.name)}</option>`).join("");
+  };
+  const rows=users.map(user=>`<tr data-user-row="${esc(user.email)}" data-current-level="${esc(user.access_level_slug||"legacy")}" data-current-status="${esc(user.status)}"><td>${user.is_owner?"":`<input type="checkbox" data-user-select="${esc(user.email)}" aria-label="Selecionar ${esc(user.email)}">`}</td><td><strong>${esc(user.display_name||user.email)}</strong><br><small>${esc(user.email)}</small></td><td>${user.is_owner?'<span class="pill">Proprietário</span>':`<select data-user-level>${levelOptions(user)}</select><small class="block-hint">${user.access_inheritance?"Herda regras do nível":"Permissões atuais preservadas"}</small>`}</td><td>${user.is_owner?'<span class="pill">Permanente</span>':`<select data-user-status><option value="pending" ${user.status==="pending"?"selected":""}>Pendente</option><option value="approved" ${user.status==="approved"?"selected":""}>Aprovado</option><option value="blocked" ${user.status==="blocked"?"selected":""}>Bloqueado</option></select>`}</td><td>${user.access_overrides&&Object.keys(user.access_overrides).length?`<span class="pill warning">${Object.keys(user.access_overrides).length} ajuste(s)</span><br><button class="button ghost compact" data-clear-user-overrides="${esc(user.email)}">Remover ajustes</button>`:'<span class="pill">Sem exceções</span>'}</td><td>${dateTime(user.last_seen_at)}</td><td>${user.is_owner?"":`<button class="button primary compact" data-save-user-level="${esc(user.email)}">Salvar</button>`}</td></tr>`).join("");
+  root.innerHTML=`<form id="admin-user-filter-form" class="admin-user-filters"><div class="field"><label>Buscar</label><input name="q" value="${esc(state.adminUsersQuery)}" placeholder="Nome ou e-mail"></div><div class="field"><label>Nível</label><select name="level"><option value="">Todos</option><option value="legacy" ${state.adminUsersLevel==="legacy"?"selected":""}>Personalizado legado</option>${levels.map(level=>`<option value="${esc(level.slug)}" ${state.adminUsersLevel===level.slug?"selected":""}>${esc(level.name)}</option>`).join("")}</select></div><div class="field"><label>Status</label><select name="status"><option value="">Todos</option>${["pending","approved","blocked"].map(value=>`<option value="${value}" ${state.adminUsersStatus===value?"selected":""}>${userStatusLabel(value)}</option>`).join("")}</select></div><button class="button secondary" type="submit">Filtrar</button></form><div class="bulk-access-bar"><span><strong>Atribuição em lote</strong><small>Marque usuários desta página</small></span><select id="bulk-access-level">${activeLevels.map(level=>`<option value="${esc(level.slug)}">${esc(level.name)}</option>`).join("")}</select><button class="button secondary" data-bulk-assign-level>Atribuir nível</button></div>${sectionCard("Usuários",`<div class="table-scroll"><table class="admin-users-table"><thead><tr><th></th><th>Usuário</th><th>Nível de acesso</th><th>Status individual</th><th>Exceções</th><th>Último acesso</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="7"><div class="empty-state compact">Nenhum usuário encontrado.</div></td></tr>'}</tbody></table></div>`,`Exibindo ${from}–${to} de ${payload.total} usuário(s)`)}<div class="pagination"><button class="button ghost" data-admin-users-page="prev" ${payload.offset<=0?"disabled":""}>Anterior</button><span>Página ${Math.floor(payload.offset/payload.limit)+1}</span><button class="button ghost" data-admin-users-page="next" ${to>=payload.total?"disabled":""}>Próxima</button></div>`;
+}
+
+function adminUpdateTable(updates){
+  return marketTable(adminRefreshGroups.map(item=>({...item,...(updates[item.key]||{})})),[
+    {label:"Atualização",render:r=>`<strong>${esc(r.label||r.key)}</strong><br><small>${esc(r.section)} • ${esc(r.frequency)}</small>`},
+    {label:"Fonte",render:r=>esc(r.source||"—")},
+    {label:"Status",render:r=>`<span class="pill ${["failed","stale","partial"].includes(r.status)?"warning":""}">${esc(updateStatusLabels[r.status]||r.status||"Aguardando")}</span>${r.last_error_code?`<br><small>${esc(r.last_error_code)}</small>`:""}`},
+    {label:"Última atualização",render:r=>dateTime(r.last_updated_at)},
+    {label:"Próxima",render:r=>dateTime(r.next_update_at)},
+    {label:"",render:r=>`<button class="button secondary compact" data-refresh-groups="${esc(r.key)}" ${["queued","running"].includes(r.status)?"disabled":""}>Atualizar</button>`},
+  ]);
+}
+
+async function loadAdminUpdates(root){
+  const [summary,updatePayload]=await Promise.all([api("/data/catalog-summary"),api("/market-dashboard/updates",{bypassCache:true})]);
+  const updates=updatePayload.updates||{};state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),...updates};
+  const counts=summary.counts||{},groups=summary.groups||{},allKeys=adminRefreshGroups.map(item=>item.key);
+  const grouped=[
+    ["Juros, inflação e agenda",["selic_current","selic_focus","macro","rates_calendar"]],
+    ["Mercados, criptos e câmbio",["global_markets","crypto","fx"]],
+    ["Notícias e comparador histórico",["headlines","comparison"]],
+    ["Catálogo, fundamentos e técnica",["catalog","fundamentals","technical_daily","technical_intraday"]],
+  ];
+  root.innerHTML=`<div class="metric-grid">${metricCard("Ações",number(groups.stock||0,0),"Ativos ativos")}${metricCard("FIIs",number(groups.fii||0,0),"Fundos imobiliários")}${metricCard("ETFs",number(counts.etf||0,0),"Fundos de índice")}${metricCard("BDRs",number(counts.bdr||0,0),"Recibos negociados na B3")}</div><div class="admin-update-actions"><button class="button secondary" data-refresh-groups="catalog">Atualizar catálogo</button><button class="button secondary" data-refresh-groups="fundamentals">Atualizar fundamentos e notas</button>${grouped.map(([label,keys])=>`<button class="button secondary" data-refresh-groups="${keys.join(",")}">${esc(label)}</button>`).join("")}<button class="button primary" data-refresh-groups="${allKeys.join(",")}" data-confirm-all-updates>Atualizar todas as 13 rotinas</button></div>${sectionCard("Todas as atualizações automáticas",adminUpdateTable(updates),"As solicitações entram na fila e não bloqueiam o site")}${sectionCard("Monitor de alertas",`<div class="admin-monitor-row"><span><strong>B3: 5 minutos no pregão</strong><small>Demais mercados: 30 minutos, continuamente</small></span><button class="button secondary" data-run-alert-monitor>Executar verificação agora</button></div><div id="alert-monitor-result" class="notice info hidden"></div>`,`A execução manual respeita as mesmas regras e não envia alertas duplicados`)}`;
+}
+
+const jobTypeLabels={market_group_refresh:"Mercado e economia",economy_headlines_refresh:"Manchetes",historical_comparison_refresh:"Comparador histórico",market_catalog_refresh:"Catálogo",market_fundamentals_refresh:"Fundamentos",market_technicals_refresh:"Indicadores técnicos",market_intraday_refresh:"Cotações intradiárias",portfolio_prices_refresh:"Preços de carteira",user_news_refresh:"Notícias do usuário",personal_backtest_matrix:"Backtest pessoal",noop:"Verificação interna"};
+function jobStatusLabel(status){return ({queued:"Na fila",running:"Executando",succeeded:"Concluído",failed:"Falhou",cancelled:"Cancelado"})[status]||status;}
+async function loadAdminJobs(root){
+  const jobs=await api("/admin/jobs?limit=100",{bypassCache:true});
+  const table=marketTable(jobs,[{label:"Trabalho",render:r=>`<strong>${esc(jobTypeLabels[r.job_type]||r.job_type)}</strong><br><small>${esc(r.id)}</small>`},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":r.status==="running"?"warning":""}">${esc(jobStatusLabel(r.status))}</span>`},{label:"Progresso",render:r=>r.progress_total?`${number(r.progress_current||0,0)} / ${number(r.progress_total,0)}`:"—"},{label:"Tentativas",render:r=>`${number(r.attempts||0,0)} / ${number(r.max_attempts||0,0)}`},{label:"Solicitado por",render:r=>esc(r.requested_by||"Sistema")},{label:"Atualização",render:r=>dateTime(r.updated_at)},{label:"Mensagem",render:r=>`${esc(r.message||"—")}${r.last_error_code?`<br><small>${esc(r.last_error_code)}</small>`:""}`},{label:"",render:r=>["failed","cancelled"].includes(r.status)?`<button class="button secondary compact" data-retry-admin-job="${esc(r.id)}">Reprocessar</button>`:""}]);
+  root.innerHTML=`<div class="admin-monitor-row"><span><strong>Fila de trabalhos em segundo plano</strong><small>Atualizações de mercado, notícias, carteiras e backtests sem travar a navegação.</small></span><button class="button secondary" data-reload-admin-jobs>Atualizar lista</button></div>${sectionCard("100 trabalhos mais recentes",table,"Falhas podem ser reprocessadas; trabalhos ativos nunca são duplicados")}`;
+}
+
 async function loadAdmin() {
   const root=$("#admin-tab-content"); root.innerHTML=loadingCards(6);
   try {
-    if(state.tabs.admin==="users") {
-      const users=await api("/access/users",{cacheTtlMs:15000});
-      const body=`<div class="table-scroll"><table><thead><tr><th>Usuário e análises</th><th>Status</th><th>Finanças</th><th>Executa backtests</th><th>Ativos</th><th>Estratégias</th><th>Análises/dia</th><th>Alertas</th><th></th></tr></thead><tbody>${users.map(user=>`<tr data-user-row="${esc(user.email)}"><td><strong>${esc(user.display_name||user.email)}</strong><br><small>${esc(user.email)}</small>${user.is_owner?'<div class="permission-grid"><span class="pill">Acesso integral</span></div>':`<div class="permission-grid"><label class="check"><input type="checkbox" data-user-field="can_use_fdi_analysis" ${user.can_use_fdi_analysis?"checked":""}> FDI</label><label class="check"><input type="checkbox" data-user-field="can_use_alb_analysis" ${user.can_use_alb_analysis?"checked":""}> ALB</label><label class="check"><input type="checkbox" data-user-field="can_use_graham_valuation" ${user.can_use_graham_valuation?"checked":""}> Graham</label><label class="check"><input type="checkbox" data-user-field="can_use_dividend_ceiling" ${user.can_use_dividend_ceiling?"checked":""}> Preço-teto</label></div>`}</td><td>${user.is_owner?'<span class="pill">Permanente</span>':`<select data-user-field="status"><option value="pending" ${user.status==="pending"?"selected":""}>Pendente</option><option value="approved" ${user.status==="approved"?"selected":""}>Aprovado</option><option value="blocked" ${user.status==="blocked"?"selected":""}>Bloqueado</option></select>`}</td><td>${user.is_owner?"Leitura e escrita":`<label class="check"><input type="checkbox" data-user-field="can_view_finances" ${user.can_view_finances?"checked":""}> Ver</label><label class="check"><input type="checkbox" data-user-field="can_write_finances" ${user.can_write_finances?"checked":""}> Editar</label>`}</td><td>${user.is_owner?"Sim":`<label class="check"><input type="checkbox" data-user-field="can_run_backtests" ${user.can_run_backtests?"checked":""}> Permitir</label>`}</td><td>${user.is_owner?"10":`<select data-user-field="backtest_asset_limit">${[0,1,3,5,10].map(value=>`<option value="${value}" ${Number(user.backtest_asset_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${user.is_owner?"5":`<select data-user-field="backtest_strategy_limit">${[0,1,2,3,5].map(value=>`<option value="${value}" ${Number(user.backtest_strategy_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${user.is_owner?"20":`<select data-user-field="backtest_daily_limit">${[0,1,5,10,20].map(value=>`<option value="${value}" ${Number(user.backtest_daily_limit||0)===value?"selected":""}>${value}</option>`).join("")}</select>`}</td><td>${number(user.alert_asset_limit||0,0)}</td><td>${user.is_owner?"":`<button class="button secondary" data-save-user="${esc(user.email)}">Salvar</button>`}</td></tr>`).join("")}</tbody></table></div>`;
-      root.innerHTML=sectionCard("Usuários e permissões",body,"Níveis disponíveis: 1, 3, 5 ou 10 ativos; 1, 2, 3 ou 5 estratégias; e 1, 5, 10 ou 20 solicitações por dia. Toda conta respeita intervalo mínimo de 60 segundos.");
-      users.filter(user=>!user.is_owner).forEach(user=>{
-        const row=root.querySelector(`[data-user-row="${CSS.escape(user.email)}"]`),grid=row?.querySelector(".permission-grid");
-        if(!grid)return;
-        grid.insertAdjacentHTML("beforeend",`<label class="check"><input type="checkbox" data-user-field="can_use_relative_valuation" ${user.can_use_relative_valuation?"checked":""}> Valuation relativo</label><label class="check"><input type="checkbox" data-user-field="can_use_economic_valuation" ${user.can_use_economic_valuation?"checked":""}> Valor econômico</label>`);
-      });
-    } else if(state.tabs.admin==="data") {
-      const [summary,updatePayload]=await Promise.all([api("/data/catalog-summary"),api("/market-dashboard/updates",{cacheTtlMs:60000})]);
-      state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),...(updatePayload.updates||{})};
-      const counts=summary.counts||{}, groups=summary.groups||{};
-      root.innerHTML=`${marketUpdatePanel(["catalog","fundamentals","technical_daily","technical_intraday"],"Atualizações do catálogo e análises")}<div class="metric-grid">${metricCard("Ações",number(groups.stock||0,0),"Ativos ativos")}${metricCard("FIIs",number(groups.fii||0,0),"Fundos imobiliários")}${metricCard("ETFs",number(counts.etf||0,0),"Fundos de índice")}${metricCard("BDRs",number(counts.bdr||0,0),"Recibos negociados na B3")}</div>
-        ${sectionCard("Atualizar catálogos",`<div class="action-grid">
-          <button class="button secondary" data-refresh-groups="catalog">Atualizar catálogo</button>
-          <button class="button primary" data-refresh-groups="fundamentals">Atualizar fundamentos e notas</button>
-          <button class="button secondary" data-refresh-groups="technical_daily">Atualizar indicadores técnicos</button>
-          <button class="button ghost" data-refresh-groups="technical_intraday">Atualizar ativos relevantes</button>
-        </div><div id="market-sync-status" class="notice hidden" style="margin-top:14px"></div>`,`A atualização simples cria ou renova o catálogo rapidamente. A atualização completa também consulta indicadores técnicos e pode levar mais tempo.`)}`;
-    } else {
-      const [health,db]=await Promise.all([api("/health"),api("/health/db")]);
-      root.innerHTML=`<div class="metric-grid">${metricCard("Aplicação",health.status==="ok"?"Operacional":"Atenção",`Versão ${health.version}`)}${metricCard("Banco de dados",db.status==="ok"?"Conectado":"Indisponível",db.database||"")}${metricCard("Hospedagem","Oracle Cloud","Produção")}${metricCard("Domínio","HTTPS ativo","Conexão segura")}</div>`;
+    if(state.tabs.admin==="levels")await loadAccessLevels(root);
+    else if(state.tabs.admin==="users")await loadAdminUsers(root);
+    else if(state.tabs.admin==="data")await loadAdminUpdates(root);
+    else if(state.tabs.admin==="jobs")await loadAdminJobs(root);
+    else {
+      const [health,db,counts]=await Promise.all([api("/health"),api("/health/db"),api("/debug/db-counts")]);
+      root.innerHTML=`<div class="metric-grid">${metricCard("Aplicação",health.status==="ok"?"Operacional":"Atenção",`Versão ${health.version}`)}${metricCard("Banco de dados",db.status==="ok"?"Conectado":"Indisponível",db.database||"")}${metricCard("Hospedagem","Oracle Cloud",health.environment||"Produção")}${metricCard("Domínio","HTTPS ativo","Conexão segura")}</div>${sectionCard("Registros principais",`<div class="detail-list">${Object.entries(counts).map(([key,value])=>`<div><span>${esc(key.replaceAll("_"," "))}</span><strong>${number(value,0)}</strong></div>`).join("")}</div>`,`Consulta somente leitura`)}`;
     }
   } catch(error) { root.innerHTML=errorState(error); }
 }
+
+async function saveAccessLevel(form){
+  const permissions={};form.querySelectorAll("[data-level-permission]").forEach(input=>permissions[input.dataset.levelPermission]=input.checked);
+  const limits={};form.querySelectorAll("[data-level-limit]").forEach(input=>limits[input.dataset.levelLimit]=Number(input.value));
+  const payload={name:form.elements.name?.value,description:form.elements.description?.value||null,is_active:Boolean(form.elements.is_active?.checked),permissions,limits};
+  const button=form.querySelector('button[type="submit"]');if(button){button.disabled=true;button.textContent="Salvando…";}
+  try{const result=await api(`/access/levels/${encodeURIComponent(form.dataset.accessLevelForm)}`,{method:"PUT",body:JSON.stringify(payload)});toast(`Nível atualizado para ${result.member_count||0} usuário(s).`,"success");await loadAdmin();}
+  catch(error){toast(error.message,"error");if(button){button.disabled=false;button.textContent="Salvar regras deste nível";}}
+}
+
+async function createAccessLevel(form){
+  const values=Object.fromEntries(new FormData(form));
+  try{await api("/access/levels",{method:"POST",body:JSON.stringify({slug:values.slug,name:values.name,description:values.description||null,is_active:true,permissions:{},limits:{}})});toast("Novo nível criado. Agora configure suas permissões.","success");await loadAdmin();}
+  catch(error){toast(error.message,"error");}
+}
+
+async function saveUserLevel(email){
+  const row=$(`[data-user-row="${CSS.escape(email)}"]`);if(!row)return;
+  const level=row.querySelector("[data-user-level]")?.value,status=row.querySelector("[data-user-status]")?.value;
+  const button=row.querySelector("[data-save-user-level]");button.disabled=true;
+  try{
+    if(level&&level!=="legacy"&&level!==row.dataset.currentLevel)await api(`/access/users/${encodeURIComponent(email)}/level`,{method:"PUT",body:JSON.stringify({level_slug:level,clear_overrides:true})});
+    if(status&&status!==row.dataset.currentStatus)await api(`/access/users/${encodeURIComponent(email)}`,{method:"PUT",body:JSON.stringify({status})});
+    toast("Usuário atualizado.","success");await loadAdmin();
+  }catch(error){toast(error.message,"error");button.disabled=false;}
+}
+
+async function bulkAssignAccessLevel(){
+  const emails=$$("[data-user-select]:checked").map(input=>input.dataset.userSelect),level=$("#bulk-access-level")?.value;
+  if(!emails.length){toast("Selecione ao menos um usuário desta página.","error");return;}
+  if(!window.confirm(`Atribuir o nível selecionado a ${emails.length} usuário(s)? Ajustes individuais anteriores serão removidos.`))return;
+  try{const result=await api("/access/users/level/bulk",{method:"PUT",body:JSON.stringify({emails,level_slug:level,clear_overrides:true})});toast(`${result.updated_count||0} usuário(s) atualizado(s).`,"success");await loadAdmin();}
+  catch(error){toast(error.message,"error");}
+}
+
+async function clearUserOverrides(email){
+  if(!window.confirm("Remover os ajustes individuais e voltar a herdar somente as regras do nível?"))return;
+  try{await api(`/access/users/${encodeURIComponent(email)}/overrides`,{method:"DELETE"});toast("Ajustes individuais removidos.","success");await loadAdmin();}
+  catch(error){toast(error.message,"error");}
+}
+
+async function runAlertMonitorNow(button){
+  button.disabled=true;const root=$("#alert-monitor-result");
+  try{const result=await api("/alerts/monitor/run",{method:"POST"});if(root){root.classList.remove("hidden");root.textContent=`Verificação concluída: ${result.checked||0} alerta(s), ${result.triggered||0} disparado(s), ${result.delivered||0} e-mail(s) entregue(s) e ${result.quote_failures||0} cotação(ões) indisponível(is).`;}toast("Monitor de alertas executado.","success");}
+  catch(error){toast(error.message,"error");}
+  finally{button.disabled=false;}
+}
+
+async function retryAdminJob(button){
+  button.disabled=true;
+  try{await api(`/admin/jobs/${encodeURIComponent(button.dataset.retryAdminJob)}/retry`,{method:"POST"});toast("Trabalho reenfileirado.","success");setTimeout(()=>loadAdmin(),1200);}
+  catch(error){toast(error.message,"error");button.disabled=false;}
+}
+
+function applyAdminUserFilters(form){
+  const values=Object.fromEntries(new FormData(form));state.adminUsersQuery=String(values.q||"").trim();state.adminUsersLevel=values.level||"";state.adminUsersStatus=values.status||"";state.adminUsersOffset=0;loadAdmin();
+}
+
+function changeAdminUsersPage(direction){state.adminUsersOffset=Math.max(0,state.adminUsersOffset+(direction==="next"?100:-100));loadAdmin();}
 
 async function syncMarketCatalog(assetType, includeTechnicals) {
   const status=$("#market-sync-status");
@@ -1638,8 +1948,22 @@ function bindEvents() {
   $("#global-search").addEventListener("input",event=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>runSearch(event.target.value),220);});
   document.addEventListener("keydown",event=>{if(event.key==="/"&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName)){event.preventDefault();$("#global-search").focus();}});
   document.addEventListener("click",event=>{
-    const refreshGroupsButton=event.target.closest("[data-refresh-groups]");if(refreshGroupsButton){refreshMarketGroups(refreshGroupsButton.dataset.refreshGroups);return;}
+    const refreshGroupsButton=event.target.closest("[data-refresh-groups]");if(refreshGroupsButton){if(refreshGroupsButton.hasAttribute("data-confirm-all-updates")&&!window.confirm("Enfileirar agora as 13 rotinas de atualização? Os dados atuais continuarão disponíveis durante o processamento."))return;refreshMarketGroups(refreshGroupsButton.dataset.refreshGroups);return;}
     const portfolioNewsButton=event.target.closest("[data-portfolio-news-refresh]");if(portfolioNewsButton){refreshPortfolioNews(portfolioNewsButton.dataset.portfolioNewsRefresh);return;}
+    const newsMode=event.target.closest("[data-portfolio-news-mode]");if(newsMode){state.portfolioNewsMode=newsMode.dataset.portfolioNewsMode;renderPortfolioTab();return;}
+    const recommendationCategory=event.target.closest("[data-recommendation-category]");if(recommendationCategory){state.recommendationCategory=recommendationCategory.dataset.recommendationCategory;renderPortfolioTab();return;}
+    const recommendationRefresh=event.target.closest("[data-recommendation-news-refresh]");if(recommendationRefresh){refreshRecommendationNews(recommendationRefresh.dataset.recommendationNewsRefresh);return;}
+    const alertSuggestion=event.target.closest("[data-alert-suggestion]");if(alertSuggestion){const input=$("#alert-symbol");if(input){input.value=alertSuggestion.dataset.alertSuggestion;$("#alert-symbol-suggestions")?.classList.add("hidden");}return;}
+    const alertStatus=event.target.closest("[data-alert-status]");if(alertStatus){setAlertStatus(alertStatus);return;}
+    const editAlert=event.target.closest("[data-edit-alert]");if(editAlert){editPriceAlert(editAlert.dataset.editAlert);return;}
+    const alertTest=event.target.closest("[data-alert-test-email]");if(alertTest){sendAlertTestEmail(alertTest);return;}
+    const saveUserLevelButton=event.target.closest("[data-save-user-level]");if(saveUserLevelButton){saveUserLevel(saveUserLevelButton.dataset.saveUserLevel);return;}
+    const clearOverrides=event.target.closest("[data-clear-user-overrides]");if(clearOverrides){clearUserOverrides(clearOverrides.dataset.clearUserOverrides);return;}
+    if(event.target.closest("[data-bulk-assign-level]")){bulkAssignAccessLevel();return;}
+    const usersPage=event.target.closest("[data-admin-users-page]");if(usersPage){changeAdminUsersPage(usersPage.dataset.adminUsersPage);return;}
+    const runMonitor=event.target.closest("[data-run-alert-monitor]");if(runMonitor){runAlertMonitorNow(runMonitor);return;}
+    const retryJob=event.target.closest("[data-retry-admin-job]");if(retryJob){retryAdminJob(retryJob);return;}
+    if(event.target.closest("[data-reload-admin-jobs]")){loadAdmin();return;}
     const portfolioPricesButton=event.target.closest("[data-portfolio-prices-refresh]");if(portfolioPricesButton){refreshPortfolioPrices(portfolioPricesButton.dataset.portfolioPricesRefresh);return;}
     const updateCustom=event.target.closest("[data-update-custom-investment]");if(updateCustom){updateCustomInvestmentValue(updateCustom);return;}
     const deleteCustom=event.target.closest("[data-delete-custom-investment]");if(deleteCustom){deleteCustomInvestment(deleteCustom);return;}
@@ -1672,6 +1996,7 @@ function bindEvents() {
   $("#save-custom-filter").addEventListener("click",saveCustomFilter);
   $("#delete-custom-filter").addEventListener("click",deleteCustomFilter);
   document.addEventListener("change",event=>{
+    if(event.target.id==="alert-market-scope"){const input=$("#alert-symbol");if(input)input.value="";renderAlertSuggestions("");}
     if(event.target.id==="below-economic"&&event.target.checked&&analysisType()==="stock"){const details=$("#economic-assumptions");if(details){details.open=true;details.scrollIntoView({behavior:"smooth",block:"nearest"});}}
     if(event.target.matches('#finance-transaction-form [name="kind"]')){
       const kind=event.target.value,form=event.target.form;
@@ -1707,7 +2032,8 @@ function bindEvents() {
       localStorage.setItem("fdi-visible-columns",JSON.stringify(state.visibleColumns));renderAnalysisRows(state.analysisRows);
     }
   });
-  document.addEventListener("submit",event=>{if(event.target.id==="backtest-form"){event.preventDefault();runBacktest(event.target);}if(event.target.id==="portfolio-position-form"){event.preventDefault();savePortfolioPosition(event.target);}if(event.target.id==="custom-investment-form"){event.preventDefault();saveCustomInvestment(event.target);}if(event.target.id==="custom-value-form"){event.preventDefault();saveCustomInvestmentValue(event.target);}if(event.target.id==="finance-transaction-form"){event.preventDefault();saveFinanceTransaction(event.target);}if(event.target.id==="finance-budget-form"){event.preventDefault();saveFinanceBudget(event.target);}});
+  document.addEventListener("input",event=>{if(event.target.id==="alert-symbol")renderAlertSuggestions(event.target.value);});
+  document.addEventListener("submit",event=>{if(event.target.id==="backtest-form"){event.preventDefault();runBacktest(event.target);}if(event.target.id==="portfolio-position-form"){event.preventDefault();savePortfolioPosition(event.target);}if(event.target.id==="custom-investment-form"){event.preventDefault();saveCustomInvestment(event.target);}if(event.target.id==="custom-value-form"){event.preventDefault();saveCustomInvestmentValue(event.target);}if(event.target.id==="finance-transaction-form"){event.preventDefault();saveFinanceTransaction(event.target);}if(event.target.id==="finance-budget-form"){event.preventDefault();saveFinanceBudget(event.target);}if(event.target.id==="price-alert-form"){event.preventDefault();savePriceAlert(event.target);}if(event.target.id==="alert-preference-form"){event.preventDefault();saveAlertPreferences(event.target);}if(event.target.matches("[data-access-level-form]")){event.preventDefault();saveAccessLevel(event.target);}if(event.target.id==="create-access-level-form"){event.preventDefault();createAccessLevel(event.target);}if(event.target.id==="admin-user-filter-form"){event.preventDefault();applyAdminUserFilters(event.target);}});
 }
 
 async function initialize() {
@@ -1719,6 +2045,7 @@ async function initialize() {
     const session=await api("/session/me");
     if(!session.authenticated){showLogin();return;}
     state.session=session; configureAccess(); showApp(); loadMarket();
+    if(session.access?.can_view_news_insights)api("/insights/news/refresh-daily",{method:"POST"}).catch(()=>{});
   } catch(error) { showLogin(); toast(error.message,"error"); }
 }
 
