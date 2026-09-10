@@ -140,7 +140,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Corrige homologação em contêiner da V1.22.0 R1 em teste"
+    & $gitPath commit -m "Isola autenticação do teste administrativo na V1.22.0 R2"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
@@ -157,4 +157,4 @@ try {
 Write-Host ""
 Write-Host "PUBLICACAO CONCLUIDA." -ForegroundColor Green
 Write-Host "A versao foi enviada ao ambiente de teste. A producao depende de aprovacao manual."
-Write-Host "Depois da atualizacao automatica, valide a V1.22.0 R1 no endereco /testefdi antes de promover."
+Write-Host "Depois da atualizacao automatica, valide a V1.22.0 R2 no endereco /testefdi antes de promover."

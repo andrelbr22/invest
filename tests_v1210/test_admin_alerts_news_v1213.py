@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from investment_engine import __version__
-from investment_engine.api.app import app, get_db, require_owner
+from investment_engine.api.app import app, get_db
 from investment_engine.core.alert_policy import (
     B3_ALERT_INTERVAL_MINUTES,
     MARKET_ALERT_INTERVAL_MINUTES,
@@ -21,6 +21,7 @@ from investment_engine.core.repositories.access import (
 )
 from investment_engine.infrastructure.db.base import Base
 from investment_engine.infrastructure.db.models import UserAccessPolicyORM
+from investment_engine.infrastructure.config import settings
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,7 +105,7 @@ def test_administration_routes_cover_levels_users_and_background_jobs():
         assert path in paths
 
 
-def test_owner_can_create_level_assign_it_and_list_effective_user_access():
+def test_owner_can_create_level_assign_it_and_list_effective_user_access(monkeypatch):
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -120,14 +121,11 @@ def test_owner_can_create_level_assign_it_and_list_effective_user_access():
             yield session
 
     app.dependency_overrides[get_db] = override_db
-    app.dependency_overrides[require_owner] = lambda: {
-        "email": "owner@example.com",
-        "is_owner": True,
-    }
+    monkeypatch.setattr(settings, "app_auth_required", False)
     try:
-        # localhost belongs to every deployment allow-list.  The owner
-        # dependency is explicit so this repository test is independent from
-        # the authentication mode inherited from the staging container.
+        # localhost belongs to every deployment allow-list.  Authentication is
+        # disabled only inside this isolated test so the built-in local owner
+        # can exercise the repository regardless of the staging environment.
         client = TestClient(app, base_url="http://localhost")
         created = client.post("/access/levels", json={
             "slug": "assinante",
