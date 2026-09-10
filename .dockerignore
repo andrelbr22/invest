@@ -1,5 +1,4 @@
 .git
-.gitignore
 .env
 .env.production
 .venv
@@ -13,7 +12,9 @@ work
 deployment/secrets/app_secrets.toml
 deployment/second-instance/worker_secrets.toml
 deployment/second-instance/worker.env
-deployment/runtime
+# Runtime secrets remain outside the image; checked-in *.env.example files are
+# intentionally retained so infrastructure validation also works in staging.
+deployment/runtime/*.env
 *.db
 *.sqlite
 *.sqlite3

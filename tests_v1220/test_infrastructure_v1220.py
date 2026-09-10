@@ -28,7 +28,7 @@ def test_worker_credentials_and_runtime_files_are_excluded_from_git_and_images()
     assert "deployment/runtime/*.env" in gitignore
     assert "deployment/second-instance/worker_secrets.toml" in dockerignore
     assert "deployment/second-instance/worker.env" in dockerignore
-    assert "deployment/runtime" in dockerignore
+    assert "deployment/runtime/*.env" in dockerignore
 
     # A release may contain templates, but never the material privado itself.
     assert not (ROOT / "deployment/second-instance/worker_secrets.toml").exists()

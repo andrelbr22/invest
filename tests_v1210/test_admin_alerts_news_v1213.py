@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from investment_engine import __version__
-from investment_engine.api.app import app, get_db
+from investment_engine.api.app import app, get_db, require_owner
 from investment_engine.core.alert_policy import (
     B3_ALERT_INTERVAL_MINUTES,
     MARKET_ALERT_INTERVAL_MINUTES,
@@ -120,8 +120,15 @@ def test_owner_can_create_level_assign_it_and_list_effective_user_access():
             yield session
 
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[require_owner] = lambda: {
+        "email": "owner@example.com",
+        "is_owner": True,
+    }
     try:
-        client = TestClient(app)
+        # localhost belongs to every deployment allow-list.  The owner
+        # dependency is explicit so this repository test is independent from
+        # the authentication mode inherited from the staging container.
+        client = TestClient(app, base_url="http://localhost")
         created = client.post("/access/levels", json={
             "slug": "assinante",
             "name": "Assinante",
