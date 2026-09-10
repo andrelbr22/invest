@@ -1,6 +1,8 @@
 "use strict";
 
 const BASE_PATH = location.pathname === "/testefdi" || location.pathname.startsWith("/testefdi/") ? "/testefdi" : "";
+const LANDING_PATH = `${BASE_PATH}/`;
+const PLATFORM_PATH = `${BASE_PATH}/plataforma/`;
 
 const state = {
   session: null,
@@ -192,7 +194,7 @@ function configureAccess() {
   if(adminItem)adminItem.classList.toggle("hidden",!(access.is_owner||access.can_manage_users));
   const adminDataTab=$('.tabs[data-tabs="admin"] [data-tab="data"]');
   if(adminDataTab)adminDataTab.classList.toggle("hidden",!(access.is_owner||access.can_sync_market));
-  for(const tab of ["jobs","system"]){const node=$(`.tabs[data-tabs="admin"] [data-tab="${tab}"]`);if(node)node.classList.toggle("hidden",!access.is_owner);}
+  for(const tab of ["jobs","operations","system"]){const node=$(`.tabs[data-tabs="admin"] [data-tab="${tab}"]`);if(node)node.classList.toggle("hidden",!access.is_owner);}
 }
 
 function setView(view, tab = null) {
@@ -1790,6 +1792,52 @@ async function loadAdminJobs(root){
   root.innerHTML=`<div class="admin-monitor-row"><span><strong>Fila de trabalhos em segundo plano</strong><small>Atualizações de mercado, notícias, carteiras e backtests sem travar a navegação.</small></span><button class="button secondary" data-reload-admin-jobs>Atualizar lista</button></div>${sectionCard("100 trabalhos mais recentes",table,"Falhas podem ser reprocessadas; trabalhos ativos nunca são duplicados")}`;
 }
 
+function bytesLabel(value){
+  const amount=Number(value);if(!Number.isFinite(amount)||amount<0)return "—";
+  const units=["B","KB","MB","GB","TB"];let index=0,current=amount;
+  while(current>=1024&&index<units.length-1){current/=1024;index+=1;}
+  return `${number(current,current>=10||index===0?0:1)} ${units[index]}`;
+}
+
+function operationsResourceCards(resources){
+  const item=(label,data)=>metricCard(label,nullable(data?.used_pct)?"—":`${number(data.used_pct,1)}%`,`${bytesLabel(data?.used_bytes)} de ${bytesLabel(data?.total_bytes)}`);
+  return `<div class="metric-grid operations-resources">${item("Memória do contêiner",resources?.container_memory?.used_pct===null?resources?.memory:resources?.container_memory)}${item("Memória da máquina",resources?.memory)}${item("Swap",resources?.swap)}${item("Disco",resources?.disk)}</div>`;
+}
+
+async function loadAdminOperations(root){
+  const payload=await api("/admin/operations",{bypassCache:true});
+  const severityLabel={healthy:"Operacional",warning:"Atenção",critical:"Crítico"};
+  const serviceRoleLabel={worker:"Processamento em segundo plano",web:"Aplicação web"};
+  const routeLabel={health:"Saúde e disponibilidade",dashboard:"Painel de Mercado",screener_50:"Filtro com até 50 ativos",screener_100:"Filtro com até 100 ativos",asset_detail:"Detalhe do ativo"};
+  const leaseLabel={"background-scheduler":"Agendador automático","price-alert-monitor-leader":"Monitor de alertas","price-alert-monitor-cycle":"Ciclo de verificação dos alertas"};
+  const services=marketTable(payload.services||[],[
+    {label:"Serviço",render:r=>`<strong>${esc(serviceRoleLabel[r.role]||r.role)}</strong><br><small>${esc(r.node_id)}</small>`},
+    {label:"Ambiente",render:r=>esc(r.environment)},
+    {label:"Versão",render:r=>`${esc(r.version)}${r.commit_sha?`<br><small>${esc(String(r.commit_sha).slice(0,10))}</small>`:""}`},
+    {label:"Heartbeat",render:r=>`${dateTime(r.last_seen_at)}<br><small>há ${number(r.age_seconds,0)} s</small>`},
+    {label:"Agendador",render:r=>r.scheduler_leader?'<span class="pill">Líder</span>':'<span class="pill warning">Espera</span>'},
+    {label:"Alertas",render:r=>r.alert_monitor_leader?'<span class="pill">Líder</span>':'<span class="pill warning">Espera</span>'},
+  ]);
+  const latencies=marketTable(payload.route_metrics?.categories||[],[
+    {label:"Rota medida",render:r=>`<strong>${esc(routeLabel[r.key]||r.key)}</strong><br><small>${number(r.count,0)} amostras</small>`},
+    {label:"p50",render:r=>nullable(r.p50_ms)?"—":`${number(r.p50_ms,0)} ms`},
+    {label:"p95",render:r=>nullable(r.p95_ms)?"—":`${number(r.p95_ms,0)} ms`},
+    {label:"Máximo",render:r=>nullable(r.max_ms)?"—":`${number(r.max_ms,0)} ms`},
+    {label:"Meta p95",render:r=>nullable(r.target_p95_ms)?"—":`${number(r.target_p95_ms,0)} ms`},
+    {label:"Situação",render:r=>!r.sample_sufficient?'<span class="pill warning">Coletando</span>':r.within_target?'<span class="pill">Dentro da meta</span>':'<span class="pill danger">Acima da meta</span>'},
+  ]);
+  const openIncidents=(payload.incidents||[]).filter(item=>item.status==="open");
+  const incidents=marketTable(openIncidents,[
+    {label:"Gravidade",render:r=>`<span class="pill ${r.severity==="critical"?"danger":"warning"}">${r.severity==="critical"?"Crítico":"Atenção"}</span>`},
+    {label:"Ocorrência",render:r=>`<strong>${esc(r.title)}</strong><br><small>${esc(r.code)}</small>`},
+    {label:"Detalhe",render:r=>esc(r.message)},
+    {label:"Desde",render:r=>dateTime(r.first_seen_at)},
+    {label:"Última detecção",render:r=>dateTime(r.last_seen_at)},
+  ]);
+  const leaders=(payload.leases||[]).map(item=>`<span class="operations-lease"><strong>${esc(leaseLabel[item.lease_name]||item.lease_name)}</strong><small>${esc(item.holder_id)} • até ${dateTime(item.expires_at)}</small></span>`).join("")||'<span class="empty-state compact">Nenhuma liderança ativa registrada.</span>';
+  root.innerHTML=`<div class="admin-monitor-row operations-summary ${esc(payload.status)}"><span><strong>Saúde operacional: ${esc(severityLabel[payload.status]||payload.status)}</strong><small>Leitura de ${dateTime(payload.generated_at)} • ${openIncidents.length} ocorrência(s) aberta(s)</small></span><button class="button secondary" data-reload-admin-operations>Atualizar diagnóstico</button></div><div class="metric-grid">${metricCard("Worker",payload.worker_health?.status==="ok"?"Ativo":"Indisponível",payload.worker_health?.last_seen_at?`Último sinal ${dateTime(payload.worker_health.last_seen_at)}`:"Sem heartbeat")}${metricCard("Na fila",number(payload.queue?.queued||0,0),`Mais antigo: ${number(payload.queue?.oldest_due_minutes||0,0)} min`)}${metricCard("Em execução",number(payload.queue?.running||0,0),`${number(payload.queue?.stale_running||0,0)} sem heartbeat`)}${metricCard("Ocorrências",number(openIncidents.length,0),openIncidents.some(i=>i.severity==="critical")?"Há item crítico":"Sem item crítico")}</div>${operationsResourceCards(payload.resources)}${sectionCard("Serviços e liderança",services,"O esperado é um único líder para o agendador e um único líder para o monitor de alertas")}${sectionCard("Leases distribuídas",`<div class="operations-leases">${leaders}</div>`,`A liderança expira automaticamente se uma VM deixar de responder`) }${sectionCard("Tempo de resposta p50/p95",latencies,`Janela de até ${number(payload.route_metrics?.window_size||0,0)} medições desde ${dateTime(payload.route_metrics?.since)}`)}${sectionCard("Ocorrências abertas",incidents||'<div class="empty-state compact"><strong>Nenhuma ocorrência aberta.</strong>Os limites monitorados estão normais.</div>',"Fila parada, falhas repetidas, dados vencidos, memória, swap, disco e latência")}`;
+}
+
 async function loadAdmin() {
   const root=$("#admin-tab-content"); root.innerHTML=loadingCards(6);
   try {
@@ -1797,6 +1845,7 @@ async function loadAdmin() {
     else if(state.tabs.admin==="users")await loadAdminUsers(root);
     else if(state.tabs.admin==="data")await loadAdminUpdates(root);
     else if(state.tabs.admin==="jobs")await loadAdminJobs(root);
+    else if(state.tabs.admin==="operations")await loadAdminOperations(root);
     else {
       const [health,db,counts]=await Promise.all([api("/health"),api("/health/db"),api("/debug/db-counts")]);
       root.innerHTML=`<div class="metric-grid">${metricCard("Aplicação",health.status==="ok"?"Operacional":"Atenção",`Versão ${health.version}`)}${metricCard("Banco de dados",db.status==="ok"?"Conectado":"Indisponível",db.database||"")}${metricCard("Hospedagem","Oracle Cloud",health.environment||"Produção")}${metricCard("Domínio","HTTPS ativo","Conexão segura")}</div>${sectionCard("Registros principais",`<div class="detail-list">${Object.entries(counts).map(([key,value])=>`<div><span>${esc(key.replaceAll("_"," "))}</span><strong>${number(value,0)}</strong></div>`).join("")}</div>`,`Consulta somente leitura`)}`;
@@ -1944,7 +1993,7 @@ function bindEvents() {
   $("#mobile-menu").addEventListener("click",()=>document.body.classList.toggle("mobile-nav-open"));
   $$(".tabs").forEach(tabs=>tabs.addEventListener("click",event=>{const button=event.target.closest(".tab");if(button){activateTab(tabs.dataset.tabs,button.dataset.tab);if(tabs.dataset.tabs==="analysis")updateFilterAvailability();}}));
   $("#refresh-market").addEventListener("click",()=>loadMarket(true));
-  $("#logout-button").addEventListener("click",async()=>{try{await api("/logout",{method:"POST"});location.href=BASE_PATH||"/";}catch(error){toast(error.message,"error");}});
+  $("#logout-button").addEventListener("click",async()=>{try{await api("/logout",{method:"POST"});location.href=LANDING_PATH;}catch(error){toast(error.message,"error");}});
   $("#global-search").addEventListener("input",event=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>runSearch(event.target.value),220);});
   document.addEventListener("keydown",event=>{if(event.key==="/"&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName)){event.preventDefault();$("#global-search").focus();}});
   document.addEventListener("click",event=>{
@@ -1964,6 +2013,7 @@ function bindEvents() {
     const runMonitor=event.target.closest("[data-run-alert-monitor]");if(runMonitor){runAlertMonitorNow(runMonitor);return;}
     const retryJob=event.target.closest("[data-retry-admin-job]");if(retryJob){retryAdminJob(retryJob);return;}
     if(event.target.closest("[data-reload-admin-jobs]")){loadAdmin();return;}
+    if(event.target.closest("[data-reload-admin-operations]")){loadAdmin();return;}
     const portfolioPricesButton=event.target.closest("[data-portfolio-prices-refresh]");if(portfolioPricesButton){refreshPortfolioPrices(portfolioPricesButton.dataset.portfolioPricesRefresh);return;}
     const updateCustom=event.target.closest("[data-update-custom-investment]");if(updateCustom){updateCustomInvestmentValue(updateCustom);return;}
     const deleteCustom=event.target.closest("[data-delete-custom-investment]");if(deleteCustom){deleteCustomInvestment(deleteCustom);return;}
@@ -2037,8 +2087,8 @@ function bindEvents() {
 }
 
 async function initialize() {
-  const login=$("#login-view a[href='/login']");
-  if(login) login.href=BASE_PATH?`/login?next=${encodeURIComponent(BASE_PATH+"/")}`:"/login";
+  const login=$("#platform-login");
+  if(login) login.href=`${BASE_PATH}/login?next=${encodeURIComponent(PLATFORM_PATH)}`;
   if(BASE_PATH){document.body.classList.add("staging-mode");document.body.insertAdjacentHTML("afterbegin",'<div class="staging-banner">AMBIENTE DE TESTE • nenhuma alteração será publicada na página oficial sem aprovação</div>');}
   renderFilterInputs(); bindEvents();
   try {

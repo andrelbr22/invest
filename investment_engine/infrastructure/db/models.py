@@ -771,6 +771,61 @@ class SharedSnapshotORM(Base):
     )
 
 
+class RuntimeLeaseORM(Base):
+    """Short distributed lease used to elect one scheduler or alert monitor."""
+
+    __tablename__ = "runtime_leases"
+    __table_args__ = (Index("ix_runtime_leases_expires", "expires_at"),)
+
+    lease_name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    holder_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class ServiceHeartbeatORM(Base):
+    """Last liveness signal from a web or worker process in either OCI VM."""
+
+    __tablename__ = "service_heartbeats"
+    __table_args__ = (
+        Index("ix_service_heartbeats_role_seen", "role", "last_seen_at"),
+        Index("ix_service_heartbeats_node", "node_id"),
+    )
+
+    service_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    role: Mapped[str] = mapped_column(String(40), nullable=False)
+    environment: Mapped[str] = mapped_column(String(40), nullable=False)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    commit_sha: Mapped[str | None] = mapped_column(String(64))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="running")
+    scheduler_leader: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    alert_monitor_leader: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    metrics_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class OperationalIncidentORM(Base):
+    """Deduplicated operational alert with an auditable open/resolved lifecycle."""
+
+    __tablename__ = "operational_incidents"
+    __table_args__ = (Index("ix_operational_incidents_status_severity", "status", "severity"),)
+
+    code: Mapped[str] = mapped_column(String(160), primary_key=True)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="warning")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    message: Mapped[str] = mapped_column(String(500), nullable=False)
+    details_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class InterestCurveSnapshotORM(Base):
     """One official daily interest-curve snapshot for historical overlays."""
 

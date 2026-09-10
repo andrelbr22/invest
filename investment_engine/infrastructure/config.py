@@ -99,6 +99,22 @@ class Settings(BaseSettings):
     background_scheduler_enabled: bool = False
     background_scheduler_tick_seconds: int = 60
     in_process_background_worker_enabled: bool = False
+    service_node_id: str = ""
+    app_commit_sha: str = ""
+    service_heartbeat_seconds: int = 30
+    runtime_lease_seconds: int = 180
+    operational_worker_stale_seconds: int = 120
+    operational_queue_warning_minutes: int = 15
+    operational_queue_critical_minutes: int = 45
+    operational_failure_window_hours: int = 6
+    operational_failure_count: int = 3
+    operational_notification_cooldown_hours: int = 6
+    operational_memory_warning_pct: float = 85.0
+    operational_memory_critical_pct: float = 95.0
+    operational_swap_warning_pct: float = 60.0
+    operational_swap_critical_pct: float = 85.0
+    operational_disk_warning_pct: float = 80.0
+    operational_disk_critical_pct: float = 90.0
     log_level: str = "INFO"
 
     @property

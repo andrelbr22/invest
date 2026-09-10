@@ -48,6 +48,8 @@ services:
       API_DOCS_ENABLED: "false"
       ALERT_MONITOR_ENABLED: "false"
       ALERT_MONITOR_POLL_SECONDS: "60"
+      SERVICE_NODE_ID: primary-web
+      APP_COMMIT_SHA: "${FDI_RELEASE_COMMIT:-unknown}"
     volumes:
       - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
     expose:
@@ -83,6 +85,8 @@ services:
       IN_PROCESS_BACKGROUND_WORKER_ENABLED: "true"
       BACKGROUND_SCHEDULER_ENABLED: "false"
       DATABASE_NAME_OVERRIDE: investment_engine_staging
+      SERVICE_NODE_ID: primary-staging
+      APP_COMMIT_SHA: "${FDI_RELEASE_COMMIT:-unknown}"
     volumes:
       - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
     expose:
@@ -111,6 +115,10 @@ services:
       BACKGROUND_SCHEDULER_ENABLED: "true"
       BACKGROUND_SCHEDULER_TICK_SECONDS: "60"
       ALERT_MONITOR_ENABLED: "true"
+      SERVICE_NODE_ID: primary-worker
+      APP_COMMIT_SHA: "${FDI_RELEASE_COMMIT:-unknown}"
+      SERVICE_HEARTBEAT_SECONDS: "30"
+      RUNTIME_LEASE_SECONDS: "180"
       DATABASE_POOL_SIZE: "1"
       DATABASE_MAX_OVERFLOW: "0"
     volumes:
@@ -124,8 +132,9 @@ services:
       postgres:
         condition: service_healthy
     mem_limit: 260m
+    stop_grace_period: 10m
     healthcheck:
-      test: ["CMD", "python", "-c", "from sqlalchemy import text; from investment_engine.infrastructure.db.session import get_session_factory; s=get_session_factory()(); s.execute(text('SELECT 1')); s.close()"]
+      test: ["CMD", "python", "-m", "scripts.check_worker_heartbeat"]
       interval: 30s
       timeout: 10s
       retries: 3

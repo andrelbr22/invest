@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#0b5d4b">
   <meta name="description" content="Formação do Investidor — análise de ativos, carteira, mercado e backtests.">
   <title>Formação do Investidor</title>
-  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./ui-assets/app.css">
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../ui-assets/app.css">
 </head>
 <body>
   <div id="login-view" class="login-view hidden">
@@ -16,7 +16,7 @@
       <p class="eyebrow">Formação do Investidor</p>
       <h1>Decisões mais claras.<br>Dados no lugar certo.</h1>
       <p>Acompanhe o mercado, analise ativos, organize sua carteira e consulte seus estudos em um ambiente seguro.</p>
-      <a class="button primary large" href="/login">Entrar com Google</a>
+      <a id="platform-login" class="button primary large" href="../login">Entrar com Google</a>
       <small>Ferramenta educacional. Não constitui recomendação de investimento.</small>
     </section>
   </div>
@@ -176,6 +176,7 @@
             <button class="tab" data-tab="users">Usuários</button>
             <button class="tab" data-tab="data">Dados de mercado</button>
             <button class="tab" data-tab="jobs">Fila de trabalhos</button>
+            <button class="tab" data-tab="operations">Operação</button>
             <button class="tab" data-tab="system">Sistema</button>
           </div>
           <div id="admin-tab-content" class="tab-content"></div>
@@ -193,6 +194,6 @@
       <div class="filter-grid"><div class="field"><label>Valor atual</label><input type="number" name="current_value" min="0" step="0.01" required></div><div class="field"><label>Data de referência</label><input type="date" name="current_value_as_of" required></div><button class="button primary wide-action" type="submit">Salvar no histórico</button></div>
     </form>
   </dialog>
-  <script src="./ui-assets/app.js" defer></script>
+  <script src="../ui-assets/app.js" defer></script>
 </body>
 </html>

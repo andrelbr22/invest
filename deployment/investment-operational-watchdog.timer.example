@@ -1,0 +1,12 @@
+[Unit]
+Description=Verifica fila, worker, dados e recursos a cada dois minutos
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+RandomizedDelaySec=15
+Persistent=true
+Unit=investment-operational-watchdog.service
+
+[Install]
+WantedBy=timers.target

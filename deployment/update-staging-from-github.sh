@@ -47,7 +47,7 @@ if ! COMPOSE_PARALLEL_LIMIT=1 docker compose -f "${COMPOSE_FILE}" build staging;
   exit 1
 fi
 "${PROJECT_DIR}/deployment/refresh-staging-db.sh"
-docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate staging
+FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate staging
 
 CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q staging)"
 for _ in $(seq 1 48); do

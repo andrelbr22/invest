@@ -9,6 +9,7 @@ import csv
 import io
 import logging
 import math
+import mimetypes
 import re
 import threading
 from time import monotonic
@@ -63,6 +64,13 @@ from ..core.jobs.schedules import (
     refresh_status,
 )
 from ..core.jobs.worker import BackgroundWorker
+from ..core.observability import (
+    OperationalHealthService,
+    ROUTE_LATENCIES,
+    collect_resource_metrics,
+    request_metric_category,
+    screener_metric_category,
+)
 from ..core.portfolio.service import build_portfolio_snapshot, classification_for, localize_classification
 from ..core.portfolio.custom_investments import (
     CUSTOM_INVESTMENT_CATEGORIES,
@@ -149,7 +157,15 @@ app.add_middleware(
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts_list)
 
 _WEB_ROOT = Path(__file__).resolve().parents[1] / "web"
+# Windows does not always register WebP.  With ``nosniff`` enabled, serving a
+# cover as application/octet-stream can make otherwise valid images disappear.
+mimetypes.add_type("image/webp", ".webp")
 app.mount("/ui-assets", StaticFiles(directory=str(_WEB_ROOT / "static")), name="ui-assets")
+app.mount(
+    "/portal-assets",
+    StaticFiles(directory=str(_WEB_ROOT / "portal-assets")),
+    name="portal-assets",
+)
 
 _OAUTH = OAuth()
 if settings.google_client_id and settings.google_client_secret:
@@ -189,12 +205,30 @@ async def security_headers(request, call_next):
     try:
         response = await call_next(request)
     except Exception:
+        ROUTE_LATENCIES.observe(
+            request_metric_category(
+                request.url.path,
+                request.method,
+                getattr(request.state, "metric_category", None),
+            ),
+            (monotonic() - started) * 1000,
+            500,
+        )
         _REQUEST_LOGGER.exception(
             "http_request_failed request_id=%s method=%s path=%s",
             request_id, request.method, request.url.path,
         )
         raise
     duration_ms = round((monotonic() - started) * 1000, 2)
+    ROUTE_LATENCIES.observe(
+        request_metric_category(
+            request.url.path,
+            request.method,
+            getattr(request.state, "metric_category", None),
+        ),
+        duration_ms,
+        response.status_code,
+    )
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -207,8 +241,14 @@ async def security_headers(request, call_next):
     private_path = request.url.path.startswith((
         "/session", "/search", "/alerts", "/portfolios", "/backtests",
         "/access", "/insights", "/automation", "/market-dashboard", "/admin/jobs",
+        "/admin/operations",
     ))
-    response.headers["Cache-Control"] = "no-store" if private_path else "no-cache"
+    immutable_book_cover = request.url.path.startswith("/portal-assets/books/")
+    response.headers["Cache-Control"] = (
+        "no-store" if private_path
+        else "public, max-age=31536000, immutable" if immutable_book_cover
+        else "no-cache"
+    )
     _REQUEST_LOGGER.info(
         "http_request request_id=%s method=%s path=%s status=%s duration_ms=%s",
         request_id, request.method, request.url.path, response.status_code, duration_ms,
@@ -957,9 +997,39 @@ class SavedScreeningFilterUpdateRequest(BaseModel):
     filters: dict | None = None
 
 
+_PLATFORM_DESTINATIONS = frozenset({"/plataforma/", "/testefdi/plataforma/"})
+
+
+def _safe_platform_destination(value: object) -> str:
+    """Keep OAuth redirects on the requested environment without an open redirect."""
+    candidate = str(value or "").strip()
+    return candidate if candidate in _PLATFORM_DESTINATIONS else "/plataforma/"
+
+
 @app.get("/", include_in_schema=False)
+def public_portal():
+    return FileResponse(_WEB_ROOT / "portal.html")
+
+
+@app.head("/", include_in_schema=False)
+def public_portal_head():
+    return Response(status_code=200, media_type="text/html")
+
+
+@app.get("/plataforma", include_in_schema=False)
+def platform_slash_redirect():
+    # Relative Location preserves /testefdi when Caddy has stripped the prefix.
+    return RedirectResponse("plataforma/", status_code=308)
+
+
+@app.get("/plataforma/", include_in_schema=False)
 def web_application():
     return FileResponse(_WEB_ROOT / "index.html")
+
+
+@app.head("/plataforma/", include_in_schema=False)
+def web_application_head():
+    return Response(status_code=200, media_type="text/html")
 
 
 @app.get("/favicon.svg", include_in_schema=False)
@@ -969,33 +1039,33 @@ def favicon():
 
 @app.get("/login", include_in_schema=False)
 async def login(request: Request):
+    destination = _safe_platform_destination(request.query_params.get("next"))
     if not settings.app_auth_required:
-        return RedirectResponse("/")
+        return RedirectResponse(destination)
     client = _OAUTH.create_client("google")
     if client is None or not settings.google_auth_configured:
         raise HTTPException(503, "google_auth_not_configured")
-    destination = str(request.query_params.get("next") or "/")
-    request.session["oauth_next"] = destination if destination == "/testefdi/" else "/"
+    request.session["oauth_next"] = destination
     redirect_uri = settings.oauth_redirect_uri.strip() or str(request.url_for("oauth2callback"))
     return await client.authorize_redirect(request, redirect_uri)
 
 
 @app.get("/oauth2callback", include_in_schema=False, name="oauth2callback")
 async def oauth2callback(request: Request):
+    destination = _safe_platform_destination(request.session.get("oauth_next"))
     client = _OAUTH.create_client("google")
     if client is None:
-        return RedirectResponse("/?auth_error=not_configured", status_code=303)
+        return RedirectResponse(f"{destination}?auth_error=not_configured", status_code=303)
     try:
         token = await client.authorize_access_token(request)
         userinfo = token.get("userinfo") or await client.userinfo(token=token)
     except OAuthError:
-        return RedirectResponse("/?auth_error=authorization_failed", status_code=303)
+        return RedirectResponse(f"{destination}?auth_error=authorization_failed", status_code=303)
     email = str((userinfo or {}).get("email") or "").strip().lower()
     verified = (userinfo or {}).get("email_verified")
     if not email or verified is False:
-        return RedirectResponse("/?auth_error=email_not_verified", status_code=303)
+        return RedirectResponse(f"{destination}?auth_error=email_not_verified", status_code=303)
     display_name = str((userinfo or {}).get("name") or email.split("@", 1)[0]).strip()[:160]
-    destination = request.session.get("oauth_next") if request.session.get("oauth_next") == "/testefdi/" else "/"
     request.session.clear()
     request.session["user"] = {
         "email": email,
@@ -1051,6 +1121,14 @@ def health_db(db: Session = Depends(get_db)):
         raise HTTPException(503, detail={"database": "unreachable"})
 
 
+@app.get("/health/worker")
+def health_worker(db: Session = Depends(get_db)):
+    state = OperationalHealthService(db).worker_health()
+    if state["status"] != "ok":
+        raise HTTPException(503, detail={"status": "worker_unavailable"})
+    return {"status": "ok", "worker": "reachable", "version": state.get("version")}
+
+
 @app.get("/ready")
 def readiness(db: Session = Depends(get_db)):
     """Report whether this process can safely receive application traffic."""
@@ -1077,6 +1155,20 @@ def list_background_jobs(
     db: Session = Depends(get_db),
 ):
     return [background_job_dict(row) for row in BackgroundJobRepository(db).list_recent(limit)]
+
+
+@app.get("/admin/operations")
+def admin_operations(
+    _access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    payload = OperationalHealthService(db).overview(
+        local_resources=collect_resource_metrics(),
+        include_route_metrics=True,
+        sync_incidents=True,
+    )
+    db.commit()
+    return payload
 
 
 @app.get("/admin/jobs/{job_id}")
@@ -1112,7 +1204,7 @@ def retry_background_job(
 
 @app.get("/debug/db-counts")
 def debug_db_counts(_access=Depends(require_owner), db: Session = Depends(get_db)):
-    names = ["assets", "fundamental_snapshots", "technical_snapshots", "score_snapshots", "valuation_snapshots", "price_bars", "portfolios", "portfolio_positions", "portfolio_custom_investments", "finance_transactions", "finance_monthly_budgets", "interest_curve_snapshots", "backtest_runs", "backtest_trades", "backtest_batch_jobs", "access_levels", "user_access_policies", "user_news_cache", "price_alerts", "price_alert_events", "background_jobs"]
+    names = ["assets", "fundamental_snapshots", "technical_snapshots", "score_snapshots", "valuation_snapshots", "price_bars", "portfolios", "portfolio_positions", "portfolio_custom_investments", "finance_transactions", "finance_monthly_budgets", "interest_curve_snapshots", "backtest_runs", "backtest_trades", "backtest_batch_jobs", "access_levels", "user_access_policies", "user_news_cache", "price_alerts", "price_alert_events", "background_jobs", "runtime_leases", "service_heartbeats", "operational_incidents"]
     counts = {}
     for name in names:
         counts[name] = db.execute(text(f"SELECT COUNT(*) FROM {name}")).scalar_one()
@@ -2307,6 +2399,8 @@ def screen_db_custom(
 
 @app.post("/screen/advanced")
 def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
+    metric_started = monotonic()
+    metric_status = 200
     try:
         _require_valuation_access(req.valuation_flags, _access)
         fundamental_filters = {k: v.model_dump(exclude_none=True) for k, v in req.fundamental_filters.items()}
@@ -2341,7 +2435,17 @@ def screen_advanced(req: AdvancedScreenRequest, _access=Depends(require_permissi
         result["rows"] = [_authorized_valuation_row(dict(row), _access) for row in result.get("rows", [])]
         return result
     except ValueError as exc:
+        metric_status = 422
         raise HTTPException(422, detail=str(exc))
+    except Exception:
+        metric_status = 500
+        raise
+    finally:
+        ROUTE_LATENCIES.observe(
+            screener_metric_category(req.limit),
+            (monotonic() - metric_started) * 1000,
+            metric_status,
+        )
 
 
 @app.get("/assets/{ticker}/prices")

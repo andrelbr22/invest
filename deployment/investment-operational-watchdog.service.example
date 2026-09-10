@@ -1,0 +1,11 @@
+[Unit]
+Description=Verifica a saúde operacional do Formação do Investidor
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/invest
+ExecStart=/usr/bin/flock -n /tmp/investment-operational-watchdog.lock /usr/bin/docker compose -f /home/ubuntu/invest/docker-compose.oracle-web.yml exec -T app python -m scripts.run_operational_watchdog --fail-on-critical
+TimeoutStartSec=120

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import socket
 import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from ..repositories.alerts import AlertRepository, alert_dict, event_dict
+from ..repositories.operations import OperationsRepository
 from ...data.providers.intraday import IntradayQuoteProvider
 from ...integrations.email_delivery import AlertEmailSender
 from ...infrastructure.config import settings
@@ -76,16 +79,51 @@ class AlertService:
 
 
 class AlertMonitor:
-    """One lightweight monitor per API process with quote de-duplication."""
+    """Distributed singleton monitor with quote de-duplication."""
 
     def __init__(self, *, provider=None, sender=None, poll_seconds: int | None = None):
         self.provider = provider or IntradayQuoteProvider()
         self.sender = sender or AlertEmailSender()
         self.poll_seconds = max(30, int(poll_seconds or settings.alert_monitor_poll_seconds))
+        node = str(settings.service_node_id or socket.gethostname()).strip()
+        self.holder_id = f"alerts:{settings.app_environment}:{node}:{os.getpid()}"[:160]
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._start_lock = threading.Lock()
         self._run_lock = threading.Lock()
+        self._is_leader = False
+
+    @property
+    def is_leader(self) -> bool:
+        return self._is_leader
+
+    def _acquire_lease(self, name: str, *, ttl_seconds: int) -> bool:
+        session = get_session_factory()()
+        try:
+            acquired = OperationsRepository(session).acquire_lease(
+                name,
+                self.holder_id,
+                ttl_seconds=ttl_seconds,
+                metadata={"node_id": settings.service_node_id or socket.gethostname()},
+            )
+            session.commit()
+            return acquired
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def _release_lease(self, name: str) -> None:
+        session = get_session_factory()()
+        try:
+            OperationsRepository(session).release_lease(name, self.holder_id)
+            session.commit()
+        except Exception:
+            session.rollback()
+            logger.warning("alert distributed lease release failed: %s", name)
+        finally:
+            session.close()
 
     def start(self) -> None:
         with self._start_lock:
@@ -99,11 +137,19 @@ class AlertMonitor:
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
+        if self._is_leader:
+            self._release_lease("price-alert-monitor-leader")
+        self._is_leader = False
 
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                self.run_once()
+                self._is_leader = self._acquire_lease(
+                    "price-alert-monitor-leader",
+                    ttl_seconds=max(settings.runtime_lease_seconds, self.poll_seconds * 3),
+                )
+                if self._is_leader:
+                    self.run_once()
             except Exception:
                 logger.exception("price alert cycle failed")
             self._stop.wait(self.poll_seconds)
@@ -112,7 +158,20 @@ class AlertMonitor:
         if not self._run_lock.acquire(blocking=False):
             return {"checked": 0, "triggered": 0, "delivered": 0, "quote_failures": 0, "already_running": True}
         try:
-            return self._run_once(now)
+            try:
+                acquired = self._acquire_lease(
+                    "price-alert-monitor-cycle",
+                    ttl_seconds=max(300, self.poll_seconds * 4),
+                )
+            except Exception:
+                logger.exception("alert distributed lease unavailable")
+                return {"checked": 0, "triggered": 0, "delivered": 0, "quote_failures": 0, "lease_unavailable": True}
+            if not acquired:
+                return {"checked": 0, "triggered": 0, "delivered": 0, "quote_failures": 0, "already_running": True}
+            try:
+                return self._run_once(now)
+            finally:
+                self._release_lease("price-alert-monitor-cycle")
         finally:
             self._run_lock.release()
 
@@ -154,7 +213,7 @@ class AlertMonitor:
             if not quote:
                 continue
             with session_factory() as session:
-                row = session.get(PriceAlertORM, item["id"])
+                row = session.get(PriceAlertORM, item["id"], with_for_update=True)
                 if row is None or row.status != "active":
                     continue
                 if row.last_quote_at is not None and _utc(row.last_quote_at) >= _utc(quote["quote_at"]):

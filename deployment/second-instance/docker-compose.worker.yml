@@ -10,11 +10,15 @@ services:
     environment:
       APP_ENVIRONMENT: production-worker
       APP_SECRETS_FILE: /app/secrets/worker_secrets.toml
+      SERVICE_NODE_ID: "${FDI_WORKER_NODE_ID:-worker-02}"
+      APP_COMMIT_SHA: "${FDI_RELEASE_COMMIT:-unknown}"
       BACKGROUND_WORKER_POLL_SECONDS: "2"
-      BACKGROUND_SCHEDULER_ENABLED: "true"
+      BACKGROUND_SCHEDULER_ENABLED: "${FDI_COORDINATOR_ENABLED:-false}"
       BACKGROUND_SCHEDULER_TICK_SECONDS: "60"
-      ALERT_MONITOR_ENABLED: "true"
-      DATABASE_POOL_SIZE: "2"
+      ALERT_MONITOR_ENABLED: "${FDI_COORDINATOR_ENABLED:-false}"
+      SERVICE_HEARTBEAT_SECONDS: "30"
+      RUNTIME_LEASE_SECONDS: "180"
+      DATABASE_POOL_SIZE: "3"
       DATABASE_MAX_OVERFLOW: "0"
       DATABASE_POOL_TIMEOUT_SECONDS: "30"
     volumes:
@@ -23,9 +27,10 @@ services:
     dns:
       - 169.254.169.254
       - 1.1.1.1
-    mem_limit: 600m
+    mem_limit: "${FDI_WORKER_MEMORY_LIMIT:-2g}"
+    stop_grace_period: 10m
     healthcheck:
-      test: ["CMD", "python", "-c", "from sqlalchemy import text; from investment_engine.infrastructure.db.session import get_session_factory; s=get_session_factory()(); s.execute(text('SELECT 1')); s.close()"]
+      test: ["CMD", "python", "-m", "scripts.check_worker_heartbeat"]
       interval: 30s
       timeout: 10s
       retries: 4

@@ -1,6 +1,14 @@
-# Formação do Investidor • V1.21.3
+# Formação do Investidor • V1.22.0
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
+
+## Portal, duas instâncias e observabilidade V1.22.0
+
+A raiz do domínio agora é um portal editorial que apresenta a Plataforma de Investimentos e sete livros. A aplicação autenticada permanece integral em `/plataforma/`; staging usa `/testefdi/` e `/testefdi/plataforma/`.
+
+A camada pesada pode operar em uma segunda VM Oracle sem duplicar o banco: Caddy, FastAPI, staging e o único PostgreSQL permanecem na VM1; somente o worker vai para a VM2 através da rede privada. Leases no PostgreSQL asseguram um scheduler e um monitor de alertas, enquanto heartbeat, incidentes, recursos e p50/p95 aparecem em `Administração > Operação`.
+
+Consulte `V1_22_0.md`, `ARQUITETURA_DUAS_INSTANCIAS_V1220.md` e `INSTRUCOES_ORACLE_V1220.md` antes do primeiro corte. O procedimento de retorno à VM principal é obrigatoriamente testado antes de considerar a migração concluída.
 
 ## Administração, alertas e notícias V1.21.3
 
@@ -87,8 +95,10 @@ manualmente para:
 
 `https://formacaodoinvestidor.com.br/`
 
+A plataforma autenticada fica em `/plataforma/` nos dois ambientes.
+
 As credenciais, o banco e os backups permanecem somente no servidor. Consulte
-`INSTRUCOES_ORACLE_V1213.md` para a homologação desta versão.
+`INSTRUCOES_ORACLE_V1220.md` para a homologação desta versão.
 
 ## Segurança e escopo
 

@@ -1,7 +1,6 @@
-# NÃO ative antes de concluir as regras de rede privada descritas no guia.
-# FDI_PRIVATE_DB_BIND deve ser o IP PRIVADO da primeira instância, nunca 0.0.0.0.
 services:
   postgres:
+    # Use este arquivo somente na VM principal e sempre junto do compose base.
+    # A variável deve ser o IP PRIVADO da VNIC da VM1. Não use 0.0.0.0.
     ports:
-      - "${FDI_PRIVATE_DB_BIND:?Informe o IP privado da primeira instancia}:5432:5432"
-
+      - "${FDI_PRIVATE_DB_BIND:?Informe o IP privado da VM1}:5432:5432"

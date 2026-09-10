@@ -10,7 +10,9 @@ formacaodoinvestidor.com.br, www.formacaodoinvestidor.com.br {
     }
 
     redir /testefdi /testefdi/ 308
+    redir /testefdi/plataforma /testefdi/plataforma/ 308
     handle_path /testefdi/* {
+        header X-Robots-Tag "noindex, nofollow"
         reverse_proxy staging:8000
     }
     @backtestCallbacks {

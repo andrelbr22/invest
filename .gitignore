@@ -9,6 +9,9 @@ __pycache__/
 .coverage
 htmlcov/
 deployment/secrets/app_secrets.toml
+deployment/second-instance/worker_secrets.toml
+deployment/second-instance/worker.env
+deployment/runtime/*.env
 chaves_oracle/
 *.key
 *.pem

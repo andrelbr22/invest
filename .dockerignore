@@ -11,6 +11,9 @@ __pycache__
 outputs
 work
 deployment/secrets/app_secrets.toml
+deployment/second-instance/worker_secrets.toml
+deployment/second-instance/worker.env
+deployment/runtime
 *.db
 *.sqlite
 *.sqlite3

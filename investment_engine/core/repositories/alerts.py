@@ -145,7 +145,7 @@ class AlertRepository:
                 (PriceAlertORM.market_scope == "b3") & or_(PriceAlertORM.last_checked_at.is_(None), PriceAlertORM.last_checked_at <= b3_cutoff),
                 (PriceAlertORM.market_scope != "b3") & or_(PriceAlertORM.last_checked_at.is_(None), PriceAlertORM.last_checked_at <= market_cutoff),
             ),
-        ).order_by(PriceAlertORM.market_scope, PriceAlertORM.provider_symbol)
+        ).order_by(PriceAlertORM.market_scope, PriceAlertORM.provider_symbol).with_for_update(skip_locked=True)
         return list(self.session.scalars(stmt))
 
     def mark_checked(self, row: PriceAlertORM, now: datetime) -> None:
