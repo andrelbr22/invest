@@ -1,6 +1,12 @@
-# Formação do Investidor • V1.22.0
+# Formação do Investidor • V1.22.1
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
+
+## Desempenho e estabilidade V1.22.1
+
+A V1.22.1 elimina a varredura integral dos históricos no screener, acrescenta índices próprios para localizar o snapshot mais recente e mostra a lista antes de carregar os sinais complementares de backtests. Consultas simultâneas são reaproveitadas, o cache deixa de ser apagado por simples pedidos de atualização e a produção recebe prioridade de recursos sobre staging e tarefas de fundo.
+
+A pilha anterior é reconhecida por seus rótulos e mantida parada, sem exclusão de volumes ou dados. Consulte `V1_22_1.md`, `RELATORIO_DESEMPENHO_VM1_V1220.md` e `INSTRUCOES_ORACLE_V1221.md` para homologação e medição.
 
 ## Portal, duas instâncias e observabilidade V1.22.0
 
@@ -98,7 +104,7 @@ manualmente para:
 A plataforma autenticada fica em `/plataforma/` nos dois ambientes.
 
 As credenciais, o banco e os backups permanecem somente no servidor. Consulte
-`INSTRUCOES_ORACLE_V1220.md` para a homologação desta versão.
+`INSTRUCOES_ORACLE_V1221.md` para a homologação desta versão.
 
 ## Segurança e escopo
 

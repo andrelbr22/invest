@@ -12,7 +12,7 @@ services:
       APP_SECRETS_FILE: /app/secrets/worker_secrets.toml
       SERVICE_NODE_ID: "${FDI_WORKER_NODE_ID:-worker-02}"
       APP_COMMIT_SHA: "${FDI_RELEASE_COMMIT:-unknown}"
-      BACKGROUND_WORKER_POLL_SECONDS: "2"
+      BACKGROUND_WORKER_POLL_SECONDS: "5"
       BACKGROUND_SCHEDULER_ENABLED: "${FDI_COORDINATOR_ENABLED:-false}"
       BACKGROUND_SCHEDULER_TICK_SECONDS: "60"
       ALERT_MONITOR_ENABLED: "${FDI_COORDINATOR_ENABLED:-false}"
@@ -28,6 +28,13 @@ services:
       - 169.254.169.254
       - 1.1.1.1
     mem_limit: "${FDI_WORKER_MEMORY_LIMIT:-2g}"
+    pids_limit: 120
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     stop_grace_period: 10m
     healthcheck:
       test: ["CMD", "python", "-m", "scripts.check_worker_heartbeat"]

@@ -23,6 +23,13 @@ services:
       - max_connections=30
     shm_size: 64mb
     mem_limit: 220m
+    cpu_shares: 1024
+    pids_limit: 80
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -48,12 +55,26 @@ services:
       API_DOCS_ENABLED: "false"
       ALERT_MONITOR_ENABLED: "false"
       ALERT_MONITOR_POLL_SECONDS: "60"
+      DATABASE_POOL_SIZE: "4"
+      DATABASE_MAX_OVERFLOW: "1"
+      DATABASE_POOL_TIMEOUT_SECONDS: "10"
       SERVICE_NODE_ID: primary-web
       APP_COMMIT_SHA: "${FDI_RELEASE_COMMIT:-unknown}"
     volumes:
       - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
     expose:
       - "8000"
+    # Em uma VM de 1 GB, a navegação e o banco devem vencer a disputa por CPU.
+    # cpu_shares só atua quando existe contenção; não reduz a capacidade ociosa.
+    cpu_shares: 1024
+    mem_limit: 340m
+    pids_limit: 100
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - frontend
       - backend
@@ -83,7 +104,11 @@ services:
       API_DOCS_ENABLED: "false"
       ALERT_MONITOR_ENABLED: "false"
       IN_PROCESS_BACKGROUND_WORKER_ENABLED: "true"
+      BACKGROUND_WORKER_POLL_SECONDS: "10"
       BACKGROUND_SCHEDULER_ENABLED: "false"
+      DATABASE_POOL_SIZE: "2"
+      DATABASE_MAX_OVERFLOW: "0"
+      DATABASE_POOL_TIMEOUT_SECONDS: "10"
       DATABASE_NAME_OVERRIDE: investment_engine_staging
       SERVICE_NODE_ID: primary-staging
       APP_COMMIT_SHA: "${FDI_RELEASE_COMMIT:-unknown}"
@@ -91,6 +116,16 @@ services:
       - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
     expose:
       - "8000"
+    # O ambiente de homologação continua disponível, mas cede CPU à produção.
+    cpu_shares: 128
+    mem_limit: 240m
+    pids_limit: 80
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - frontend
       - backend
@@ -111,7 +146,7 @@ services:
     environment:
       APP_ENVIRONMENT: production
       APP_SECRETS_FILE: /app/secrets/app_secrets.toml
-      BACKGROUND_WORKER_POLL_SECONDS: "2"
+      BACKGROUND_WORKER_POLL_SECONDS: "5"
       BACKGROUND_SCHEDULER_ENABLED: "true"
       BACKGROUND_SCHEDULER_TICK_SECONDS: "60"
       ALERT_MONITOR_ENABLED: "true"
@@ -132,6 +167,14 @@ services:
       postgres:
         condition: service_healthy
     mem_limit: 260m
+    cpu_shares: 256
+    pids_limit: 100
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     stop_grace_period: 10m
     healthcheck:
       test: ["CMD", "python", "-m", "scripts.check_worker_heartbeat"]
@@ -150,6 +193,14 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+    cpu_shares: 768
+    mem_limit: 80m
+    pids_limit: 80
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - ./deployment/Caddyfile.oracle-micro.example:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

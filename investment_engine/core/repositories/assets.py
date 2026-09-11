@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import select, and_, or_, func, desc
+from sqlalchemy import select, and_, or_, false, func, desc
 from sqlalchemy.orm import Session, aliased
 from ...infrastructure.db.models import AssetORM, FundamentalSnapshotORM, TechnicalSnapshotORM, PriceBarORM, ValuationSnapshotORM, ScoreSnapshotORM
 from ...core.instruments import B3_CATALOG_TYPES, is_supported_ticker, require_supported_ticker, ticker_exclusion_reason
@@ -29,7 +29,8 @@ class AssetRepository:
         return self.session.scalar(select(AssetORM).where(AssetORM.ticker == ticker.upper()))
 
     def list_assets(self, asset_type: str | None = None, limit: int = 100, offset: int = 0) -> list[AssetORM]:
-        stmt = select(AssetORM).where(AssetORM.is_active.is_(True), self._supported_catalog_clause()).order_by(AssetORM.ticker).limit(limit).offset(offset)
+        supported_types = {asset_type} if asset_type else None
+        stmt = select(AssetORM).where(AssetORM.is_active.is_(True), self._supported_catalog_clause(supported_types)).order_by(AssetORM.ticker).limit(limit).offset(offset)
         if asset_type:
             stmt = stmt.where(AssetORM.asset_type == asset_type)
         return list(self.session.scalars(stmt))
@@ -76,15 +77,20 @@ class AssetRepository:
         return [AssetORM.ticker.like(("_" * root_length) + suffix) for root_length in root_lengths for suffix in suffixes]
 
     @classmethod
-    def _supported_catalog_clause(cls):
+    def _supported_catalog_clause(cls, asset_types: set[str] | None = None):
         roots = (3, 4, 5)
-        stock = and_(AssetORM.asset_type == "stock", or_(*cls._ticker_patterns(roots, ("3", "4", "5", "6", "7", "8", "11"))))
-        fii = and_(AssetORM.asset_type == "fii", or_(*cls._ticker_patterns(roots, ("11",))))
-        etf = and_(AssetORM.asset_type == "etf", or_(*cls._ticker_patterns(roots, ("11",))))
-        bdr = and_(AssetORM.asset_type == "bdr", or_(*cls._ticker_patterns(roots, tuple(f"3{i}" for i in range(1, 10)))))
-        future = and_(AssetORM.asset_type == "future", AssetORM.ticker.like("%1!"))
-        other = AssetORM.asset_type.notin_(B3_CATALOG_TYPES)
-        return or_(stock, fii, etf, bdr, future, other)
+        clauses = {
+            "stock": and_(AssetORM.asset_type == "stock", or_(*cls._ticker_patterns(roots, ("3", "4", "5", "6", "7", "8", "11")))),
+            "fii": and_(AssetORM.asset_type == "fii", or_(*cls._ticker_patterns(roots, ("11",)))),
+            "etf": and_(AssetORM.asset_type == "etf", or_(*cls._ticker_patterns(roots, ("11",)))),
+            "bdr": and_(AssetORM.asset_type == "bdr", or_(*cls._ticker_patterns(roots, tuple(f"3{i}" for i in range(1, 10))))),
+            "future": and_(AssetORM.asset_type == "future", AssetORM.ticker.like("%1!")),
+        }
+        requested = set(asset_types) if asset_types is not None else set(B3_CATALOG_TYPES)
+        selected = [clauses[item] for item in sorted(requested & set(B3_CATALOG_TYPES))]
+        if asset_types is None or requested - set(B3_CATALOG_TYPES):
+            selected.append(AssetORM.asset_type.notin_(B3_CATALOG_TYPES))
+        return or_(*selected) if selected else false()
 
     def deactivate_unsupported_assets(self) -> list[dict]:
         """Stop legacy noise from receiving snapshots without deleting history."""
@@ -287,44 +293,52 @@ class AssetRepository:
         return self.session.scalar(select(ScoreSnapshotORM).where(ScoreSnapshotORM.asset_id==asset_id).order_by(ScoreSnapshotORM.as_of.desc(), ScoreSnapshotORM.calculated_at.desc()).limit(1))
 
     def _latest_fundamental_alias(self):
-        ranked = (
-            select(
-                FundamentalSnapshotORM,
-                func.row_number().over(
-                    partition_by=FundamentalSnapshotORM.asset_id,
-                    order_by=(FundamentalSnapshotORM.reference_date.desc(), FundamentalSnapshotORM.retrieved_at.desc()),
-                ).label("rn"),
+        latest_id = (
+            select(FundamentalSnapshotORM.id)
+            .where(FundamentalSnapshotORM.asset_id == AssetORM.id)
+            .order_by(
+                FundamentalSnapshotORM.reference_date.desc(),
+                FundamentalSnapshotORM.retrieved_at.desc(),
+                FundamentalSnapshotORM.id.desc(),
             )
-            .subquery()
+            .limit(1)
+            .correlate(AssetORM)
+            .scalar_subquery()
         )
-        return aliased(FundamentalSnapshotORM, ranked), ranked
+        return aliased(FundamentalSnapshotORM), latest_id
 
     def _latest_technical_alias(self, timeframe="1D"):
-        ranked = (
-            select(
-                TechnicalSnapshotORM,
-                func.row_number().over(
-                    partition_by=TechnicalSnapshotORM.asset_id,
-                    order_by=(TechnicalSnapshotORM.as_of.desc(), TechnicalSnapshotORM.retrieved_at.desc()),
-                ).label("rn"),
+        latest_id = (
+            select(TechnicalSnapshotORM.id)
+            .where(
+                TechnicalSnapshotORM.asset_id == AssetORM.id,
+                TechnicalSnapshotORM.timeframe == timeframe,
             )
-            .where(TechnicalSnapshotORM.timeframe == timeframe)
-            .subquery()
+            .order_by(
+                TechnicalSnapshotORM.as_of.desc(),
+                TechnicalSnapshotORM.retrieved_at.desc(),
+                TechnicalSnapshotORM.id.desc(),
+            )
+            .limit(1)
+            .correlate(AssetORM)
+            .scalar_subquery()
         )
-        return aliased(TechnicalSnapshotORM, ranked), ranked
+        return aliased(TechnicalSnapshotORM), latest_id
 
     def _latest_score_alias(self):
-        ranked = (
-            select(
-                ScoreSnapshotORM,
-                func.row_number().over(
-                    partition_by=ScoreSnapshotORM.asset_id,
-                    order_by=(ScoreSnapshotORM.as_of.desc(), ScoreSnapshotORM.calculated_at.desc()),
-                ).label("rn"),
+        latest_id = (
+            select(ScoreSnapshotORM.id)
+            .where(ScoreSnapshotORM.asset_id == AssetORM.id)
+            .order_by(
+                ScoreSnapshotORM.as_of.desc(),
+                ScoreSnapshotORM.calculated_at.desc(),
+                ScoreSnapshotORM.id.desc(),
             )
-            .subquery()
+            .limit(1)
+            .correlate(AssetORM)
+            .scalar_subquery()
         )
-        return aliased(ScoreSnapshotORM, ranked), ranked
+        return aliased(ScoreSnapshotORM), latest_id
 
     @staticmethod
     def _apply_min(stmt, col, threshold):
@@ -340,16 +354,17 @@ class AssetRepository:
 
     def screen_latest_stocks(self, filters, limit=100, offset=0):
         """PostgreSQL-first screener: latest snapshots + filters are executed in SQL."""
-        f, fq = self._latest_fundamental_alias()
-        t, tq = self._latest_technical_alias("1D")
-        sc, sq = self._latest_score_alias()
+        f, latest_fundamental_id = self._latest_fundamental_alias()
+        t, latest_technical_id = self._latest_technical_alias("1D")
+        sc, latest_score_id = self._latest_score_alias()
 
         stmt = (
             select(AssetORM, f, sc)
-            .join(f, and_(f.asset_id == AssetORM.id, fq.c.rn == 1))
-            .outerjoin(t, and_(t.asset_id == AssetORM.id, tq.c.rn == 1))
-            .outerjoin(sc, and_(sc.asset_id == AssetORM.id, sq.c.rn == 1))
-            .where(AssetORM.asset_type == "stock", AssetORM.is_active.is_(True), self._supported_catalog_clause())
+            .select_from(AssetORM)
+            .join(f, f.id == latest_fundamental_id)
+            .outerjoin(t, t.id == latest_technical_id)
+            .outerjoin(sc, sc.id == latest_score_id)
+            .where(AssetORM.asset_type == "stock", AssetORM.is_active.is_(True), self._supported_catalog_clause({"stock"}))
         )
 
         stmt = self._apply_min(stmt, f.roe_pct, filters.roe_min)
@@ -382,14 +397,15 @@ class AssetRepository:
 
     def screen_latest_fiis(self, filters, limit=100, offset=0):
         """PostgreSQL-first FII screener."""
-        f, fq = self._latest_fundamental_alias()
-        sc, sq = self._latest_score_alias()
+        f, latest_fundamental_id = self._latest_fundamental_alias()
+        sc, latest_score_id = self._latest_score_alias()
 
         stmt = (
             select(AssetORM, f, sc)
-            .join(f, and_(f.asset_id == AssetORM.id, fq.c.rn == 1))
-            .outerjoin(sc, and_(sc.asset_id == AssetORM.id, sq.c.rn == 1))
-            .where(AssetORM.asset_type == "fii", AssetORM.is_active.is_(True), self._supported_catalog_clause())
+            .select_from(AssetORM)
+            .join(f, f.id == latest_fundamental_id)
+            .outerjoin(sc, sc.id == latest_score_id)
+            .where(AssetORM.asset_type == "fii", AssetORM.is_active.is_(True), self._supported_catalog_clause({"fii"}))
         )
         stmt = self._apply_max(stmt, f.pbv, filters.pbv_max)
         stmt = self._apply_min(stmt, f.dividend_yield_pct, filters.dividend_yield_min)
@@ -408,16 +424,17 @@ class AssetRepository:
 
     def latest_universe(self, asset_type: str, limit: int = 1200):
         """Latest fundamentals/technical/scores for a whole asset class in one SQL query."""
-        f, fq = self._latest_fundamental_alias()
-        t, tq = self._latest_technical_alias("1D")
-        sc, sq = self._latest_score_alias()
+        f, latest_fundamental_id = self._latest_fundamental_alias()
+        t, latest_technical_id = self._latest_technical_alias("1D")
+        sc, latest_score_id = self._latest_score_alias()
         accepted_types = {"etf", "bdr", "future"} if asset_type == "other_b3" else {asset_type}
         stmt = (
             select(AssetORM, f, t, sc)
-            .outerjoin(f, and_(f.asset_id == AssetORM.id, fq.c.rn == 1))
-            .outerjoin(t, and_(t.asset_id == AssetORM.id, tq.c.rn == 1))
-            .outerjoin(sc, and_(sc.asset_id == AssetORM.id, sq.c.rn == 1))
-            .where(AssetORM.asset_type.in_(accepted_types), AssetORM.is_active.is_(True), self._supported_catalog_clause())
+            .select_from(AssetORM)
+            .outerjoin(f, f.id == latest_fundamental_id)
+            .outerjoin(t, t.id == latest_technical_id)
+            .outerjoin(sc, sc.id == latest_score_id)
+            .where(AssetORM.asset_type.in_(accepted_types), AssetORM.is_active.is_(True), self._supported_catalog_clause(accepted_types))
             .order_by(AssetORM.ticker)
             .limit(limit)
         )
@@ -428,12 +445,13 @@ class AssetRepository:
         clean = sorted({str(ticker or "").strip().upper() for ticker in (tickers or []) if str(ticker or "").strip()})
         if not clean:
             return {}
-        f, fq = self._latest_fundamental_alias()
-        t, tq = self._latest_technical_alias("1D")
+        f, latest_fundamental_id = self._latest_fundamental_alias()
+        t, latest_technical_id = self._latest_technical_alias("1D")
         stmt = (
             select(AssetORM, f, t)
-            .outerjoin(f, and_(f.asset_id == AssetORM.id, fq.c.rn == 1))
-            .outerjoin(t, and_(t.asset_id == AssetORM.id, tq.c.rn == 1))
+            .select_from(AssetORM)
+            .outerjoin(f, f.id == latest_fundamental_id)
+            .outerjoin(t, t.id == latest_technical_id)
             .where(AssetORM.ticker.in_(clean), AssetORM.is_active.is_(True))
         )
         result = {}

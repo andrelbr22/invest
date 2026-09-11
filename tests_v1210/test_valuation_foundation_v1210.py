@@ -14,7 +14,7 @@ from investment_engine.core.valuation.graham import graham_number
 
 
 def test_release_is_exactly_v1210_and_new_suite_is_discoverable():
-    assert __version__ == "1.22.0"
+    assert __version__ == "1.22.1"
 
 
 def test_four_families_and_legacy_method_names_are_canonicalized():

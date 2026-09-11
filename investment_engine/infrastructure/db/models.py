@@ -14,6 +14,7 @@ def utcnow() -> datetime:
 
 class AssetORM(Base):
     __tablename__ = "assets"
+    __table_args__ = (Index("ix_assets_type_active_ticker", "asset_type", "is_active", "ticker"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     ticker: Mapped[str] = mapped_column(String(24), nullable=False, unique=True, index=True)
@@ -42,6 +43,7 @@ class FundamentalSnapshotORM(Base):
     __table_args__ = (
         UniqueConstraint("asset_id", "reference_date", "source", name="uq_fundamental_asset_ref_source"),
         Index("ix_fundamental_asset_retrieved", "asset_id", "retrieved_at"),
+        Index("ix_fundamental_latest_lookup", "asset_id", "reference_date", "retrieved_at", "id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -84,6 +86,7 @@ class TechnicalSnapshotORM(Base):
     __table_args__ = (
         UniqueConstraint("asset_id", "timeframe", "as_of", "source", name="uq_technical_asset_tf_asof_source"),
         Index("ix_technical_asset_asof", "asset_id", "as_of"),
+        Index("ix_technical_latest_lookup", "asset_id", "timeframe", "as_of", "retrieved_at", "id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -178,7 +181,10 @@ class ValuationSnapshotORM(Base):
 
 class ScoreSnapshotORM(Base):
     __tablename__="score_snapshots"
-    __table_args__=(UniqueConstraint("asset_id","as_of","model_version",name="uq_score_asset_asof_version"),)
+    __table_args__=(
+        UniqueConstraint("asset_id","as_of","model_version",name="uq_score_asset_asof_version"),
+        Index("ix_score_latest_lookup", "asset_id", "as_of", "calculated_at", "id"),
+    )
     id: Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
     asset_id: Mapped[uuid.UUID]=mapped_column(ForeignKey("assets.id",ondelete="CASCADE"),nullable=False,index=True)
     as_of: Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)

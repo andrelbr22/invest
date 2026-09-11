@@ -16,6 +16,9 @@ if ! flock -n 9; then
 fi
 
 cd "${PROJECT_DIR}"
+if [[ -f "${PROJECT_DIR}/deployment/quiesce-legacy-stack.sh" ]]; then
+  bash "${PROJECT_DIR}/deployment/quiesce-legacy-stack.sh"
+fi
 echo "Consultando atualizações para o ambiente de teste..."
 git fetch --quiet origin main
 CURRENT_COMMIT="$(git rev-parse HEAD)"
@@ -41,8 +44,8 @@ if docker image inspect "${CANDIDATE_IMAGE}" >/dev/null 2>&1; then
   docker tag "${CANDIDATE_IMAGE}" "${ROLLBACK_IMAGE}"
 fi
 
-echo "Construindo a versão de teste..."
-if ! COMPOSE_PARALLEL_LIMIT=1 docker compose -f "${COMPOSE_FILE}" build staging; then
+echo "Construindo a versão de teste com baixa prioridade para preservar a produção..."
+if ! COMPOSE_PARALLEL_LIMIT=1 nice -n 10 docker compose -f "${COMPOSE_FILE}" build staging; then
   echo "${TARGET_COMMIT}" > "${FAILED_FILE}"
   exit 1
 fi

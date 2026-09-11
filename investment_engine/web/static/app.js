@@ -3,6 +3,7 @@
 const BASE_PATH = location.pathname === "/testefdi" || location.pathname.startsWith("/testefdi/") ? "/testefdi" : "";
 const LANDING_PATH = `${BASE_PATH}/`;
 const PLATFORM_PATH = `${BASE_PATH}/plataforma/`;
+const ANALYSIS_CACHE_TTL_MS = 300000;
 
 const state = {
   session: null,
@@ -29,9 +30,11 @@ const state = {
   currentCustomFilter: null,
   analysisLimit: 50,
   analysisResultCache: new Map(),
+  analysisRequestSerial: 0,
   analysisUpdateCheckedAt: 0,
   analysisEnsureSentAt: 0,
   readCache: new Map(),
+  readRequests: new Map(),
   curveYears: 10,
   curveHistory: [],
   curveHistoryCount: 1,
@@ -115,14 +118,18 @@ async function api(path, options = {}) {
   const requestOptions = {...options};
   const cacheTtlMs = Math.max(0, Number(requestOptions.cacheTtlMs || 0));
   const bypassCache = Boolean(requestOptions.bypassCache);
+  const invalidateCache = requestOptions.invalidateCache !== false;
   delete requestOptions.cacheTtlMs;
   delete requestOptions.bypassCache;
+  delete requestOptions.invalidateCache;
   const method = String(requestOptions.method || "GET").toUpperCase();
   if (method === "GET" && cacheTtlMs > 0 && !bypassCache) {
     const cached = state.readCache.get(path);
     if (cached && Date.now() - cached.savedAt < cacheTtlMs) return cached.body;
   }
   const key = requestOptions.requestKey;
+  const coalesceKey = method === "GET" && cacheTtlMs > 0 && !bypassCache && !key ? path : null;
+  if (coalesceKey && state.readRequests.has(coalesceKey)) return state.readRequests.get(coalesceKey);
   let controller = null;
   if (key) {
     state.requestControllers.get(key)?.abort();
@@ -133,26 +140,31 @@ async function api(path, options = {}) {
   }
   const request = { credentials: "same-origin", ...requestOptions };
   request.headers = { "Content-Type": "application/json", ...(requestOptions.headers || {}) };
-  let response;
-  try {
-    response = await fetch(`${BASE_PATH}${path}`, request);
-  } finally {
-    if (key && state.requestControllers.get(key) === controller) state.requestControllers.delete(key);
-  }
-  if (response.status === 401) {
-    showLogin();
-    throw new Error("Sua sessão expirou. Entre novamente.");
-  }
-  let body = null;
-  try { body = await response.json(); } catch (_) { body = null; }
-  if (!response.ok) {
-    const detail = body?.detail;
-    const readable = readableApiError(detail,response.status);
-    throw new Error(readable);
-  }
-  if (method === "GET" && cacheTtlMs > 0) state.readCache.set(path, {savedAt:Date.now(),body});
-  else if (method !== "GET") state.readCache.clear();
-  return body;
+  const pending = (async()=>{
+    let response;
+    try {
+      response = await fetch(`${BASE_PATH}${path}`, request);
+    } finally {
+      if (key && state.requestControllers.get(key) === controller) state.requestControllers.delete(key);
+    }
+    if (response.status === 401) {
+      showLogin();
+      throw new Error("Sua sessão expirou. Entre novamente.");
+    }
+    let body = null;
+    try { body = await response.json(); } catch (_) { body = null; }
+    if (!response.ok) {
+      const detail = body?.detail;
+      const readable = readableApiError(detail,response.status);
+      throw new Error(readable);
+    }
+    if (method === "GET" && cacheTtlMs > 0) state.readCache.set(path, {savedAt:Date.now(),body});
+    else if (method !== "GET" && invalidateCache) state.readCache.clear();
+    return body;
+  })();
+  if (coalesceKey) state.readRequests.set(coalesceKey,pending);
+  try { return await pending; }
+  finally { if(coalesceKey&&state.readRequests.get(coalesceKey)===pending)state.readRequests.delete(coalesceKey); }
 }
 
 function safeExternalUrl(value) {
@@ -522,7 +534,7 @@ async function loadMarket(force = false) {
     if (envelope?.data && Object.keys(envelope.data).length) state.market = envelope.data;
     renderMarketSummary(); renderDashboardTab();
     const endpoint = force ? "/market-dashboard/refresh" : "/market-dashboard/ensure";
-    const queued = await api(endpoint, {method:"POST"});
+    const queued = await api(endpoint, {method:"POST",invalidateCache:false});
     if (queued.scheduled || ["queued","running"].includes(queued.refresh_status)) pollMarket();
     else if (queued.data && Object.keys(queued.data).length) { state.marketEnvelope=queued; state.market=queued.data; renderMarketSummary(); renderDashboardTab(); }
   } catch (error) {
@@ -893,16 +905,17 @@ async function loadAnalysis() {
   } else if($("#analysis-update-status")) {
     $("#analysis-update-status").innerHTML=marketUpdatePanel(["fundamentals","technical_daily","technical_intraday"],"Atualizações dos dados de análise");
   }
-  if(now-state.analysisEnsureSentAt>300000){
-    state.analysisEnsureSentAt=now;
-    Promise.all(["catalog","fundamentals","technical_daily","technical_intraday"].map(group=>api(`/market-dashboard/groups/${group}/ensure`,{method:"POST"}))).catch(()=>{});
-  }
   try {
     await loadAnalysisCatalog(type);
+    if(state.view!=="analysis"||type!==analysisType())return;
     if(state.analysisLoadedType!==type){state.analysisLoadedType=type;state.currentCustomFilter=null;state.analysisPreset="default";fillAnalysisForm(state.analysisCatalog[type]?.default?.configuration||{});markActiveAnalysis({presetId:"default"});}
   } catch(error){toast(`Configuração dos filtros: ${error.message}`,"error");}
   updateFilterAvailability();
   await loadAnalysisResults();
+  if(now-state.analysisEnsureSentAt>300000){
+    state.analysisEnsureSentAt=now;
+    setTimeout(()=>Promise.all(["catalog","fundamentals","technical_daily","technical_intraday"].map(group=>api(`/market-dashboard/groups/${group}/ensure`,{method:"POST",invalidateCache:false}))).catch(()=>{}),1500);
+  }
 }
 
 function analysisResultCacheKey(type) {
@@ -912,9 +925,11 @@ function analysisResultCacheKey(type) {
 async function loadAnalysisResults(force=false) {
   const root = $("#analysis-table");
   const type = analysisType();
+  const requestSerial=++state.analysisRequestSerial;
   const cacheKey=analysisResultCacheKey(type),cached=state.analysisResultCache.get(cacheKey);
-  if(!force&&cached&&Date.now()-cached.savedAt<60000){state.analysisRows=cached.rows;renderAnalysisRows(cached.rows);return;}
-  root.innerHTML = loadingCards(6);
+  if(!force&&cached&&Date.now()-cached.savedAt<ANALYSIS_CACHE_TTL_MS){state.analysisRows=cached.rows;renderAnalysisRows(cached.rows);return;}
+  if(cached?.rows?.length){state.analysisRows=cached.rows;renderAnalysisRows(cached.rows);root.insertAdjacentHTML("afterbegin",'<div class="notice info analysis-refreshing">Atualizando a lista em segundo plano…</div>');}
+  else root.innerHTML = loadingCards(6);
   try {
     let rows, warnings=[];
     if (state.currentCustomFilter) {
@@ -928,13 +943,21 @@ async function loadAnalysisResults(force=false) {
     }
     if (type === "stock") rows.sort((a,b)=>(Number(b.graham_upside_pct)||-Infinity)-(Number(a.graham_upside_pct)||-Infinity));
     else rows.sort((a,b)=>String(a.ticker).localeCompare(String(b.ticker)));
-    rows = await enrichBacktestLeaders(rows);
-    if(type!==analysisType())return;
+    if(state.view!=="analysis"||type!==analysisType()||requestSerial!==state.analysisRequestSerial||cacheKey!==analysisResultCacheKey(type))return;
     state.analysisRows = rows;
     state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows});
     renderAnalysisRows(rows);
     if(warnings.length)toast(warnings.join(" "),"warning");
-  } catch (error) { if (error.name !== "AbortError") root.innerHTML = errorState(error, "analysis"); }
+    const enrichedRows=await enrichBacktestLeaders(rows);
+    if(state.view!=="analysis"||type!==analysisType()||requestSerial!==state.analysisRequestSerial||cacheKey!==analysisResultCacheKey(type))return;
+    state.analysisRows=enrichedRows;
+    state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows:enrichedRows});
+    renderAnalysisRows(enrichedRows);
+  } catch (error) {
+    if(error.name==="AbortError"||state.view!=="analysis"||type!==analysisType()||requestSerial!==state.analysisRequestSerial)return;
+    if(cached?.rows?.length){state.analysisRows=cached.rows;renderAnalysisRows(cached.rows);root.insertAdjacentHTML("afterbegin",'<div class="notice warning analysis-refreshing">Não foi possível renovar a lista agora. Exibindo a última consulta concluída.</div>');}
+    else root.innerHTML = errorState(error, "analysis");
+  }
 }
 
 async function enrichBacktestLeaders(rows) {
@@ -1039,17 +1062,22 @@ function renderAnalysisRows(rows) {
 async function applyAdvancedFilters(showToast=true) {
   const request=analysisRequestFromForm();
   try{validateAnalysisRequest(request);}catch(error){toast(error.message,"error");return;}
+  const type=analysisType(),requestSerial=++state.analysisRequestSerial;
   revealSelectedValuationColumns(request);
   if(!state.currentCustomFilter){const label=state.analysisCatalog[analysisType()]?.[state.analysisPreset]?.name||"Análise";$("#active-analysis-summary").textContent=`${label} • ajustes temporários`;}
   $("#analysis-table").innerHTML=loadingCards(6);
   try {
     const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify(request)});
-    const rows=await enrichBacktestLeaders(payload.rows||payload);
+    const rows=payload.rows||payload;
+    if(state.view!=="analysis"||type!==analysisType()||requestSerial!==state.analysisRequestSerial)return;
     state.analysisRows=rows; renderAnalysisRows(rows);
     const warnings=payload?.meta?.warnings||[];
     if(warnings.length) toast(warnings.join(" "),"warning");
     else if(showToast) toast(`${rows.length} ativo(s) após os ajustes.`,"success");
-  } catch(error) { if(error.name!=="AbortError") $("#analysis-table").innerHTML=errorState(error,"analysis"); }
+    const enrichedRows=await enrichBacktestLeaders(rows);
+    if(state.view!=="analysis"||type!==analysisType()||requestSerial!==state.analysisRequestSerial)return;
+    state.analysisRows=enrichedRows;renderAnalysisRows(enrichedRows);
+  } catch(error) { if(error.name!=="AbortError"&&state.view==="analysis"&&type===analysisType()&&requestSerial===state.analysisRequestSerial) $("#analysis-table").innerHTML=errorState(error,"analysis"); }
 }
 
 async function openAsset(ticker) {
@@ -2095,7 +2123,7 @@ async function initialize() {
     const session=await api("/session/me");
     if(!session.authenticated){showLogin();return;}
     state.session=session; configureAccess(); showApp(); loadMarket();
-    if(session.access?.can_view_news_insights)api("/insights/news/refresh-daily",{method:"POST"}).catch(()=>{});
+    if(session.access?.can_view_news_insights)api("/insights/news/refresh-daily",{method:"POST",invalidateCache:false}).catch(()=>{});
   } catch(error) { showLogin(); toast(error.message,"error"); }
 }
 

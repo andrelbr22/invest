@@ -47,6 +47,19 @@ class BackgroundWorker:
         self.alert_leader_provider = alert_leader_provider or (lambda: False)
         self._scheduler_leader = False
         self._started_at = datetime.now(timezone.utc)
+        # Verificar leases vencidos em toda iteração ociosa fazia uma consulta
+        # ao PostgreSQL a cada poucos segundos. A primeira verificação continua
+        # imediata; as seguintes usam uma cadência compatível com o lease.
+        self._stale_recovery_interval = max(30.0, min(120.0, self.lease_timeout_seconds / 3))
+        self._next_stale_recovery_at = 0.0
+
+    def _recover_stale_if_due(self, repository: BackgroundJobRepository) -> bool:
+        current = time.monotonic()
+        if current < self._next_stale_recovery_at:
+            return False
+        repository.recover_stale(self.lease_timeout_seconds)
+        self._next_stale_recovery_at = current + self._stale_recovery_interval
+        return True
 
     def schedule_due(self) -> list[str]:
         session = get_session_factory()()
@@ -82,13 +95,18 @@ class BackgroundWorker:
 
     def run_once(self) -> bool:
         session = get_session_factory()()
+        recovered_stale = False
         try:
             repository = BackgroundJobRepository(session)
-            repository.recover_stale(self.lease_timeout_seconds)
+            recovered_stale = self._recover_stale_if_due(repository)
             row = repository.lease_next(self.worker_id, allowed_types=set(self.handlers))
             session.commit()
         except Exception:
             session.rollback()
+            # Se a transação não confirmou a recuperação, tente novamente
+            # no próximo ciclo, em vez de esperar a janela inteira.
+            if recovered_stale:
+                self._next_stale_recovery_at = 0.0
             raise
         finally:
             session.close()

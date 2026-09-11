@@ -15,6 +15,9 @@ if ! flock -n 9; then
   exit 1
 fi
 cd "${PROJECT_DIR}"
+if [[ -f "${PROJECT_DIR}/deployment/quiesce-legacy-stack.sh" ]]; then
+  bash "${PROJECT_DIR}/deployment/quiesce-legacy-stack.sh"
+fi
 TARGET_COMMIT="$(cat "${PROJECT_DIR}/.git/investment-staging-commit" 2>/dev/null || true)"
 ROLLBACK_COMMIT="$(cat "${PROJECT_DIR}/.git/investment-production-commit" 2>/dev/null || true)"
 if [[ ! "${TARGET_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then

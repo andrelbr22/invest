@@ -29,7 +29,7 @@ SCRIPT = ROOT / "investment_engine" / "web" / "static" / "app.js"
 
 
 def test_release_metadata_and_migration_are_v1213():
-    assert __version__ == "1.22.0"
+    assert __version__ == "1.22.1"
     assert (ROOT / "alembic" / "versions" / "0021_v1_21_access_levels.py").is_file()
     assert (ROOT / "V1_21_3.md").is_file()
     assert (ROOT / "PATCH_V1213.md").is_file()
