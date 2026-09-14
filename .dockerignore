@@ -1,6 +1,7 @@
 .git
-.env
-.env.production
+.env*
+!.env.example
+!.env.production.example
 .venv
 .venv_backup_*
 .testvenv*
@@ -9,12 +10,25 @@ __pycache__
 .pytest_cache
 outputs
 work
-deployment/secrets/app_secrets.toml
+# Nenhuma credencial local pode entrar no contexto e nas camadas da imagem.
+# Mantemos apenas os modelos públicos necessários à implantação.
+deployment/secrets/**
+!deployment/secrets/*.example
 deployment/second-instance/worker_secrets.toml
 deployment/second-instance/worker.env
 # Runtime secrets remain outside the image; checked-in *.env.example files are
 # intentionally retained so infrastructure validation also works in staging.
 deployment/runtime/*.env
+deployment/secrets/app_secrets.staging.toml
+*.save
+*.bak
+*.backup
+*.old
+*.key
+*.pem
+*.pfx
+*.p12
+chaves_oracle
 *.db
 *.sqlite
 *.sqlite3

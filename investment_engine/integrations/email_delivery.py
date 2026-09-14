@@ -88,3 +88,26 @@ class AlertEmailSender:
             "<small>Cotação indicativa, possivelmente atrasada. Confirme na corretora.</small>"
         )
         self.send(recipients=event.get("recipients") or [], subject=subject, text_body=text_body, html_body=html_body)
+
+    def send_login_code(self, *, recipient: str, code: str, expires_minutes: int = 10) -> None:
+        """Deliver a one-time login code without logging or persisting its plaintext."""
+        safe_code = html.escape(str(code))
+        subject = "Seu código de acesso — Formação do Investidor"
+        text_body = (
+            "Use o código abaixo para entrar na Plataforma Formação do Investidor:\n\n"
+            f"{code}\n\n"
+            f"O código expira em {int(expires_minutes)} minutos e só pode ser utilizado uma vez. "
+            "Se você não solicitou este acesso, ignore esta mensagem."
+        )
+        html_body = (
+            "<div style=\"font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#17352f\">"
+            "<h2 style=\"color:#075f4b\">Formação do Investidor</h2>"
+            "<p>Use este código para entrar na plataforma:</p>"
+            f"<p style=\"font-size:32px;font-weight:800;letter-spacing:8px\">{safe_code}</p>"
+            f"<p>Ele expira em <strong>{int(expires_minutes)} minutos</strong> e só pode ser utilizado uma vez.</p>"
+            "<p style=\"color:#60716d;font-size:13px\">Se você não solicitou este acesso, ignore esta mensagem.</p>"
+            "</div>"
+        )
+        self.send(
+            recipients=[recipient], subject=subject, text_body=text_body, html_body=html_body,
+        )

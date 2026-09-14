@@ -31,6 +31,16 @@ a { color: var(--brand); }
 .login-card h1 { margin: 10px 0 18px; font-size: clamp(2rem, 6vw, 3.4rem); letter-spacing: -.055em; line-height: 1.02; }
 .login-card p:not(.eyebrow) { margin: 0 auto 28px; max-width: 430px; color: var(--muted); line-height: 1.65; }
 .login-card small { display: block; margin-top: 24px; color: var(--muted); }
+.login-divider { display:flex; align-items:center; gap:12px; margin:24px 0 18px; color:var(--muted); font-size:.78rem; }
+.login-divider::before,.login-divider::after { content:""; flex:1; border-top:1px solid var(--line); }
+.email-login-form { display:grid; gap:8px; text-align:left; }
+.email-login-form + .email-login-form { margin-top:12px; }
+.email-login-form label { color:var(--ink); font-size:.8rem; font-weight:750; }
+.email-login-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; }
+.email-login-row input { min-width:0; min-height:44px; padding:10px 13px; border:1px solid var(--line); border-radius:10px; background:#fff; color:var(--ink); font:inherit; }
+.email-login-row input:focus { outline:3px solid rgba(11,93,75,.13); border-color:var(--brand); }
+.login-message { margin-top:12px; padding:10px 12px; border-radius:10px; background:#eaf6f1; color:var(--brand-strong); font-size:.8rem; line-height:1.45; text-align:left; }
+.login-message.error { background:#fff0ee; color:#8e3026; }
 
 .app-shell { min-height: 100vh; }
 .sidebar { position: fixed; z-index: 30; inset: 0 auto 0 0; width: var(--sidebar); background: #f9fbfa; border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 18px 14px; transition: width .22s ease, transform .22s ease; }
@@ -450,6 +460,7 @@ body.staging-mode .login-view { padding-top: 60px; }
   .bulk-access-bar,.admin-monitor-row { align-items: stretch; flex-direction: column; }
   .bulk-access-bar select,.bulk-access-bar .button,.admin-monitor-row .button { width: 100%; }
   .login-card { padding: 36px 24px; }
+  .email-login-row { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 450px) {
@@ -465,3 +476,21 @@ body.staging-mode .login-view { padding-top: 60px; }
 }
 
 @media(max-width:720px){.update-summary{align-items:flex-start;flex-direction:column}.update-summary>span:last-child{width:100%;justify-content:space-between}.update-detail-row{grid-template-columns:1fr}.update-detail-row>span:last-child{text-align:left}}
+/* Página inicial e biblioteca editáveis */
+.portal-admin-sections { display: grid; gap: 14px; }
+.portal-admin-sections > .data-card { margin: 0; }
+.portal-edit-grid { margin-top: 16px; }
+.portal-purpose-item, .portal-sales-fieldset { border: 1px solid var(--line); border-radius: 14px; display: grid; gap: 12px; grid-template-columns: minmax(100px,.35fr) minmax(180px,1fr); padding: 14px; }
+.portal-purpose-item legend, .portal-sales-fieldset legend { color: var(--muted); font-size: .78rem; font-weight: 800; padding: 0 8px; text-transform: uppercase; }
+.portal-sticky-action { align-items: center; background: rgba(255,255,255,.96); border: 1px solid var(--line); border-radius: 14px; bottom: 12px; box-shadow: var(--shadow); display: flex; gap: 18px; justify-content: space-between; padding: 12px 16px; position: sticky; z-index: 5; }
+.portal-sticky-action span { color: var(--muted); font-size: .82rem; }
+.portal-book-list { display: grid; gap: 12px; }
+.portal-book-card summary { align-items: center; }
+.portal-book-thumb { border-radius: 6px; height: 60px; object-fit: cover; width: 42px; }
+.portal-book-form { padding-top: 18px; }
+.portal-book-published { align-self: end; min-height: 44px; }
+.portal-sales-row { display: grid; gap: 12px; grid-template-columns: minmax(180px,.7fr) minmax(260px,1.3fr); }
+.portal-book-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.tag-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.tag-list span { background: var(--surface-soft); border: 1px solid var(--line); border-radius: 999px; font-size: .78rem; padding: 5px 9px; }
+@media (max-width: 760px) { .portal-purpose-item, .portal-sales-row { grid-template-columns: 1fr; } .portal-sticky-action { align-items: stretch; flex-direction: column; } }

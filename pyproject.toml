@@ -1,9 +1,9 @@
 [project]
 name = "investment-engine"
-version = "1.22.1"
-description = "Formação do Investidor V1.22.1 with indexed screeners, progressive rendering and resource-aware deployment."
+version = "1.23.0"
+description = "Formação do Investidor V1.23.0 with official investor events, data quality, editable portal and passwordless e-mail access."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["tests_v1160", "tests_v1170", "tests_v1200", "tests_v1202", "tests_v1203", "tests_v1204", "tests_v1205", "tests_v1206", "tests_v1207", "tests_v1210", "tests_v1220"]
+testpaths = ["tests_v1160", "tests_v1170", "tests_v1200", "tests_v1202", "tests_v1203", "tests_v1204", "tests_v1205", "tests_v1206", "tests_v1207", "tests_v1210", "tests_v1220", "tests_v1230"]

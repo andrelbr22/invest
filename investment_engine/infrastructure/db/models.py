@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, LargeBinary, Numeric, String, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
 
@@ -239,6 +239,7 @@ class AccessLevelORM(Base):
     can_alert_change_negative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_sync_market: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_manage_users: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_manage_portal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     custom_filter_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     alert_asset_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     backtest_asset_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -292,6 +293,7 @@ class UserAccessPolicyORM(Base):
     can_alert_change_negative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_sync_market: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_manage_users: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_manage_portal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     custom_filter_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     alert_asset_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     backtest_asset_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -777,6 +779,22 @@ class SharedSnapshotORM(Base):
     )
 
 
+class EmailLoginCodeORM(Base):
+    """Latest hashed, single-use passwordless code for an e-mail address."""
+
+    __tablename__ = "email_login_codes"
+
+    email: Mapped[str] = mapped_column(String(254), primary_key=True)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    salt: Mapped[str] = mapped_column(String(64), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    request_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, default=uuid.uuid4)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class RuntimeLeaseORM(Base):
     """Short distributed lease used to elect one scheduler or alert monitor."""
 
@@ -905,3 +923,222 @@ class EconomicSeriesPointORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     series: Mapped[EconomicSeriesORM] = relationship(back_populates="points")
+
+
+class CorporateEventORM(Base):
+    """Official B3 cash distribution linked to an asset when its ticker is known."""
+
+    __tablename__ = "corporate_events"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_corporate_event_source_external"),
+        Index("ix_corporate_events_asset_payment", "asset_id", "payment_date"),
+        Index("ix_corporate_events_ex_date", "ex_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True,
+    )
+    ticker: Mapped[str | None] = mapped_column(String(24), index=True)
+    external_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    isin: Mapped[str | None] = mapped_column(String(24), index=True)
+    announced_on: Mapped[date | None] = mapped_column(Date)
+    last_cum_date: Mapped[date | None] = mapped_column(Date)
+    ex_date: Mapped[date | None] = mapped_column(Date)
+    payment_date: Mapped[date | None] = mapped_column(Date)
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 10))
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="BRL")
+    related_period: Mapped[str | None] = mapped_column(String(80))
+    source: Mapped[str] = mapped_column(String(80), nullable=False, default="B3")
+    source_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="confirmed")
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
+    )
+
+    asset: Mapped[AssetORM | None] = relationship()
+
+
+class RelevantFactORM(Base):
+    """Metadata for a CVM IPE filing; the copyrighted document stays at CVM."""
+
+    __tablename__ = "relevant_facts"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_relevant_fact_source_external"),
+        Index("ix_relevant_facts_delivered", "delivered_at"),
+        Index("ix_relevant_facts_cnpj_delivered", "issuer_cnpj", "delivered_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    external_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    issuer_cnpj: Mapped[str | None] = mapped_column(String(24), index=True)
+    issuer_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    cvm_code: Mapped[str | None] = mapped_column(String(24), index=True)
+    reference_date: Mapped[date | None] = mapped_column(Date)
+    delivered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    subject: Mapped[str | None] = mapped_column(String(500))
+    document_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    protocol: Mapped[str | None] = mapped_column(String(80))
+    version: Mapped[str | None] = mapped_column(String(24))
+    tickers_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    source: Mapped[str] = mapped_column(String(80), nullable=False, default="CVM IPE")
+    source_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
+    )
+
+
+class OfficialCalendarEventORM(Base):
+    """Auditable official-market calendar, renewed for each calendar year."""
+
+    __tablename__ = "official_calendar_events"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_official_calendar_source_external"),
+        Index("ix_official_calendar_date_category", "event_date", "category"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    external_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    calendar_year: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    event_date: Mapped[date] = mapped_column(Date, nullable=False)
+    time_label: Mapped[str | None] = mapped_column(String(80))
+    region: Mapped[str | None] = mapped_column(String(80))
+    source: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    official: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
+    )
+
+
+class AlbUniverseObservationORM(Base):
+    """Daily strict-ALB population check; criteria are never loosened here."""
+
+    __tablename__ = "alb_universe_observations"
+    __table_args__ = (
+        UniqueConstraint("reference_date", "preset_version", name="uq_alb_observation_date_version"),
+        Index("ix_alb_observations_created", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    reference_date: Mapped[date] = mapped_column(Date, nullable=False)
+    preset_version: Mapped[str] = mapped_column(String(40), nullable=False, default="alb-system")
+    filters_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    asset_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_min: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    target_max: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    tickers_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
+    )
+
+
+class PortalPageORM(Base):
+    """Editable public-page copy with a stable static fallback in the web bundle."""
+
+    __tablename__ = "portal_pages"
+
+    page_key: Mapped[str] = mapped_column(String(32), primary_key=True, default="home")
+    content_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
+    )
+
+
+class PortalMediaORM(Base):
+    """Validated image bytes stored outside the disposable application image."""
+
+    __tablename__ = "portal_media"
+    __table_args__ = (
+        UniqueConstraint("sha256", name="uq_portal_media_sha256"),
+        Index("ix_portal_media_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Cover bytes can be several megabytes.  Keep them out of every ordinary
+    # metadata query; the public media endpoint loads the column lazily only
+    # when it actually has to return the image body.
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, deferred=True)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    books: Mapped[list["PortalBookORM"]] = relationship(back_populates="cover_media")
+
+
+class PortalBookORM(Base):
+    """One independently publishable and orderable work on the public portal."""
+
+    __tablename__ = "portal_books"
+    __table_args__ = (
+        Index("ix_portal_books_published_position", "is_published", "collection", "position"),
+        Index("ix_portal_books_hero_position", "hero_position"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    collection: Mapped[str] = mapped_column(String(40), nullable=False, default="complementary")
+    kicker: Mapped[str] = mapped_column(String(180), nullable=False, default="")
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    alt_text: Mapped[str] = mapped_column(String(500), nullable=False)
+    fallback_cover_path: Mapped[str | None] = mapped_column(String(500))
+    cover_media_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("portal_media.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    hero_position: Mapped[int | None] = mapped_column(Integer)
+    is_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[str | None] = mapped_column(String(320))
+    updated_by: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
+    )
+
+    cover_media: Mapped[PortalMediaORM | None] = relationship(back_populates="books")
+    sales_links: Mapped[list["PortalBookLinkORM"]] = relationship(
+        back_populates="book", cascade="all, delete-orphan", order_by="PortalBookLinkORM.position",
+    )
+
+
+class PortalBookLinkORM(Base):
+    """A labelled HTTPS sales destination; at most three are accepted per book."""
+
+    __tablename__ = "portal_book_links"
+    __table_args__ = (
+        UniqueConstraint("book_id", "position", name="uq_portal_book_link_position"),
+        Index("ix_portal_book_links_book", "book_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    book_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("portal_books.id", ondelete="CASCADE"), nullable=False,
+    )
+    label: Mapped[str] = mapped_column(String(100), nullable=False)
+    url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
+    )
+
+    book: Mapped[PortalBookORM] = relationship(back_populates="sales_links")

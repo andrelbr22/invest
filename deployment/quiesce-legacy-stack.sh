@@ -27,8 +27,23 @@ if (( ${#containers[@]} == 0 )); then
   exit 0
 fi
 
-# Remover a política de reinício evita o retorno no próximo boot. Nenhum
-# contêiner, volume ou dado é excluído; o rollback manual continua possível.
-docker update --restart=no "${containers[@]}" >/dev/null
-docker stop --time 30 "${containers[@]}" >/dev/null
-echo "Pilha legada pausada com segurança (${#containers[@]} contêineres); nenhum dado foi removido."
+# Remover a política de reinício evita o retorno no próximo boot. Trate cada
+# contêiner isoladamente: um daemon concorrente pode concluir a remoção de um
+# ID entre a listagem e o update. Isso não deve abortar uma promoção válida.
+paused=0
+for container_id in "${containers[@]}"; do
+  docker inspect "${container_id}" >/dev/null 2>&1 || continue
+  docker update --restart=no "${container_id}" >/dev/null 2>&1 || {
+    docker inspect "${container_id}" >/dev/null 2>&1 && exit 1
+    continue
+  }
+  docker inspect "${container_id}" >/dev/null 2>&1 || continue
+  docker stop --time 30 "${container_id}" >/dev/null 2>&1 || {
+    docker inspect "${container_id}" >/dev/null 2>&1 && exit 1
+    continue
+  }
+  paused=$((paused + 1))
+done
+if (( paused > 0 )); then
+  echo "Pilha legada pausada com segurança (${paused} contêineres); nenhum dado foi removido."
+fi

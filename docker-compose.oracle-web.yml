@@ -51,6 +51,7 @@ services:
       APP_SECRETS_FILE: /app/secrets/app_secrets.toml
       ALLOWED_HOSTS: formacaodoinvestidor.com.br,www.formacaodoinvestidor.com.br,app,api,localhost,127.0.0.1
       CANONICAL_URL: https://formacaodoinvestidor.com.br
+      SESSION_COOKIE_NAME: fdi_production_session
       SECURE_COOKIES: "true"
       API_DOCS_ENABLED: "false"
       ALERT_MONITOR_ENABLED: "false"
@@ -94,10 +95,11 @@ services:
     image: formacao-do-investidor-staging:candidate
     restart: unless-stopped
     command: ["/app/deployment/start-api.sh"]
+    env_file:
+      - ./deployment/runtime/staging.env
     environment:
       APP_ENVIRONMENT: staging
       APP_AUTH_REQUIRED: "true"
-      APP_SECRETS_FILE: /app/secrets/app_secrets.toml
       ALLOWED_HOSTS: formacaodoinvestidor.com.br,www.formacaodoinvestidor.com.br,staging,localhost,127.0.0.1
       CANONICAL_URL: https://formacaodoinvestidor.com.br/testefdi/
       SECURE_COOKIES: "true"
@@ -112,8 +114,6 @@ services:
       DATABASE_NAME_OVERRIDE: investment_engine_staging
       SERVICE_NODE_ID: primary-staging
       APP_COMMIT_SHA: "${FDI_RELEASE_COMMIT:-unknown}"
-    volumes:
-      - ./deployment/secrets/app_secrets.toml:/app/secrets/app_secrets.toml:ro
     expose:
       - "8000"
     # O ambiente de homologação continua disponível, mas cede CPU à produção.

@@ -97,6 +97,36 @@ REFRESH_SCHEDULES: dict[str, RefreshSchedule] = {
         window_start=time(10, 5), window_end=time(17, 50), extra_times=(time(18),),
         catch_up=False, priority=70,
     ),
+    "portfolio_dividends": RefreshSchedule(
+        "portfolio_dividends", "Proventos oficiais das carteiras", "investor_dividends_refresh",
+        "investor-events:dividends", "B3 • Empresas Listadas", timedelta(hours=24),
+        fixed_times=(time(7, 20), time(19, 20)), weekdays_only=True, priority=75,
+    ),
+    "cvm_relevant_facts": RefreshSchedule(
+        "cvm_relevant_facts", "Fatos relevantes oficiais", "cvm_relevant_facts_refresh",
+        "investor-events:cvm-relevant-facts", "CVM • Dados Abertos IPE", timedelta(days=8),
+        fixed_times=(time(7, 40),), priority=80,
+    ),
+    "official_calendar": RefreshSchedule(
+        "official_calendar", "Agenda oficial renovável", "official_calendar_refresh",
+        "investor-events:official-calendar", "BCB, Fed, BLS, B3, NYSE, TSE e FEC", timedelta(days=8),
+        fixed_times=(time(3, 20),), priority=85,
+    ),
+    "ima_history": RefreshSchedule(
+        "ima_history", "Histórico oficial IMA-B e IRF-M", "anbima_ima_history_refresh",
+        "official-history:anbima-ima", "ANBIMA Feed • Índices", timedelta(hours=48),
+        fixed_times=(time(21, 30),), weekdays_only=True, priority=90,
+    ),
+    "alb_monitor": RefreshSchedule(
+        "alb_monitor", "Monitor diário do filtro ALB", "alb_universe_monitor",
+        "quality:alb-universe", "Preset ALB e dados consolidados", timedelta(hours=30),
+        fixed_times=(time(19, 40),), weekdays_only=True, priority=130,
+    ),
+    "data_quality": RefreshSchedule(
+        "data_quality", "Qualidade e frescor dos dados", "data_quality_refresh",
+        "quality:data-sources", "Metadados internos das fontes", timedelta(hours=30),
+        fixed_times=(time(20, 10),), priority=140,
+    ),
 }
 
 
@@ -234,9 +264,15 @@ def refresh_status(session: Session, key: str, now: datetime | None = None) -> d
     as_of = _aware(snapshot.as_of) if snapshot is not None else None
     stale = as_of is None or as_of < current - spec.stale_after
     status = "unavailable" if snapshot is None else ("stale" if stale else "updated")
-    refresh_meta = dict((snapshot.payload_json or {}).get("refresh") or {}) if snapshot is not None else {}
-    if status == "updated" and refresh_meta.get("status") == "partial":
-        status = "partial"
+    snapshot_payload = dict(snapshot.payload_json or {}) if snapshot is not None else {}
+    refresh_meta = dict(snapshot_payload.get("refresh") or {})
+    payload_status = str(
+        refresh_meta.get("status") or snapshot_payload.get("status") or ""
+    ).strip().lower()
+    if status == "updated" and payload_status in {
+        "partial", "stale", "unavailable", "failed",
+    }:
+        status = payload_status
     if job is not None and job.status in {"queued", "running"}:
         status = job.status
     elif job is not None and job.status == "failed" and (
@@ -260,11 +296,12 @@ def refresh_status(session: Session, key: str, now: datetime | None = None) -> d
             else None
         ),
         "last_error_code": (
-            snapshot.last_error_code if snapshot is not None and snapshot.last_error_code
-            else job.last_error_code if job is not None and job.status == "failed"
-            else None
+            (snapshot.last_error_code if snapshot is not None else None)
+            or (job.last_error_code if job is not None and job.status == "failed" else None)
+            or str(snapshot_payload.get("reason") or snapshot_payload.get("error_code") or "")
+            or None
         ),
-        "warnings": list(refresh_meta.get("warnings") or []),
+        "warnings": list(refresh_meta.get("warnings") or snapshot_payload.get("warnings") or []),
         "manual_available_at": (
             _aware(job.created_at) + MANUAL_COOLDOWN
             if job is not None and _aware(job.created_at) > current - MANUAL_COOLDOWN

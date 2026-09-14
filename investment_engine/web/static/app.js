@@ -56,6 +56,8 @@ const state = {
   officialBacktestJobs: new Map(),
   backtestCatalog: null,
   requestControllers: new Map(),
+  emailLoginAddress: "",
+  portalAdmin: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -103,6 +105,20 @@ function readableApiError(detail,status){
     owner_access_level_is_permanent:"O nível do proprietário é permanente.",
     access_level_required_for_overrides:"Atribua um nível antes de criar ajustes individuais.",
     background_job_not_found:"Este trabalho não está mais disponível na fila.",
+    email_login_rate_limited:"Aguarde um minuto antes de solicitar um novo código.",
+    email_login_temporarily_limited:"Foram solicitados muitos códigos nesta conexão. Aguarde alguns minutos e tente novamente.",
+    email_login_code_invalid_or_expired:"O código é inválido, expirou ou já foi utilizado. Solicite outro se necessário.",
+    email_login_delivery_not_configured:"O acesso por e-mail ainda não foi configurado pelo administrador.",
+    email_login_delivery_failed:"Não foi possível enviar o código agora. Tente novamente em instantes.",
+    portal_page_revision_conflict:"A página foi alterada em outra sessão. Recarregue esta área antes de salvar novamente.",
+    portal_book_slug_exists:"Já existe um livro com esse identificador.",
+    portal_book_not_found:"Este livro não foi encontrado.",
+    portal_media_not_found:"A imagem selecionada não foi encontrada.",
+    portal_media_in_use:"Esta imagem ainda está vinculada a um livro.",
+    portal_sales_link_limit:"Cada livro aceita no máximo três links de venda.",
+    portal_https_url_invalid:"Os links de venda devem começar com https:// e não podem conter credenciais.",
+    portal_image_size_invalid:"A imagem deve ter no máximo 4 MB.",
+    portal_image_signature_invalid:"O conteúdo da imagem não corresponde ao tipo PNG, JPG ou WebP informado.",
   };
   if(typeof detail==="object"&&detail?.permission_required)return messages.permission_required;
   if(typeof detail==="object"&&detail?.price_alert_limit_reached)return `O limite de ${detail.price_alert_limit_reached} ativo(s) com alerta foi atingido.`;
@@ -191,22 +207,70 @@ function configureAccess() {
   if (user.picture) avatar.innerHTML = `<img src="${esc(user.picture)}" alt="">`;
   $$(".owner-only").forEach(node => node.classList.toggle("hidden", !access.is_owner));
   $$(".permission-study").forEach(node => node.classList.toggle("hidden", !access.can_view_backtest_studies));
+  const canAdmin=Boolean(access.is_owner||access.can_manage_users||access.can_sync_market||access.can_manage_portal);
   const navRules = {
     analysis: access.can_view_market,
     portfolio: access.can_view_portfolio,
     finances: access.can_view_finances,
     backtests: access.can_view_backtests,
-    admin: access.is_owner,
+    admin: canAdmin,
   };
   Object.entries(navRules).forEach(([view, allowed]) => {
     const item = $(`.nav-item[data-view="${view}"]`);
     if (item) item.classList.toggle("hidden", !allowed);
   });
   const adminItem=$('.nav-item[data-view="admin"]');
-  if(adminItem)adminItem.classList.toggle("hidden",!(access.is_owner||access.can_manage_users));
-  const adminDataTab=$('.tabs[data-tabs="admin"] [data-tab="data"]');
-  if(adminDataTab)adminDataTab.classList.toggle("hidden",!(access.is_owner||access.can_sync_market));
+  if(adminItem)adminItem.classList.toggle("hidden",!canAdmin);
+  for(const tab of ["levels","users"]){const node=$(`.tabs[data-tabs="admin"] [data-tab="${tab}"]`);if(node)node.classList.toggle("hidden",!(access.is_owner||access.can_manage_users));}
+  for(const tab of ["data","quality"]){const node=$(`.tabs[data-tabs="admin"] [data-tab="${tab}"]`);if(node)node.classList.toggle("hidden",!(access.is_owner||access.can_sync_market));}
+  const portalTab=$('.tabs[data-tabs="admin"] [data-tab="portal"]');
+  if(portalTab)portalTab.classList.toggle("hidden",!(access.is_owner||access.can_manage_portal));
   for(const tab of ["jobs","operations","system"]){const node=$(`.tabs[data-tabs="admin"] [data-tab="${tab}"]`);if(node)node.classList.toggle("hidden",!access.is_owner);}
+  if(!access.is_owner&&!access.can_manage_users){
+    state.tabs.admin=access.can_manage_portal?"portal":"data";
+    activateTab("admin",state.tabs.admin,false);
+  }
+}
+
+function emailLoginMessage(message,type=""){
+  const node=$("#email-login-message");
+  if(!node)return;
+  node.textContent=message;
+  node.className=`login-message${type?` ${type}`:""}`;
+}
+
+async function requestEmailLogin(form){
+  const button=form.querySelector('button[type="submit"]');
+  const email=String(new FormData(form).get("email")||"").trim().toLowerCase();
+  button.disabled=true;
+  try{
+    await api("/auth/email/request",{method:"POST",body:JSON.stringify({email,next:PLATFORM_PATH}),invalidateCache:false});
+    state.emailLoginAddress=email;
+    $("#email-login-verify-form")?.classList.remove("hidden");
+    emailLoginMessage("Código enviado. Ele vale por 10 minutos e o envio de um novo código invalida o anterior.");
+    $("#email-login-code")?.focus();
+    let remaining=60;
+    const original=button.textContent;
+    button.textContent=`Reenviar em ${remaining}s`;
+    const timer=setInterval(()=>{
+      remaining-=1;
+      button.textContent=remaining>0?`Reenviar em ${remaining}s`:"Enviar novo código";
+      if(remaining<=0){clearInterval(timer);button.disabled=false;button.textContent="Enviar novo código";}
+    },1000);
+    setTimeout(()=>{if(!button.isConnected)clearInterval(timer);},61000);
+  }catch(error){button.disabled=false;emailLoginMessage(error.message,"error");}
+}
+
+async function verifyEmailLogin(form){
+  const button=form.querySelector('button[type="submit"]');
+  const code=String(new FormData(form).get("code")||"").replace(/\D/g,"");
+  const email=state.emailLoginAddress||String($("#email-login-address")?.value||"").trim().toLowerCase();
+  button.disabled=true;
+  try{
+    const result=await api("/auth/email/verify",{method:"POST",body:JSON.stringify({email,code,next:PLATFORM_PATH}),invalidateCache:false});
+    emailLoginMessage("Código confirmado. Abrindo a plataforma…");
+    location.assign(result.destination||PLATFORM_PATH);
+  }catch(error){button.disabled=false;emailLoginMessage(error.message,"error");$("#email-login-code")?.select();}
 }
 
 function setView(view, tab = null) {
@@ -335,15 +399,39 @@ function renderDashboardTab() {
   } else if (tab === "comparison") {
     if (state.comparison) renderComparison(); else loadComparison();
   } else if (tab === "calendar") {
-    const rows = (data.calendar || []).map(item => ({...item, important:item.highlight === "super_wednesday"}));
-    root.innerHTML = marketUpdatePanel(["rates_calendar"])+sectionCard("Próximas datas importantes", marketTable(rows, [
-      {label:"Data",render:r=>`<strong>${dateOnly(r.date)}</strong>`},{label:"Evento",render:r=>`${esc(r.event)}${r.important?'<br><span class="pill warning">SUPER QUARTA</span>':""}`},
-      {label:"Categoria",render:r=>esc(r.category)},{label:"Horário",render:r=>esc(r.time || "—")},{label:"Observação",render:r=>esc(r.observation || "—")},
-      {label:"Fonte",render:r=>r.url?`<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.source||"Consultar")}</a>`:esc(r.source||"—")},
-    ]));
+    loadOfficialCalendar();
   } else if (tab === "headlines") {
     loadHeadlines();
+  } else if (tab === "facts") {
+    loadRelevantFacts();
   }
+}
+
+async function loadOfficialCalendar(){
+  const root=$("#dashboard-tab-content");root.innerHTML=loadingCards(5);
+  try{
+    const payload=await api("/investor-events/calendar",{requestKey:"official-calendar",cacheTtlMs:60000,bypassCache:true});
+    if(state.tabs.dashboard!=="calendar")return;
+    const rows=payload.items||[];
+    const table=rows.length?marketTable(rows,[
+      {label:"Data",render:r=>`<strong>${dateOnly(r.date)}</strong>`},
+      {label:"Evento",render:r=>`<strong>${esc(r.title)}</strong>${r.metadata?.conditional?'<br><span class="pill warning">CONDICIONAL</span>':""}`},
+      {label:"Categoria",render:r=>esc(r.category)},{label:"Região",render:r=>esc(r.region||"—")},{label:"Horário",render:r=>esc(r.time||"—")},
+      {label:"Fonte",render:r=>r.source_url?`<a href="${esc(safeExternalUrl(r.source_url))}" target="_blank" rel="noopener noreferrer">${esc(r.source||"Consultar")}</a>`:esc(r.source||"—")},
+    ]):'<div class="empty-state"><strong>Agenda oficial sendo preparada</strong>A atualização ocorre em segundo plano e os dados anteriores nunca são apagados por uma falha de fonte.</div>';
+    root.innerHTML=marketUpdatePanel(["official_calendar"])+sectionCard("Agenda oficial do investidor",table,"Eventos econômicos, feriados e eleições renovados anualmente");
+  }catch(error){root.innerHTML=errorState(error,"market");}
+}
+
+async function loadRelevantFacts(){
+  const root=$("#dashboard-tab-content");root.innerHTML=loadingCards(5);
+  try{
+    const payload=await api("/investor-events/relevant-facts?limit=100",{requestKey:"relevant-facts",cacheTtlMs:60000,bypassCache:true});
+    if(state.tabs.dashboard!=="facts")return;
+    const rows=payload.items||[];
+    const content=rows.length?`<div class="headline-list"><div class="headline headline-header"><span>#</span><span>Companhia • assunto • ativos</span><span>Entrega</span></div>${rows.map((item,index)=>`<a class="headline" href="${esc(safeExternalUrl(item.document_url))}" target="_blank" rel="noopener noreferrer"><span class="headline-number">${String(index+1).padStart(2,"0")}</span><span><strong>${esc(item.issuer_name)}</strong><small>${esc(item.subject||"Fato relevante")}${(item.tickers||[]).length?` • ${item.tickers.map(esc).join(", ")}`:""}</small></span><small>${dateTime(item.delivered_at)}</small></a>`).join("")}</div>`:'<div class="empty-state"><strong>Fatos relevantes sendo sincronizados</strong>A fonte oficial da CVM será consultada em segundo plano.</div>';
+    root.innerHTML=marketUpdatePanel(["cvm_relevant_facts"])+sectionCard("Fatos relevantes oficiais",content,"Metadados e documentos publicados no sistema IPE da CVM",{url:"https://dados.cvm.gov.br/dataset/cia_aberta-doc-ipe",label:"CVM • Dados Abertos"});
+  }catch(error){root.innerHTML=errorState(error,"market");}
 }
 
 function renderCurve(curve) {
@@ -1220,6 +1308,8 @@ async function renderPortfolioTab() {
       const rows=data.custom_investments||[],summary=data.consolidated_summary||{},today=new Date().toISOString().slice(0,10);
       const form=state.session.access.can_write_portfolio?`<details class="data-card" ${rows.length?"":"open"}><summary><strong>Adicionar investimento sem ticker</strong></summary><form id="custom-investment-form" class="filter-grid" style="margin-top:16px"><div class="field"><label>Tipo</label><select name="category" required>${catalog.map(item=>`<option value="${esc(item.id)}">${esc(item.label)}</option>`).join("")}</select></div><div class="field"><label>Nome do investimento</label><input name="name" required maxlength="200" placeholder="Ex.: CDB Banco X 110% CDI"></div><div class="field"><label>Instituição</label><input name="institution" maxlength="160" placeholder="Banco ou corretora"></div><div class="field"><label>Setor</label><input name="sector" maxlength="120" placeholder="Ex.: Renda fixa"></div><div class="field"><label>Segmento</label><input name="segment" maxlength="120" placeholder="Ex.: Bancário pós-fixado"></div><div class="field"><label>Data da aplicação</label><input type="date" name="application_date" required value="${today}"></div><div class="field"><label>Vencimento (opcional)</label><input type="date" name="maturity_date"></div><div class="field"><label>Valor aplicado</label><input type="number" name="invested_value" min="0.01" step="0.01" required></div><div class="field"><label>Valor atual</label><input type="number" name="current_value" min="0" step="0.01" required></div><div class="field"><label>Data do valor atual</label><input type="date" name="current_value_as_of" required value="${today}"></div><div class="field"><label>Indexador / referência</label><input name="benchmark" maxlength="80" placeholder="Ex.: 110% do CDI"></div><div class="field"><label>Liquidez</label><input name="liquidity" maxlength="120" placeholder="Ex.: no vencimento ou D+1"></div><div class="field wide-action"><label>Observações</label><textarea name="notes" rows="2"></textarea></div><button class="button primary wide-action" type="submit">Salvar investimento</button></form></details>`:"";
       root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Patrimônio conhecido",money(summary.known_total_value))}${metricCard("Investimentos sem ticker",money(data.custom_summary?.current_value||0),`${rows.length} cadastro(s)`)}${metricCard("Valor aplicado",money(data.custom_summary?.invested_value||0))}${metricCard("Variação",pct(data.custom_summary?.variation_pct,true))}</div>${sectionCard("Composição consolidada",allocationDonut(data.consolidated_allocation||[]),summary.allocation_complete?"Valores de mercado e valores informados manualmente":"Composição parcial: existe posição sem cotação")}${sectionCard("Renda fixa, fundos e outros",marketTable(rows,[{label:"Investimento",render:r=>`<strong>${esc(r.name)}</strong><br><small>${esc(r.category_label)}</small>`},{label:"Setor / segmento",render:r=>`${esc(r.sector||"—")}<br><small>${esc(r.segment||"—")}</small>`},{label:"Instituição",render:r=>esc(r.institution||"—")},{label:"Aplicação",render:r=>dateOnly(r.application_date)},{label:"Vencimento",render:r=>dateOnly(r.maturity_date)},{label:"Aplicado",render:r=>money(r.invested_value)},{label:"Atual",render:r=>`${money(r.current_value)}<br><small>${dateOnly(r.current_value_as_of)}</small>`},{label:"Variação",render:r=>pct(r.variation_pct,true),className:r=>variationClass(r.variation_pct)},{label:"",render:r=>state.session.access.can_write_portfolio?`<span class="row-actions"><button class="button ghost compact" data-update-custom-investment="${esc(r.id)}" data-current-value="${esc(r.current_value)}">Atualizar valor</button><button class="button ghost compact danger" data-delete-custom-investment="${esc(r.id)}">Arquivar</button></span>`:""}]),"O histórico preserva cada valor informado por data")}${form}`;
+    } else if (tab==="dividends") {
+      await renderPortfolioDividends(root);
     } else if (tab==="news") {
       await renderNewsWorkspace(root);
     } else {
@@ -1739,7 +1829,7 @@ const accessPermissionSections=[
   {title:"Mercado e análises",items:[["can_view_market","Ver Painel de Mercado"],["can_use_advanced_filters","Usar filtros avançados"],["can_use_fdi_analysis","Análise FDI"],["can_use_alb_analysis","Análise ALB"],["can_use_graham_valuation","Número de Graham"],["can_use_dividend_ceiling","Preço-teto por dividendos"],["can_use_relative_valuation","Valuation relativo"],["can_use_economic_valuation","Valor econômico"]]},
   {title:"Carteira, notícias e alertas",items:[["can_view_portfolio","Ver carteiras"],["can_write_portfolio","Editar carteiras"],["can_view_news_insights","Notícias e recomendações"],["can_use_price_alerts","Usar alertas"],["can_alert_price_above","Preço acima"],["can_alert_price_below","Preço abaixo"],["can_alert_change_positive","Variação positiva"],["can_alert_change_negative","Variação negativa"]]},
   {title:"Finanças e backtests",items:[["can_view_finances","Ver finanças"],["can_write_finances","Editar finanças"],["can_view_backtests","Ver backtests"],["can_run_backtests","Executar backtests"],["can_refresh_backtest_signals","Atualizar sinais"],["can_view_backtest_studies","Ver estudos"]]},
-  {title:"Administração",items:[["can_sync_market","Atualizar dados de mercado"],["can_manage_users","Gerenciar usuários e níveis"]]},
+  {title:"Administração",items:[["can_sync_market","Atualizar dados e qualidade"],["can_manage_users","Gerenciar usuários e níveis"],["can_manage_portal","Editar página inicial e livros"]]},
 ];
 const accessLimitDefinitions=[
   {key:"custom_filter_limit",label:"Análises personalizadas",values:[0,1,2,3]},
@@ -1754,6 +1844,8 @@ const adminRefreshGroups=[
   {key:"global_markets",section:"Mercados",frequency:"06h e 13h"},{key:"crypto",section:"Mercados",frequency:"A cada 30 min"},{key:"fx",section:"Mercados",frequency:"A cada 2 horas"},
   {key:"headlines",section:"Notícias e históricos",frequency:"A cada hora"},{key:"comparison",section:"Notícias e históricos",frequency:"Diária, 05h"},
   {key:"catalog",section:"Catálogo e análises",frequency:"Dias úteis, 08h30"},{key:"fundamentals",section:"Catálogo e análises",frequency:"Dias úteis, 19h"},{key:"technical_daily",section:"Catálogo e análises",frequency:"Dias úteis, 18h15"},{key:"technical_intraday",section:"Catálogo e análises",frequency:"Pregão, a cada 15 min"},
+  {key:"portfolio_dividends",section:"Eventos oficiais",frequency:"Dias úteis, 07h20 e 19h20"},{key:"cvm_relevant_facts",section:"Eventos oficiais",frequency:"Diária, 07h40"},{key:"official_calendar",section:"Eventos oficiais",frequency:"Diária, 03h20"},{key:"ima_history",section:"Eventos oficiais",frequency:"Dias úteis, 21h30"},
+  {key:"alb_monitor",section:"Qualidade",frequency:"Dias úteis, 19h40"},{key:"data_quality",section:"Qualidade",frequency:"Diária, 20h10"},
 ];
 
 function accessRuleEditor(level,disabled=false){
@@ -1808,11 +1900,13 @@ async function loadAdminUpdates(root){
     ["Mercados, criptos e câmbio",["global_markets","crypto","fx"]],
     ["Notícias e comparador histórico",["headlines","comparison"]],
     ["Catálogo, fundamentos e técnica",["catalog","fundamentals","technical_daily","technical_intraday"]],
+    ["Proventos, CVM, agenda e índices ANBIMA",["portfolio_dividends","cvm_relevant_facts","official_calendar","ima_history"]],
+    ["Qualidade e filtro ALB",["alb_monitor","data_quality"]],
   ];
-  root.innerHTML=`<div class="metric-grid">${metricCard("Ações",number(groups.stock||0,0),"Ativos ativos")}${metricCard("FIIs",number(groups.fii||0,0),"Fundos imobiliários")}${metricCard("ETFs",number(counts.etf||0,0),"Fundos de índice")}${metricCard("BDRs",number(counts.bdr||0,0),"Recibos negociados na B3")}</div><div class="admin-update-actions"><button class="button secondary" data-refresh-groups="catalog">Atualizar catálogo</button><button class="button secondary" data-refresh-groups="fundamentals">Atualizar fundamentos e notas</button>${grouped.map(([label,keys])=>`<button class="button secondary" data-refresh-groups="${keys.join(",")}">${esc(label)}</button>`).join("")}<button class="button primary" data-refresh-groups="${allKeys.join(",")}" data-confirm-all-updates>Atualizar todas as 13 rotinas</button></div>${sectionCard("Todas as atualizações automáticas",adminUpdateTable(updates),"As solicitações entram na fila e não bloqueiam o site")}${sectionCard("Monitor de alertas",`<div class="admin-monitor-row"><span><strong>B3: 5 minutos no pregão</strong><small>Demais mercados: 30 minutos, continuamente</small></span><button class="button secondary" data-run-alert-monitor>Executar verificação agora</button></div><div id="alert-monitor-result" class="notice info hidden"></div>`,`A execução manual respeita as mesmas regras e não envia alertas duplicados`)}`;
+  root.innerHTML=`<div class="metric-grid">${metricCard("Ações",number(groups.stock||0,0),"Ativos ativos")}${metricCard("FIIs",number(groups.fii||0,0),"Fundos imobiliários")}${metricCard("ETFs",number(counts.etf||0,0),"Fundos de índice")}${metricCard("BDRs",number(counts.bdr||0,0),"Recibos negociados na B3")}</div><div class="admin-update-actions"><button class="button secondary" data-refresh-groups="catalog">Atualizar catálogo</button><button class="button secondary" data-refresh-groups="fundamentals">Atualizar fundamentos e notas</button>${grouped.map(([label,keys])=>`<button class="button secondary" data-refresh-groups="${keys.join(",")}">${esc(label)}</button>`).join("")}<button class="button primary" data-refresh-groups="${allKeys.join(",")}" data-confirm-all-updates>Atualizar todas as ${allKeys.length} rotinas</button></div>${sectionCard("Todas as atualizações automáticas",adminUpdateTable(updates),"As solicitações entram na fila e não bloqueiam o site")}${sectionCard("Monitor de alertas",`<div class="admin-monitor-row"><span><strong>B3: 5 minutos no pregão</strong><small>Demais mercados: 30 minutos, continuamente</small></span><button class="button secondary" data-run-alert-monitor>Executar verificação agora</button></div><div id="alert-monitor-result" class="notice info hidden"></div>`,`A execução manual respeita as mesmas regras e não envia alertas duplicados`)}`;
 }
 
-const jobTypeLabels={market_group_refresh:"Mercado e economia",economy_headlines_refresh:"Manchetes",historical_comparison_refresh:"Comparador histórico",market_catalog_refresh:"Catálogo",market_fundamentals_refresh:"Fundamentos",market_technicals_refresh:"Indicadores técnicos",market_intraday_refresh:"Cotações intradiárias",portfolio_prices_refresh:"Preços de carteira",user_news_refresh:"Notícias do usuário",personal_backtest_matrix:"Backtest pessoal",noop:"Verificação interna"};
+const jobTypeLabels={market_group_refresh:"Mercado e economia",economy_headlines_refresh:"Manchetes",historical_comparison_refresh:"Comparador histórico",market_catalog_refresh:"Catálogo",market_fundamentals_refresh:"Fundamentos",market_technicals_refresh:"Indicadores técnicos",market_intraday_refresh:"Cotações intradiárias",portfolio_prices_refresh:"Preços de carteira",user_news_refresh:"Notícias do usuário",personal_backtest_matrix:"Backtest pessoal",investor_dividends_refresh:"Proventos oficiais",cvm_relevant_facts_refresh:"Fatos relevantes CVM",official_calendar_refresh:"Agenda oficial",anbima_ima_history_refresh:"Histórico IMA-B/IRF-M",alb_universe_monitor:"Monitor do filtro ALB",data_quality_refresh:"Qualidade dos dados",noop:"Verificação interna"};
 function jobStatusLabel(status){return ({queued:"Na fila",running:"Executando",succeeded:"Concluído",failed:"Falhou",cancelled:"Cancelado"})[status]||status;}
 async function loadAdminJobs(root){
   const jobs=await api("/admin/jobs?limit=100",{bypassCache:true});
@@ -1866,12 +1960,116 @@ async function loadAdminOperations(root){
   root.innerHTML=`<div class="admin-monitor-row operations-summary ${esc(payload.status)}"><span><strong>Saúde operacional: ${esc(severityLabel[payload.status]||payload.status)}</strong><small>Leitura de ${dateTime(payload.generated_at)} • ${openIncidents.length} ocorrência(s) aberta(s)</small></span><button class="button secondary" data-reload-admin-operations>Atualizar diagnóstico</button></div><div class="metric-grid">${metricCard("Worker",payload.worker_health?.status==="ok"?"Ativo":"Indisponível",payload.worker_health?.last_seen_at?`Último sinal ${dateTime(payload.worker_health.last_seen_at)}`:"Sem heartbeat")}${metricCard("Na fila",number(payload.queue?.queued||0,0),`Mais antigo: ${number(payload.queue?.oldest_due_minutes||0,0)} min`)}${metricCard("Em execução",number(payload.queue?.running||0,0),`${number(payload.queue?.stale_running||0,0)} sem heartbeat`)}${metricCard("Ocorrências",number(openIncidents.length,0),openIncidents.some(i=>i.severity==="critical")?"Há item crítico":"Sem item crítico")}</div>${operationsResourceCards(payload.resources)}${sectionCard("Serviços e liderança",services,"O esperado é um único líder para o agendador e um único líder para o monitor de alertas")}${sectionCard("Leases distribuídas",`<div class="operations-leases">${leaders}</div>`,`A liderança expira automaticamente se uma VM deixar de responder`) }${sectionCard("Tempo de resposta p50/p95",latencies,`Janela de até ${number(payload.route_metrics?.window_size||0,0)} medições desde ${dateTime(payload.route_metrics?.since)}`)}${sectionCard("Ocorrências abertas",incidents||'<div class="empty-state compact"><strong>Nenhuma ocorrência aberta.</strong>Os limites monitorados estão normais.</div>',"Fila parada, falhas repetidas, dados vencidos, memória, swap, disco e latência")}`;
 }
 
+function dataQualityStatus(value){return ({updated:"Atualizado",partial:"Cobertura parcial",stale:"Desatualizado",unavailable:"Indisponível",failed:"Falhou",queued:"Na fila",running:"Atualizando"})[value]||value||"Aguardando";}
+function dataQualityClass(value){return ["failed","unavailable"].includes(value)?"danger":["partial","stale"].includes(value)?"warning":"";}
+
+async function loadAdminQuality(root){
+  const payload=await api("/admin/data-quality",{bypassCache:true});
+  const summary=payload.summary||{},alb=payload.alb||null,rows=payload.sources||[];
+  const sourceRows=marketTable(rows,[
+    {label:"Conjunto de dados",render:r=>`<strong>${esc(r.label||r.key)}</strong><br><small>${esc(r.category||"")}</small>`},
+    {label:"Fonte",render:r=>r.source_url?`<a href="${esc(safeExternalUrl(r.source_url))}" target="_blank" rel="noopener noreferrer">${esc(r.source||"Fonte oficial")}</a>`:esc(r.source||"—")},
+    {label:"Situação",render:r=>`<span class="pill ${dataQualityClass(r.status)}">${esc(dataQualityStatus(r.status))}</span>${r.last_error_code?`<br><small>${esc(r.last_error_code)}</small>`:""}`},
+    {label:"Cobertura",render:r=>nullable(r.coverage_pct)?(nullable(r.item_count)?"—":`${number(r.item_count,0)} item(ns)`):`${pct(r.coverage_pct)}<br><small>${number(r.item_count,0)} de ${number(r.total_items,0)}</small>`},
+    {label:"Última atualização",render:r=>dateTime(r.last_updated_at)},
+    {label:"Próxima",render:r=>dateTime(r.next_update_at)},
+  ]);
+  const albBody=alb?`<div class="metric-grid summary-grid">${metricCard("Ativos no ALB",number(alb.asset_count,0),`Faixa esperada: ${number(alb.target_min,0)} a ${number(alb.target_max,0)}`)}${metricCard("Situação",alb.status==="within_range"?"Dentro da faixa":"Requer atenção","Critérios nunca são afrouxados automaticamente")}${metricCard("Referência",dateOnly(alb.reference_date),`Preset ${alb.preset_version||"—"}`)}</div>${(alb.tickers||[]).length?`<div class="tag-list">${alb.tickers.map(item=>`<span>${esc(item)}</span>`).join("")}</div>`:""}`:'<div class="empty-state compact"><strong>Primeira medição pendente</strong>O monitor será executado pela rotina diária, sem alterar o preset ALB.</div>';
+  root.innerHTML=`<div class="admin-monitor-row operations-summary ${esc(payload.status)}"><span><strong>Qualidade dos dados: ${payload.status==="ok"?"normal":payload.status==="critical"?"crítica":"atenção"}</strong><small>Leitura em ${dateTime(payload.generated_at)} • somente metadados persistidos, sem bloquear o site</small></span><button class="button secondary" data-reload-admin-quality>Atualizar diagnóstico</button></div><div class="metric-grid">${metricCard("Fontes monitoradas",number(summary.total||0,0),"Séries, snapshots e cobertura por ativo")}${metricCard("Atualizadas",number(summary.updated||0,0),"Dentro do prazo esperado")}${metricCard("Parciais",number(summary.partial||0,0),"Cobertura abaixo de 80%")}${metricCard("Vencidas ou indisponíveis",number((summary.stale||0)+(summary.unavailable_or_failed||0),0),"Exigem atualização ou revisão")}</div>${sectionCard("Filtro ALB — controle diário",albBody,"A faixa esperada é de 5 a 20 ativos; um alerta operacional é aberto fora dela")}${sectionCard("Cobertura, frescor e proveniência",sourceRows,"Cada linha informa a fonte, a última atualização e eventuais falhas")}`;
+}
+
+function portalField(content,path,label,{textarea=false,wide=false,list=false}={}){
+  const parts=path.split(".");let value=content;for(const part of parts)value=value?.[part];
+  if(list)value=(value||[]).join("\n");
+  const control=textarea?`<textarea rows="${wide?4:2}" data-portal-page-field="${esc(path)}" ${list?'data-portal-list="true"':""}>${esc(value||"")}</textarea>`:`<input data-portal-page-field="${esc(path)}" value="${esc(value||"")}">`;
+  return `<div class="field ${wide?"wide-action":""}"><label>${esc(label)}</label>${control}</div>`;
+}
+
+function portalPageEditor(payload){
+  const content=payload.content||{},purpose=content.purpose?.items||[];
+  return `<form id="portal-page-form" class="portal-admin-sections" data-portal-revision="${Number(payload.revision||1)}">
+    <details class="data-card" open><summary><strong>Título, marca e navegação</strong></summary><div class="filter-grid portal-edit-grid">
+      ${portalField(content,"meta.title","Título da janela",{wide:true})}${portalField(content,"meta.description","Descrição para buscadores",{textarea:true,wide:true})}
+      ${portalField(content,"brand.monogram","Monograma da marca")}${portalField(content,"brand.primary","Marca — linha principal")}${portalField(content,"brand.secondary","Marca — linha secundária")}
+      ${portalField(content,"navigation.skip","Atalho de acessibilidade")}${portalField(content,"navigation.books","Menu dos livros")}${portalField(content,"navigation.purpose","Menu da proposta")}${portalField(content,"navigation.platform","Menu da plataforma")}${portalField(content,"navigation.admin","Link de ajustes")}
+    </div></details>
+    <details class="data-card"><summary><strong>Abertura da página</strong></summary><div class="filter-grid portal-edit-grid">
+      ${portalField(content,"hero.eyebrow","Chamada curta")}${portalField(content,"hero.title","Título principal",{wide:true})}${portalField(content,"hero.intro","Texto de apresentação",{textarea:true,wide:true})}
+      ${portalField(content,"hero.primary_action","Botão da plataforma")}${portalField(content,"hero.secondary_action","Botão dos livros")}${portalField(content,"hero.proof","Temas — um por linha",{textarea:true,wide:true,list:true})}
+      ${portalField(content,"hero.collection_title","Título da coleção")}${portalField(content,"hero.collection_subtitle","Subtítulo da coleção")}
+    </div></details>
+    <details class="data-card"><summary><strong>Nossa proposta</strong></summary><div class="filter-grid portal-edit-grid">
+      ${portalField(content,"purpose.eyebrow","Chamada curta")}${portalField(content,"purpose.title","Título",{wide:true})}
+      ${purpose.map((item,index)=>`<fieldset class="portal-purpose-item wide-action"><legend>Bloco ${index+1}</legend><div class="field"><label>Número</label><input data-portal-purpose="${index}" data-portal-purpose-field="number" value="${esc(item.number)}"></div><div class="field"><label>Título</label><input data-portal-purpose="${index}" data-portal-purpose-field="title" value="${esc(item.title)}"></div><div class="field wide-action"><label>Texto</label><textarea rows="2" data-portal-purpose="${index}" data-portal-purpose-field="body">${esc(item.body)}</textarea></div></fieldset>`).join("")}
+    </div></details>
+    <details class="data-card"><summary><strong>Biblioteca e coleções</strong></summary><div class="filter-grid portal-edit-grid">
+      ${portalField(content,"books.eyebrow","Chamada curta")}${portalField(content,"books.title","Título da biblioteca",{wide:true})}${portalField(content,"books.intro","Apresentação",{textarea:true,wide:true})}
+      ${portalField(content,"books.primary_title","Coleção principal")}${portalField(content,"books.primary_subtitle","Subtítulo principal")}${portalField(content,"books.complementary_title","Coleção complementar")}${portalField(content,"books.complementary_subtitle","Subtítulo complementar")}${portalField(content,"books.details_label","Texto de abrir descrição")}
+    </div></details>
+    <details class="data-card"><summary><strong>Convite para a plataforma e rodapé</strong></summary><div class="filter-grid portal-edit-grid">
+      ${portalField(content,"platform.eyebrow","Chamada curta")}${portalField(content,"platform.title","Título",{wide:true})}${portalField(content,"platform.body","Texto",{textarea:true,wide:true})}${portalField(content,"platform.button","Botão")}
+      ${portalField(content,"footer.disclaimer","Aviso do rodapé",{textarea:true,wide:true})}${portalField(content,"footer.platform","Link da plataforma")}
+    </div></details>
+    <div class="portal-sticky-action"><span>Última alteração: ${dateTime(payload.updated_at)} por ${esc(payload.updated_by||"sistema")}</span><button class="button primary" type="submit">Salvar textos da página</button></div>
+  </form>`;
+}
+
+function portalCoverUrl(book){return book.cover_media_id?`${BASE_PATH}/portal-media/${encodeURIComponent(book.cover_media_id)}`:`${BASE_PATH}${book.fallback_cover_path||"/portal-assets/books/formacao-investidor-fundamentos.webp"}`;}
+function portalBookForm(book,index,total){
+  const links=[...(book.sales_links||[])];while(links.length<3)links.push({label:"",url:""});
+  const isNew=!book.id;
+  return `<details class="access-level-card portal-book-card" data-portal-book-card="${esc(book.id||"new")}" ${isNew?"open":""}><summary><span><strong>${esc(book.title||"Adicionar novo livro")}</strong><small>${isNew?"Cadastre a obra, a capa e os links de venda":`${book.collection==="primary"?"Coleção principal":"Obra complementar"} • ${book.is_published?"Publicado":"Oculto"}`}</small></span>${isNew?"":`<img class="portal-book-thumb" src="${esc(portalCoverUrl(book))}" alt="">`}</summary><form class="portal-book-form filter-grid" data-portal-book-form="${esc(book.id||"")}">
+    <div class="field"><label>Título</label><input name="title" required maxlength="255" value="${esc(book.title||"")}"></div><div class="field"><label>Identificador</label><input name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" value="${esc(book.slug||"")}" placeholder="nome-do-livro"></div>
+    <div class="field"><label>Coleção</label><select name="collection"><option value="primary" ${book.collection==="primary"?"selected":""}>Coleção principal</option><option value="complementary" ${book.collection!=="primary"?"selected":""}>Obras complementares</option></select></div><div class="field"><label>Chamada curta</label><input name="kicker" maxlength="180" value="${esc(book.kicker||"")}"></div>
+    <div class="field wide-action"><label>Resumo exibido</label><textarea name="summary" rows="2" maxlength="1500">${esc(book.summary||"")}</textarea></div><div class="field wide-action"><label>Descrição completa</label><textarea name="description" rows="3" maxlength="5000">${esc(book.description||"")}</textarea></div>
+    <div class="field"><label>Descrição acessível da capa</label><input name="alt_text" required maxlength="500" value="${esc(book.alt_text||"")}"></div><div class="field"><label>Nova capa (PNG, JPG ou WebP; até 4 MB)</label><input name="cover_file" type="file" accept="image/png,image/jpeg,image/webp"></div>
+    <div class="field"><label>Destaque no topo</label><select name="hero_position"><option value="">Não destacar</option>${[1,2,3].map(value=>`<option value="${value}" ${Number(book.hero_position)===value?"selected":""}>Posição ${value}</option>`).join("")}</select></div><label class="check portal-book-published"><input name="is_published" type="checkbox" ${book.is_published!==false?"checked":""}> Livro visível na página</label>
+    <fieldset class="portal-sales-fieldset wide-action"><legend>Links de venda — até três</legend>${links.map((link,position)=>`<div class="portal-sales-row"><div class="field"><label>Descrição ${position+1}</label><input name="sales_label_${position}" maxlength="100" value="${esc(link.label||"")}" placeholder="Ex.: Comprar na Amazon"></div><div class="field"><label>Link HTTPS ${position+1}</label><input name="sales_url_${position}" type="url" value="${esc(link.url||"")}" placeholder="https://..."></div></div>`).join("")}</fieldset>
+    <div class="portal-book-actions wide-action">${isNew?"":`<button type="button" class="button ghost" data-portal-book-move="up" data-portal-book-id="${esc(book.id)}" ${index===0?"disabled":""}>Subir</button><button type="button" class="button ghost" data-portal-book-move="down" data-portal-book-id="${esc(book.id)}" ${index===total-1?"disabled":""}>Descer</button><button type="button" class="button ghost danger" data-portal-book-delete="${esc(book.id)}">Excluir</button>`}<button class="button primary" type="submit">${isNew?"Adicionar livro":"Salvar livro"}</button></div>
+  </form></details>`;
+}
+
+async function loadAdminPortal(root){
+  const payload=await api("/admin/portal",{bypassCache:true});state.portalAdmin=payload;
+  const books=payload.books||[];
+  root.innerHTML=`<div class="notice info"><strong>Publicação segura:</strong> as alterações salvas aparecem na página inicial sem substituir a plataforma. Se o banco ficar indisponível, a versão estática atual permanece como reserva.</div>${sectionCard("Textos da página inicial",portalPageEditor(payload),"Edite os campos e salve ao final")}${sectionCard("Livros publicados e futuros",`<div class="portal-book-list">${books.map((book,index)=>portalBookForm(book,index,books.length)).join("")}</div>${portalBookForm({collection:"complementary",is_published:true,sales_links:[]},books.length,books.length+1)}`,`${books.length} livro(s) cadastrado(s); capas aceitas em PNG, JPG e WebP`)}`;
+}
+
+function setPortalPageValue(target,path,value){const parts=path.split(".");let cursor=target;parts.slice(0,-1).forEach(part=>cursor=cursor[part]);cursor[parts.at(-1)]=value;}
+async function savePortalPage(form){
+  const content=JSON.parse(JSON.stringify(state.portalAdmin.content||{}));
+  form.querySelectorAll("[data-portal-page-field]").forEach(input=>setPortalPageValue(content,input.dataset.portalPageField,input.dataset.portalList?input.value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean):input.value));
+  form.querySelectorAll("[data-portal-purpose]").forEach(input=>{content.purpose.items[Number(input.dataset.portalPurpose)][input.dataset.portalPurposeField]=input.value;});
+  const button=form.querySelector('button[type="submit"]');button.disabled=true;
+  try{await api("/admin/portal/page",{method:"PUT",body:JSON.stringify({patch:content,expected_revision:Number(form.dataset.portalRevision)})});toast("Textos da página inicial atualizados.","success");await loadAdmin();}
+  catch(error){toast(error.message,"error");button.disabled=false;}
+}
+
+function readPortalFile(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(new Error("Não foi possível ler a imagem selecionada."));reader.readAsDataURL(file);});}
+async function portalBookPayload(form){
+  const values={title:form.elements.title.value,slug:form.elements.slug.value.trim().toLowerCase(),collection:form.elements.collection.value,kicker:form.elements.kicker.value,summary:form.elements.summary.value,description:form.elements.description.value,alt_text:form.elements.alt_text.value,hero_position:form.elements.hero_position.value||null,is_published:form.elements.is_published.checked};
+  const file=form.elements.cover_file.files?.[0];if(file){if(file.size>4*1024*1024)throw new Error("A capa deve ter no máximo 4 MB.");const media=await api("/admin/portal/media",{method:"POST",body:JSON.stringify({filename:file.name,data_url:await readPortalFile(file)})});values.cover_media_id=media.id;}
+  const sales_links=[];for(let index=0;index<3;index+=1){const label=form.elements[`sales_label_${index}`].value.trim(),url=form.elements[`sales_url_${index}`].value.trim();if(label||url){if(!label||!url)throw new Error(`Preencha a descrição e o link de venda ${index+1}.`);sales_links.push({label,url});}}
+  return {values,sales_links};
+}
+
+async function savePortalBook(form){
+  const button=form.querySelector('button[type="submit"]');button.disabled=true;
+  try{const payload=await portalBookPayload(form),id=form.dataset.portalBookForm;await api(id?`/admin/portal/books/${encodeURIComponent(id)}`:"/admin/portal/books",{method:id?"PUT":"POST",body:JSON.stringify(payload)});toast(id?"Livro atualizado.":"Livro adicionado.","success");await loadAdmin();}
+  catch(error){toast(error.message,"error");button.disabled=false;}
+}
+
+async function deletePortalBook(id){if(!window.confirm("Excluir este livro e seus links da página inicial? A capa será removida apenas se nenhum outro livro a utilizar."))return;try{await api(`/admin/portal/books/${encodeURIComponent(id)}`,{method:"DELETE"});toast("Livro excluído.","success");await loadAdmin();}catch(error){toast(error.message,"error");}}
+async function movePortalBook(id,direction){const books=[...(state.portalAdmin?.books||[])],index=books.findIndex(book=>book.id===id),target=index+(direction==="up"?-1:1);if(index<0||target<0||target>=books.length)return;[books[index],books[target]]=[books[target],books[index]];try{await api("/admin/portal/books/order",{method:"PUT",body:JSON.stringify({ordered_ids:books.map(book=>book.id)})});toast("Ordem dos livros atualizada.","success");await loadAdmin();}catch(error){toast(error.message,"error");}}
+
 async function loadAdmin() {
   const root=$("#admin-tab-content"); root.innerHTML=loadingCards(6);
   try {
-    if(state.tabs.admin==="levels")await loadAccessLevels(root);
+    if(state.tabs.admin==="portal")await loadAdminPortal(root);
+    else if(state.tabs.admin==="levels")await loadAccessLevels(root);
     else if(state.tabs.admin==="users")await loadAdminUsers(root);
     else if(state.tabs.admin==="data")await loadAdminUpdates(root);
+    else if(state.tabs.admin==="quality")await loadAdminQuality(root);
     else if(state.tabs.admin==="jobs")await loadAdminJobs(root);
     else if(state.tabs.admin==="operations")await loadAdminOperations(root);
     else {
@@ -1879,6 +2077,26 @@ async function loadAdmin() {
       root.innerHTML=`<div class="metric-grid">${metricCard("Aplicação",health.status==="ok"?"Operacional":"Atenção",`Versão ${health.version}`)}${metricCard("Banco de dados",db.status==="ok"?"Conectado":"Indisponível",db.database||"")}${metricCard("Hospedagem","Oracle Cloud",health.environment||"Produção")}${metricCard("Domínio","HTTPS ativo","Conexão segura")}</div>${sectionCard("Registros principais",`<div class="detail-list">${Object.entries(counts).map(([key,value])=>`<div><span>${esc(key.replaceAll("_"," "))}</span><strong>${number(value,0)}</strong></div>`).join("")}</div>`,`Consulta somente leitura`)}`;
     }
   } catch(error) { root.innerHTML=errorState(error); }
+}
+
+function dividendEventLabel(value){return ({dividend:"Dividendo",jcp:"Juros sobre capital próprio",income:"Rendimento",capital_return:"Restituição de capital",cash_distribution:"Provento em dinheiro"})[value]||value||"Provento";}
+
+async function renderPortfolioDividends(root){
+  const query=new URLSearchParams({portfolio_id:state.portfolioId,limit:"1000"});
+  const payload=await api(`/investor-events/dividends?${query}`,{requestKey:`dividends-${state.portfolioId}`,cacheTtlMs:60000,bypassCache:true});
+  const rows=payload.items||[],known=rows.filter(item=>!nullable(item.estimated_gross_amount));
+  const estimated=known.reduce((sum,item)=>sum+Number(item.estimated_gross_amount||0),0);
+  const table=rows.length?marketTable(rows,[
+    {label:"Ativo",render:r=>`<strong>${esc(r.ticker)}</strong><br><small>${esc(r.portfolio_name||"")}</small>`},
+    {label:"Tipo",render:r=>esc(dividendEventLabel(r.event_type))},
+    {label:"Data-com",render:r=>dateOnly(r.last_cum_date)},{label:"Data-ex",render:r=>dateOnly(r.ex_date)},{label:"Pagamento",render:r=>dateOnly(r.payment_date)},
+    {label:"Valor por unidade",render:r=>nullable(r.amount)?"—":money(r.amount,r.currency||"BRL")},
+    {label:"Quantidade atual",render:r=>nullable(r.quantity)?"—":number(r.quantity,4)},
+    {label:"Total indicativo",render:r=>nullable(r.estimated_gross_amount)?"—":money(r.estimated_gross_amount,r.currency||"BRL")},
+    {label:"Fonte",render:r=>r.source_url?`<a href="${esc(safeExternalUrl(r.source_url))}" target="_blank" rel="noopener noreferrer">${esc(r.source)}</a>`:esc(r.source||"—")},
+  ]):'<div class="empty-state"><strong>Nenhum provento confirmado no período</strong>A consulta usa somente eventos oficiais dos ativos desta carteira.</div>';
+  const update=payload.update||{};
+  root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Eventos",number(rows.length,0),"No período consultado")}${metricCard("Total indicativo",money(estimated),`${known.length} evento(s) com valor e posição`) }${metricCard("Fonte","B3","Empresas Listadas")}${metricCard("Última atualização",update.last_updated_at?dateTime(update.last_updated_at):"Preparando",update.status||"")}</div>${sectionCard("Calendário oficial de proventos",table,payload.gross_amount_note||"Valores brutos e indicativos; confirme na corretora.")}`;
 }
 
 async function saveAccessLevel(form){
@@ -2025,7 +2243,7 @@ function bindEvents() {
   $("#global-search").addEventListener("input",event=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>runSearch(event.target.value),220);});
   document.addEventListener("keydown",event=>{if(event.key==="/"&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName)){event.preventDefault();$("#global-search").focus();}});
   document.addEventListener("click",event=>{
-    const refreshGroupsButton=event.target.closest("[data-refresh-groups]");if(refreshGroupsButton){if(refreshGroupsButton.hasAttribute("data-confirm-all-updates")&&!window.confirm("Enfileirar agora as 13 rotinas de atualização? Os dados atuais continuarão disponíveis durante o processamento."))return;refreshMarketGroups(refreshGroupsButton.dataset.refreshGroups);return;}
+    const refreshGroupsButton=event.target.closest("[data-refresh-groups]");if(refreshGroupsButton){if(refreshGroupsButton.hasAttribute("data-confirm-all-updates")&&!window.confirm(`Enfileirar agora as ${adminRefreshGroups.length} rotinas de atualização? Os dados atuais continuarão disponíveis durante o processamento.`))return;refreshMarketGroups(refreshGroupsButton.dataset.refreshGroups);return;}
     const portfolioNewsButton=event.target.closest("[data-portfolio-news-refresh]");if(portfolioNewsButton){refreshPortfolioNews(portfolioNewsButton.dataset.portfolioNewsRefresh);return;}
     const newsMode=event.target.closest("[data-portfolio-news-mode]");if(newsMode){state.portfolioNewsMode=newsMode.dataset.portfolioNewsMode;renderPortfolioTab();return;}
     const recommendationCategory=event.target.closest("[data-recommendation-category]");if(recommendationCategory){state.recommendationCategory=recommendationCategory.dataset.recommendationCategory;renderPortfolioTab();return;}
@@ -2042,6 +2260,9 @@ function bindEvents() {
     const retryJob=event.target.closest("[data-retry-admin-job]");if(retryJob){retryAdminJob(retryJob);return;}
     if(event.target.closest("[data-reload-admin-jobs]")){loadAdmin();return;}
     if(event.target.closest("[data-reload-admin-operations]")){loadAdmin();return;}
+    if(event.target.closest("[data-reload-admin-quality]")){loadAdmin();return;}
+    const deletePortal=event.target.closest("[data-portal-book-delete]");if(deletePortal){deletePortalBook(deletePortal.dataset.portalBookDelete);return;}
+    const movePortal=event.target.closest("[data-portal-book-move]");if(movePortal){movePortalBook(movePortal.dataset.portalBookId,movePortal.dataset.portalBookMove);return;}
     const portfolioPricesButton=event.target.closest("[data-portfolio-prices-refresh]");if(portfolioPricesButton){refreshPortfolioPrices(portfolioPricesButton.dataset.portfolioPricesRefresh);return;}
     const updateCustom=event.target.closest("[data-update-custom-investment]");if(updateCustom){updateCustomInvestmentValue(updateCustom);return;}
     const deleteCustom=event.target.closest("[data-delete-custom-investment]");if(deleteCustom){deleteCustomInvestment(deleteCustom);return;}
@@ -2111,7 +2332,7 @@ function bindEvents() {
     }
   });
   document.addEventListener("input",event=>{if(event.target.id==="alert-symbol")renderAlertSuggestions(event.target.value);});
-  document.addEventListener("submit",event=>{if(event.target.id==="backtest-form"){event.preventDefault();runBacktest(event.target);}if(event.target.id==="portfolio-position-form"){event.preventDefault();savePortfolioPosition(event.target);}if(event.target.id==="custom-investment-form"){event.preventDefault();saveCustomInvestment(event.target);}if(event.target.id==="custom-value-form"){event.preventDefault();saveCustomInvestmentValue(event.target);}if(event.target.id==="finance-transaction-form"){event.preventDefault();saveFinanceTransaction(event.target);}if(event.target.id==="finance-budget-form"){event.preventDefault();saveFinanceBudget(event.target);}if(event.target.id==="price-alert-form"){event.preventDefault();savePriceAlert(event.target);}if(event.target.id==="alert-preference-form"){event.preventDefault();saveAlertPreferences(event.target);}if(event.target.matches("[data-access-level-form]")){event.preventDefault();saveAccessLevel(event.target);}if(event.target.id==="create-access-level-form"){event.preventDefault();createAccessLevel(event.target);}if(event.target.id==="admin-user-filter-form"){event.preventDefault();applyAdminUserFilters(event.target);}});
+  document.addEventListener("submit",event=>{if(event.target.id==="email-login-request-form"){event.preventDefault();requestEmailLogin(event.target);}if(event.target.id==="email-login-verify-form"){event.preventDefault();verifyEmailLogin(event.target);}if(event.target.id==="backtest-form"){event.preventDefault();runBacktest(event.target);}if(event.target.id==="portfolio-position-form"){event.preventDefault();savePortfolioPosition(event.target);}if(event.target.id==="custom-investment-form"){event.preventDefault();saveCustomInvestment(event.target);}if(event.target.id==="custom-value-form"){event.preventDefault();saveCustomInvestmentValue(event.target);}if(event.target.id==="finance-transaction-form"){event.preventDefault();saveFinanceTransaction(event.target);}if(event.target.id==="finance-budget-form"){event.preventDefault();saveFinanceBudget(event.target);}if(event.target.id==="price-alert-form"){event.preventDefault();savePriceAlert(event.target);}if(event.target.id==="alert-preference-form"){event.preventDefault();saveAlertPreferences(event.target);}if(event.target.id==="portal-page-form"){event.preventDefault();savePortalPage(event.target);}if(event.target.matches("[data-portal-book-form]")){event.preventDefault();savePortalBook(event.target);}if(event.target.matches("[data-access-level-form]")){event.preventDefault();saveAccessLevel(event.target);}if(event.target.id==="create-access-level-form"){event.preventDefault();createAccessLevel(event.target);}if(event.target.id==="admin-user-filter-form"){event.preventDefault();applyAdminUserFilters(event.target);}});
 }
 
 async function initialize() {
@@ -2122,7 +2343,15 @@ async function initialize() {
   try {
     const session=await api("/session/me");
     if(!session.authenticated){showLogin();return;}
-    state.session=session; configureAccess(); showApp(); loadMarket();
+    state.session=session; configureAccess(); showApp();
+    const requested=new URLSearchParams(location.search);
+    const requestedView=requested.get("view"),requestedTab=requested.get("tab");
+    if(requestedView==="admin"&&(session.access?.is_owner||session.access?.can_manage_users||session.access?.can_sync_market||session.access?.can_manage_portal)){
+      const requestedAdminTab=requestedTab?document.querySelector(`.tabs[data-tabs="admin"] [data-tab="${CSS.escape(requestedTab)}"]`):null;
+      const safeAdminTab=requestedAdminTab&&!requestedAdminTab.classList.contains("hidden")?requestedTab:state.tabs.admin;
+      setView("admin",safeAdminTab);
+    }
+    else loadMarket();
     if(session.access?.can_view_news_insights)api("/insights/news/refresh-daily",{method:"POST",invalidateCache:false}).catch(()=>{});
   } catch(error) { showLogin(); toast(error.message,"error"); }
 }

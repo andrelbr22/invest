@@ -40,6 +40,9 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 git merge --ff-only "${TARGET_COMMIT}"
+python3 "${PROJECT_DIR}/deployment/create-staging-runtime.py" \
+  --source "${PROJECT_DIR}/deployment/secrets/app_secrets.toml" \
+  --output "${PROJECT_DIR}/deployment/runtime/staging.env"
 if docker image inspect "${CANDIDATE_IMAGE}" >/dev/null 2>&1; then
   docker tag "${CANDIDATE_IMAGE}" "${ROLLBACK_IMAGE}"
 fi

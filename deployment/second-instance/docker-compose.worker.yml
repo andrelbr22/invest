@@ -27,7 +27,7 @@ services:
     dns:
       - 169.254.169.254
       - 1.1.1.1
-    mem_limit: "${FDI_WORKER_MEMORY_LIMIT:-2g}"
+    mem_limit: "${FDI_WORKER_MEMORY_LIMIT:-512m}"
     pids_limit: 120
     init: true
     logging:

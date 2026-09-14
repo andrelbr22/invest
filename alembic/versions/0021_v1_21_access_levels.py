@@ -133,6 +133,15 @@ def upgrade():
         )
         op.create_index("ix_access_levels_slug", "access_levels", ["slug"], unique=True)
 
+    # ``0001`` historically creates the current ORM metadata on a brand-new
+    # database.  When a later release adds a non-null access flag, that column
+    # can therefore already exist while this older data migration runs.  Add
+    # known forward-compatible flags to the lightweight table and seed values
+    # only when the database actually exposes them.
+    level_columns = _columns("access_levels")
+    forward_permission_columns = tuple(
+        name for name in ("can_manage_portal",) if name in level_columns
+    )
     levels = sa.table(
         "access_levels",
         sa.column("id", sa.Uuid()), sa.column("slug", sa.String()),
@@ -140,6 +149,7 @@ def upgrade():
         sa.column("is_system", sa.Boolean()), sa.column("is_active", sa.Boolean()),
         sa.column("sort_order", sa.Integer()),
         *(sa.column(name, sa.Boolean()) for name in PERMISSION_COLUMNS),
+        *(sa.column(name, sa.Boolean()) for name in forward_permission_columns),
         *(sa.column(name, sa.Integer()) for name in LIMIT_COLUMNS),
         sa.column("created_at", sa.DateTime(timezone=True)),
         sa.column("updated_at", sa.DateTime(timezone=True)),
@@ -149,8 +159,12 @@ def upgrade():
     for slug, configuration in DEFAULT_LEVELS.items():
         exists = bind.execute(sa.select(levels.c.id).where(levels.c.slug == slug)).first()
         if not exists:
+            forward_values = {
+                name: slug == "owner" for name in forward_permission_columns
+            }
             bind.execute(sa.insert(levels).values(
-                id=uuid.uuid4(), slug=slug, created_at=now, updated_at=now, **configuration,
+                id=uuid.uuid4(), slug=slug, created_at=now, updated_at=now,
+                **configuration, **forward_values,
             ))
 
     if "user_access_policies" not in tables:

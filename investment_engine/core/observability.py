@@ -91,7 +91,12 @@ class RouteLatencyRegistry:
 ROUTE_LATENCIES = RouteLatencyRegistry()
 
 
-def request_metric_category(path: str, method: str, explicit: str | None = None) -> str | None:
+def request_metric_category(
+    path: str,
+    method: str,
+    explicit: str | None = None,
+    limit: object | None = None,
+) -> str | None:
     if explicit:
         return explicit
     clean_method = str(method or "GET").upper()
@@ -100,7 +105,12 @@ def request_metric_category(path: str, method: str, explicit: str | None = None)
         return "health"
     if clean_method == "GET" and clean_path == "/market-dashboard":
         return "dashboard"
-    if clean_method == "GET" and re.fullmatch(r"/assets/[^/]+", clean_path):
+    if clean_method == "GET" and re.fullmatch(r"/screen/db/(?:stocks|fiis|universe|custom)/[^/]+", clean_path):
+        try:
+            return screener_metric_category(int(limit or 50))
+        except (TypeError, ValueError):
+            return "screener_50"
+    if clean_method == "GET" and re.fullmatch(r"/assets/[^/]+(?:/intelligence)?", clean_path):
         return "asset_detail"
     return None
 

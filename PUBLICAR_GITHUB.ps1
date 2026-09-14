@@ -43,7 +43,24 @@ if ($forbiddenDirectories) {
 
 $sensitiveFiles = Get-ChildItem -LiteralPath $sourceRoot -File -Recurse -Force |
     Where-Object {
+        $lowerName = $_.Name.ToLowerInvariant()
+        # Arquivos de exemplo fazem parte do pacote e contêm somente marcadores.
+        # Qualquer variante real de .env (inclusive worker.env e .env.local) deve
+        # interromper a publicação, mesmo que uma regra do .gitignore a ocultasse.
+        $isExample = $lowerName.EndsWith(".example")
+        $looksLikeEnvironmentConfig = (-not $isExample) -and (
+            ($lowerName -eq ".env") -or
+            $lowerName.StartsWith(".env.") -or
+            $lowerName.EndsWith(".env") -or
+            ($lowerName -match "\.env\.")
+        )
+        $looksLikeSecretConfig = (
+            ($lowerName -like "*secret*") -and
+            ($lowerName -match "\.(toml|json|ya?ml|ini|conf|config)(\.(save|bak|backup|old))?$")
+        ) -and (-not $isExample)
         ($_.Name -in @(".env", ".env.production", "secrets.toml")) -or
+        $looksLikeEnvironmentConfig -or
+        $looksLikeSecretConfig -or
         ($_.Extension -in @(".key", ".pem", ".pfx", ".p12", ".db", ".sqlite", ".sqlite3"))
     }
 if ($sensitiveFiles) {
@@ -140,7 +157,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Acelera consultas e navegação na V1.22.1 em teste"
+    & $gitPath commit -m "Adiciona eventos oficiais, qualidade e portal editável na V1.23.0 em teste"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
@@ -157,4 +174,4 @@ try {
 Write-Host ""
 Write-Host "PUBLICACAO CONCLUIDA." -ForegroundColor Green
 Write-Host "A versao foi enviada ao ambiente de teste. A producao depende de aprovacao manual."
-Write-Host "Depois da atualizacao automatica, valide a V1.22.1 no endereco /testefdi antes de promover."
+Write-Host "Depois da atualizacao automatica, valide a V1.23.0 no endereco /testefdi antes de promover."

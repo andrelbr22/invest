@@ -1,6 +1,21 @@
-# Formação do Investidor • V1.22.1
+# Formação do Investidor • V1.23.0
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
+
+## Eventos oficiais, qualidade e portal editável V1.23.0
+
+A V1.23.0 mantém integralmente a plataforma homologada e acrescenta recursos que não bloqueiam a navegação:
+
+- calendário de proventos das carteiras com eventos confirmados pela B3;
+- feed de fatos relevantes a partir dos dados abertos IPE da CVM;
+- histórico incremental de IMA-B e IRF-M pelo ANBIMA Feed, ativado somente com credenciais oficiais;
+- agenda anual renovável, incluindo eleições e feriados de negociação, com fonte e indicação transparente de fallback;
+- painel administrativo de qualidade com cobertura, frescor, origem, última atualização e falhas por conjunto de dados;
+- monitor diário do filtro ALB, que alerta fora da faixa de 5 a 20 ativos sem alterar critérios;
+- editor seguro da página inicial, livros, capas e até três links HTTPS de venda por obra;
+- acesso alternativo por código de seis dígitos enviado por e-mail, válido por dez minutos e renovável no máximo uma vez por minuto.
+
+O proprietário recebe a permissão de edição da página automaticamente e pode delegá-la por nível de acesso. A interface pública conserva uma página estática completa como contingência se o banco estiver indisponível.
 
 ## Desempenho e estabilidade V1.22.1
 
@@ -25,7 +40,7 @@ A V1.21.3 acrescenta uma camada operacional completa sem remover os recursos hom
 - notícias da carteira e notícias de recomendações em áreas distintas, atualizadas uma vez ao dia já no primeiro acesso autenticado e sem bloquear a navegação;
 - níveis compartilhados Convidado, Acesso básico, Membro e Membro VIP, com todas as permissões e limites administráveis em um único lugar;
 - atribuição individual ou em lote, busca, filtros, paginação e preservação das permissões antigas até que um nível seja escolhido;
-- console com as 13 rotinas automáticas, atualização manual por grupo ou completa, monitor de alertas e fila de trabalhos com reprocessamento seguro.
+- console com todas as 19 rotinas automáticas, atualização manual por grupo ou completa, monitor de alertas e fila de trabalhos com reprocessamento seguro.
 
 ## Valoração e backtests V1.21
 
@@ -84,7 +99,7 @@ Cloud, usa FastAPI, PostgreSQL e uma interface web própria.
 - quatro famílias de valoração com cenários, qualidade, permissões e porte da empresa;
 - pivôs clássicos PP, S1–S3 e R1–R3, RSI, tendências e volume/média 9;
 - três melhores backtests e sinal atual por ativo;
-- carteiras e permissões isoladas por conta Google;
+- carteiras e permissões isoladas por e-mail autenticado, tanto via Google quanto por código de uso único;
 - comparação e combinação de estratégias conforme os limites de autorização;
 - limites individuais de ativos e solicitações diárias de backtest;
 - alertas de preço e variação enviados por e-mail;
@@ -104,7 +119,7 @@ manualmente para:
 A plataforma autenticada fica em `/plataforma/` nos dois ambientes.
 
 As credenciais, o banco e os backups permanecem somente no servidor. Consulte
-`INSTRUCOES_ORACLE_V1221.md` para a homologação desta versão.
+`INSTRUCOES_ORACLE_V1230.md` para a homologação desta versão.
 
 ## Segurança e escopo
 

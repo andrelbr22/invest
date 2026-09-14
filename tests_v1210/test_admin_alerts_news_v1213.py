@@ -29,7 +29,7 @@ SCRIPT = ROOT / "investment_engine" / "web" / "static" / "app.js"
 
 
 def test_release_metadata_and_migration_are_v1213():
-    assert __version__ == "1.22.1"
+    assert __version__ == "1.23.0"
     assert (ROOT / "alembic" / "versions" / "0021_v1_21_access_levels.py").is_file()
     assert (ROOT / "V1_21_3.md").is_file()
     assert (ROOT / "PATCH_V1213.md").is_file()
@@ -170,7 +170,7 @@ def test_admin_ui_exposes_every_permission_and_every_scheduled_update():
         assert permission in script
     for refresh_key in REFRESH_SCHEDULES:
         assert f'key:"{refresh_key}"' in script
-    assert "Atualizar todas as 13 rotinas" in script
+    assert "Atualizar todas as ${allKeys.length} rotinas" in script
     assert "Fila de trabalhos" in (ROOT / "investment_engine" / "web" / "index.html").read_text(encoding="utf-8")
 
 

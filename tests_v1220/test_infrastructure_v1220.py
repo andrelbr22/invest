@@ -110,7 +110,7 @@ def test_worker_lifecycle_scripts_prepare_activate_stop_and_validate_safely():
     assert "address.is_private" in validate
     assert "address.is_loopback" in validate
     assert "parsed.port != 5432" in validate
-    assert 'revision != "0023_v1_22_screener_performance"' in validate
+    assert 'revision != "0026_v1_23_email_login"' in validate
     assert "SELECT 1" in validate
 
 
@@ -232,5 +232,5 @@ def test_watchdog_is_independent_from_the_worker_and_installed_as_a_timer():
 def test_ci_includes_current_suites_and_postgres_migration_head():
     workflow = _read(".github/workflows/tests.yml")
 
-    assert workflow.count("tests_v1210 tests_v1220") == 2
-    assert 'assert revision == "0023_v1_22_screener_performance"' in workflow
+    assert workflow.count("tests_v1210 tests_v1220 tests_v1230") == 2
+    assert 'assert revision == "0026_v1_23_email_login"' in workflow

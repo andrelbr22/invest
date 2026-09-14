@@ -34,6 +34,7 @@ PERMISSION_FIELDS = (
     "can_alert_change_negative",
     "can_sync_market",
     "can_manage_users",
+    "can_manage_portal",
 )
 
 LIMIT_FIELDS = (
@@ -90,7 +91,10 @@ _MEMBER_PERMISSIONS = (
     "can_view_finances", "can_write_finances",
     "can_refresh_backtest_signals", "can_view_backtest_studies",
 )
-_VIP_PERMISSIONS = tuple(field for field in PERMISSION_FIELDS if field not in {"can_sync_market", "can_manage_users"})
+_VIP_PERMISSIONS = tuple(
+    field for field in PERMISSION_FIELDS
+    if field not in {"can_sync_market", "can_manage_users", "can_manage_portal"}
+)
 
 
 DEFAULT_ACCESS_LEVELS = {

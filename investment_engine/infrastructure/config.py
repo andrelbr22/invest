@@ -86,7 +86,13 @@ class Settings(BaseSettings):
     smtp_from_email: str = ""
     smtp_from_name: str = "Formação do Investidor"
     smtp_starttls: bool = True
+    anbima_client_id: str = ""
+    anbima_client_secret: str = ""
+    anbima_ima_history_start_date: str = "2004-04-30"
+    anbima_ima_history_batch_days: int = 90
+    portfolio_dividend_refresh_batch_assets: int = 500
     session_secret: str = ""
+    session_cookie_name: str = "fdi_session"
     google_client_id: str = ""
     google_client_secret: str = ""
     google_server_metadata_url: str = "https://accounts.google.com/.well-known/openid-configuration"
@@ -129,6 +135,10 @@ class Settings(BaseSettings):
     @property
     def smtp_configured(self) -> bool:
         return bool(self.smtp_host.strip() and self.smtp_from_email.strip())
+
+    @property
+    def anbima_feed_configured(self) -> bool:
+        return bool(self.anbima_client_id.strip() and self.anbima_client_secret.strip())
 
     @property
     def google_auth_configured(self) -> bool:

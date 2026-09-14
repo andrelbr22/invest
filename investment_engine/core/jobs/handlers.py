@@ -11,11 +11,19 @@ from sqlalchemy import select
 from ...data.providers.market_dashboard import MarketDashboardService
 from ...data.providers.intraday import IntradayQuoteProvider
 from ...data.providers.news import MarketNewsService
+from ...data.providers.official_events import (
+    AnbimaImaHistoryProvider,
+    B3CorporateEventsProvider,
+    CvmRelevantFactsProvider,
+    OfficialCalendarProvider,
+)
 from ...data.ingestion.pipeline import MarketIngestionPipeline
 from ...data.ingestion.prices import PriceIngestionService
 from ...core.repositories.assets import AssetRepository
 from ...core.repositories.portfolio import PortfolioRepository
 from ...core.repositories.news_cache import NewsCacheRepository
+from ...core.repositories.investor_events import InvestorEventsRepository
+from ...core.investor_events.service import AlbUniverseMonitor, DataQualityService
 from ...core.services_v14 import calculate_asset_intelligence
 from ...core.instruments import is_supported_ticker
 from ...infrastructure.db.models import (
@@ -23,7 +31,13 @@ from ...infrastructure.db.models import (
     UserNewsCacheORM,
 )
 from ...infrastructure.db.session import get_session_factory
-from ..repositories.economic_series import InterestCurveHistoryRepository, SharedSnapshotRepository, utcnow
+from ...infrastructure.config import settings
+from ..repositories.economic_series import (
+    EconomicSeriesRepository,
+    InterestCurveHistoryRepository,
+    SharedSnapshotRepository,
+    utcnow,
+)
 from ..repositories.background_jobs import BackgroundJobRepository
 from ..backtesting.service import BacktestService
 
@@ -463,6 +477,374 @@ def handle_user_news_refresh(payload: dict) -> dict:
         session.close()
 
 
+def handle_investor_dividends_refresh(payload: dict) -> dict:
+    """Refresh B3 cash events in rotating, explicitly bounded portfolio batches."""
+    snapshot_key = str(payload.get("snapshot_key") or "investor-events:dividends")
+    batch_limit = max(1, min(
+        2000,
+        int(payload.get("batch_assets") or settings.portfolio_dividend_refresh_batch_assets),
+    ))
+    session = get_session_factory()()
+    try:
+        assets = list(session.scalars(
+            select(AssetORM).join(PortfolioPositionORM, PortfolioPositionORM.asset_id == AssetORM.id)
+            .where(AssetORM.is_active.is_(True), AssetORM.asset_type.in_(("stock", "fii", "etf", "bdr")))
+            .distinct().order_by(AssetORM.ticker)
+        ))
+        previous = SharedSnapshotRepository(session).get(snapshot_key)
+        previous_payload = dict(previous.payload_json or {}) if previous is not None else {}
+    finally:
+        session.close()
+    total_assets = len(assets)
+    requested_offset = int(payload.get("offset", previous_payload.get("next_offset", 0)) or 0)
+    offset = requested_offset if 0 <= requested_offset < max(1, total_assets) else 0
+    selected_assets = assets[offset:offset + batch_limit]
+    if not selected_assets and assets:
+        offset = 0
+        selected_assets = assets[:batch_limit]
+    processed_until = offset + len(selected_assets)
+    next_offset = 0 if processed_until >= total_assets else processed_until
+    try:
+        fetched = B3CorporateEventsProvider().fetch([
+            {
+                "ticker": asset.ticker,
+                "isin": str((asset.metadata_json or {}).get("isin") or "").strip() or None,
+            }
+            for asset in selected_assets
+        ], max_assets=batch_limit)
+        session = get_session_factory()()
+        try:
+            repository = InvestorEventsRepository(session)
+            by_ticker = {
+                asset.ticker: session.get(AssetORM, asset.id)
+                for asset in selected_assets
+            }
+            for ticker, identity in dict(fetched.get("issuers") or {}).items():
+                asset = by_ticker.get(str(ticker).upper())
+                if asset is not None:
+                    repository.update_asset_issuer_metadata(asset, identity)
+            created = updated = 0
+            for item in fetched["items"]:
+                asset = by_ticker.get(str(item.get("ticker") or "").upper())
+                if asset is not None and item.get("isin"):
+                    repository.update_asset_issuer_metadata(asset, {"isin": item["isin"]})
+                _row, was_created = repository.upsert_corporate_event(
+                    item, asset=asset,
+                )
+                created += int(was_created)
+                updated += int(not was_created)
+            result = {
+                "eligible_assets": total_assets,
+                "requested_assets": len(selected_assets),
+                "processed_assets": int(fetched.get("requested", len(selected_assets))),
+                "batch_offset": offset,
+                "batch_limit": batch_limit,
+                "remaining_assets": max(0, total_assets - processed_until),
+                "next_offset": next_offset,
+                "cycle_completed": total_assets == 0 or next_offset == 0,
+                "received_events": len(fetched["items"]),
+                "ignored_ambiguous_or_mismatched_records": int(
+                    fetched.get("ignored_ambiguous_or_mismatched_records") or 0
+                ),
+                "issuer_identities_updated": len(fetched.get("issuers") or {}),
+                "created": created, "updated": updated, "errors": fetched["errors"],
+                "status": "partial" if fetched["errors"] or next_offset else "complete",
+            }
+            SharedSnapshotRepository(session).save_valid(
+                snapshot_key=snapshot_key, snapshot_kind="portfolio_dividends",
+                payload=result, source="B3 • Empresas Listadas", as_of=utcnow(),
+                valid_until=utcnow() + timedelta(hours=24),
+            )
+            session.commit()
+            return result
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    except Exception as exc:
+        _record_refresh_failure(snapshot_key, exc)
+        raise
+
+
+def handle_cvm_relevant_facts_refresh(payload: dict) -> dict:
+    snapshot_key = str(payload.get("snapshot_key") or "investor-events:cvm-relevant-facts")
+    session = get_session_factory()()
+    try:
+        mapping = InvestorEventsRepository(session).asset_issuer_mapping()
+    finally:
+        session.close()
+    try:
+        current_year = utcnow().year
+        fetched = CvmRelevantFactsProvider().fetch(
+            years=[current_year - 1, current_year], issuer_mapping=mapping,
+        )
+        session = get_session_factory()()
+        try:
+            repository = InvestorEventsRepository(session)
+            created = updated = 0
+            for item in fetched["items"]:
+                _row, was_created = repository.upsert_relevant_fact(item)
+                created += int(was_created)
+                updated += int(not was_created)
+            result = {
+                "years": fetched["years"], "received": len(fetched["items"]),
+                "created": created, "updated": updated, "errors": fetched["errors"],
+                "warnings": fetched.get("warnings", []),
+                "resource_catalog_discovered": fetched.get("resource_catalog_discovered", False),
+                "status": "partial" if fetched["errors"] else "complete",
+            }
+            SharedSnapshotRepository(session).save_valid(
+                snapshot_key=snapshot_key, snapshot_kind="cvm_relevant_facts",
+                payload=result, source="CVM • Dados Abertos IPE", as_of=utcnow(),
+                valid_until=utcnow() + timedelta(days=8),
+            )
+            session.commit()
+            return result
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    except Exception as exc:
+        _record_refresh_failure(snapshot_key, exc)
+        raise
+
+
+def handle_official_calendar_refresh(payload: dict) -> dict:
+    snapshot_key = str(payload.get("snapshot_key") or "investor-events:official-calendar")
+    try:
+        fetched = OfficialCalendarProvider().fetch(start_year=utcnow().year, years=3)
+        session = get_session_factory()()
+        try:
+            repository = InvestorEventsRepository(session)
+            created = updated = 0
+            for item in fetched["items"]:
+                _row, was_created = repository.upsert_calendar_event(item)
+                created += int(was_created)
+                updated += int(not was_created)
+            result = {
+                "start_year": fetched["start_year"], "end_year": fetched["end_year"],
+                "received": len(fetched["items"]), "created": created, "updated": updated,
+                "errors": fetched["errors"], "status": "partial" if fetched["errors"] else "complete",
+            }
+            SharedSnapshotRepository(session).save_valid(
+                snapshot_key=snapshot_key, snapshot_kind="official_calendar",
+                payload=result, source="Fontes oficiais de agenda", as_of=utcnow(),
+                valid_until=utcnow() + timedelta(days=8),
+            )
+            session.commit()
+            return result
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    except Exception as exc:
+        _record_refresh_failure(snapshot_key, exc)
+        raise
+
+
+def handle_anbima_ima_history_refresh(payload: dict) -> dict:
+    """Incrementally backfill official IMA-B/IRF-M levels from ANBIMA Feed."""
+    snapshot_key = str(payload.get("snapshot_key") or "official-history:anbima-ima")
+    if not settings.anbima_feed_configured:
+        result = {
+            "status": "unavailable",
+            "reason": "anbima_credentials_not_configured",
+            "configured": False,
+            "received_points": 0,
+            "created": 0,
+            "updated": 0,
+            "source": "ANBIMA Feed • Índices",
+        }
+        session = get_session_factory()()
+        try:
+            SharedSnapshotRepository(session).save_valid(
+                snapshot_key=snapshot_key, snapshot_kind="anbima_ima_history",
+                payload=result, source="ANBIMA Feed • Índices", as_of=utcnow(),
+                valid_until=utcnow() + timedelta(hours=24),
+            )
+            session.commit()
+            return result
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    today = utcnow().date()
+    configured_start = str(
+        payload.get("start_date") or settings.anbima_ima_history_start_date or "2004-04-30"
+    ).strip()
+    try:
+        default_start = datetime.strptime(configured_start, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError("anbima_ima_history_start_date_invalid") from exc
+    default_start = min(default_start, today)
+    batch_days = max(1, min(
+        120,
+        int(payload.get("batch_days") or settings.anbima_ima_history_batch_days),
+    ))
+
+    session = get_session_factory()()
+    try:
+        previous = SharedSnapshotRepository(session).get(snapshot_key)
+        previous_payload = dict(previous.payload_json or {}) if previous is not None else {}
+    finally:
+        session.close()
+    cursor_text = str(payload.get("cursor") or previous_payload.get("next_date") or default_start.isoformat())
+    try:
+        cursor = max(default_start, datetime.strptime(cursor_text, "%Y-%m-%d").date())
+    except ValueError:
+        cursor = default_start
+
+    provider = AnbimaImaHistoryProvider(
+        client_id=settings.anbima_client_id,
+        client_secret=settings.anbima_client_secret,
+    )
+    errors: list[dict] = []
+    history = {
+        "items": [], "errors": [], "start": cursor.isoformat(),
+        "end": (cursor - timedelta(days=1)).isoformat(), "next_date": cursor.isoformat(),
+    }
+    try:
+        if cursor <= today:
+            history = provider.fetch_range(cursor, today, max_calendar_days=batch_days)
+        try:
+            latest = provider.fetch_date()
+        except Exception as exc:
+            latest = {"items": []}
+            errors.append({"scope": "latest", "error": type(exc).__name__})
+        errors.extend(history.get("errors") or [])
+        unique = {
+            (item["code"], item["observed_at"]): item
+            for item in [*(history.get("items") or []), *(latest.get("items") or [])]
+        }
+
+        session = get_session_factory()()
+        try:
+            repository = EconomicSeriesRepository(session)
+            series_by_code = {
+                "IMAB": repository.upsert_series(
+                    code="IMAB", name="IMA-B", unit="index_points", frequency="daily",
+                    source="ANBIMA Feed • Índices",
+                    source_url="https://developers.anbima.com.br/pt/documentacao/precos-indices/apis-de-indices/indices/",
+                    accumulation_method="level",
+                    metadata={"official": True, "family": "IMA"},
+                ),
+                "IRFM": repository.upsert_series(
+                    code="IRFM", name="IRF-M", unit="index_points", frequency="daily",
+                    source="ANBIMA Feed • Índices",
+                    source_url="https://developers.anbima.com.br/pt/documentacao/precos-indices/apis-de-indices/indices/",
+                    accumulation_method="level",
+                    metadata={"official": True, "family": "IMA"},
+                ),
+            }
+            created = updated = 0
+            counts = {"IMAB": 0, "IRFM": 0}
+            for item in sorted(unique.values(), key=lambda value: (value["observed_at"], value["code"])):
+                _row, was_created = repository.add_point(
+                    series_by_code[item["code"]], observed_at=item["observed_at"],
+                    value=item["value"], reference_period=item["reference_period"],
+                    source_payload_hash=item["source_payload_hash"], metadata=item["metadata"],
+                )
+                created += int(was_created)
+                updated += int(not was_created)
+                counts[item["code"]] += 1
+
+            next_date = str(history.get("next_date") or cursor.isoformat())
+            try:
+                next_value = datetime.strptime(next_date, "%Y-%m-%d").date()
+            except ValueError:
+                next_value = cursor
+            # A failed or structurally incomplete trading day pins the cursor
+            # to that date. Never describe a later successful date as a
+            # contiguous official history.
+            history_complete = not history.get("errors") and next_value > today
+            result = {
+                "status": "partial" if errors or not history_complete else "complete",
+                "configured": True,
+                "history_start": str(history.get("start") or cursor.isoformat()),
+                "history_through": str(
+                    history.get("complete_through")
+                    or history.get("end")
+                    or ""
+                ),
+                "attempted_through": str(
+                    history.get("attempted_through")
+                    or history.get("end")
+                    or ""
+                ),
+                "next_date": next_date,
+                "history_complete": history_complete,
+                "batch_days": batch_days,
+                "attempted_trading_days": int(history.get("attempted_trading_days") or 0),
+                "successful_trading_days": int(history.get("successful_trading_days") or 0),
+                "received_points": len(unique),
+                "received_by_series": counts,
+                "created": created,
+                "updated": updated,
+                "errors": errors[:120],
+                "source": "ANBIMA Feed • Índices",
+            }
+            SharedSnapshotRepository(session).save_valid(
+                snapshot_key=snapshot_key, snapshot_kind="anbima_ima_history",
+                payload=_json_safe(result), source="ANBIMA Feed • Índices", as_of=utcnow(),
+                valid_until=utcnow() + timedelta(hours=48),
+            )
+            session.commit()
+            return result
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    except Exception as exc:
+        _record_refresh_failure(snapshot_key, exc)
+        raise
+
+
+def handle_alb_universe_monitor(payload: dict) -> dict:
+    snapshot_key = str(payload.get("snapshot_key") or "quality:alb-universe")
+    session = get_session_factory()()
+    try:
+        result = AlbUniverseMonitor(session).run()
+        SharedSnapshotRepository(session).save_valid(
+            snapshot_key=snapshot_key, snapshot_kind="alb_universe_quality",
+            payload=_json_safe(result), source="Preset ALB e dados consolidados",
+            as_of=utcnow(), valid_until=utcnow() + timedelta(hours=30),
+        )
+        session.commit()
+        return result
+    except Exception as exc:
+        session.rollback()
+        _record_refresh_failure(snapshot_key, exc)
+        raise
+    finally:
+        session.close()
+
+
+def handle_data_quality_refresh(payload: dict) -> dict:
+    snapshot_key = str(payload.get("snapshot_key") or "quality:data-sources")
+    session = get_session_factory()()
+    try:
+        result = DataQualityService(session).report(sync_incidents=True)
+        SharedSnapshotRepository(session).save_valid(
+            snapshot_key=snapshot_key, snapshot_kind="data_quality",
+            payload=_json_safe(result), source="Metadados internos das fontes",
+            as_of=utcnow(), valid_until=utcnow() + timedelta(hours=30),
+        )
+        session.commit()
+        return result
+    except Exception as exc:
+        session.rollback()
+        _record_refresh_failure(snapshot_key, exc)
+        raise
+    finally:
+        session.close()
+
+
 def _payload_datetime(value):
     if not value:
         return None
@@ -580,4 +962,10 @@ DEFAULT_JOB_HANDLERS = {
     "portfolio_prices_refresh": handle_portfolio_prices_refresh,
     "user_news_refresh": handle_user_news_refresh,
     "personal_backtest_matrix": handle_personal_backtest_matrix,
+    "investor_dividends_refresh": handle_investor_dividends_refresh,
+    "cvm_relevant_facts_refresh": handle_cvm_relevant_facts_refresh,
+    "official_calendar_refresh": handle_official_calendar_refresh,
+    "anbima_ima_history_refresh": handle_anbima_ima_history_refresh,
+    "alb_universe_monitor": handle_alb_universe_monitor,
+    "data_quality_refresh": handle_data_quality_refresh,
 }

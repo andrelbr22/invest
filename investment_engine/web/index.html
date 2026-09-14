@@ -17,6 +17,22 @@
       <h1>Decisões mais claras.<br>Dados no lugar certo.</h1>
       <p>Acompanhe o mercado, analise ativos, organize sua carteira e consulte seus estudos em um ambiente seguro.</p>
       <a id="platform-login" class="button primary large" href="../login">Entrar com Google</a>
+      <div class="login-divider"><span>ou acesse por e-mail</span></div>
+      <form id="email-login-request-form" class="email-login-form">
+        <label for="email-login-address">Seu e-mail</label>
+        <div class="email-login-row">
+          <input id="email-login-address" name="email" type="email" autocomplete="email" maxlength="254" placeholder="voce@exemplo.com" required>
+          <button class="button secondary" type="submit">Enviar código</button>
+        </div>
+      </form>
+      <form id="email-login-verify-form" class="email-login-form hidden">
+        <label for="email-login-code">Código recebido</label>
+        <div class="email-login-row">
+          <input id="email-login-code" name="code" type="text" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required>
+          <button class="button primary" type="submit">Entrar</button>
+        </div>
+      </form>
+      <div id="email-login-message" class="login-message hidden" aria-live="polite"></div>
       <small>Ferramenta educacional. Não constitui recomendação de investimento.</small>
     </section>
   </div>
@@ -80,6 +96,7 @@
             <button class="tab" data-tab="comparison">Comparador histórico</button>
             <button class="tab" data-tab="calendar">Agenda</button>
             <button class="tab" data-tab="headlines">Notícias</button>
+            <button class="tab" data-tab="facts">Fatos relevantes</button>
           </div>
           <div id="dashboard-tab-content" class="tab-content"></div>
         </section>
@@ -137,6 +154,7 @@
           <div class="tabs" data-tabs="portfolio">
             <button class="tab active" data-tab="positions">Posições</button>
             <button class="tab" data-tab="allocation">Investimentos e alocação</button>
+            <button class="tab" data-tab="dividends">Proventos</button>
             <button class="tab" data-tab="news">Notícias</button>
             <button class="tab" data-tab="alerts">Alertas</button>
           </div>
@@ -172,9 +190,11 @@
         <section id="view-admin" class="view">
           <div class="page-heading"><div><p class="eyebrow">Controle de acesso</p><h1>Administração</h1><p>Usuários, permissões e situação dos serviços.</p></div></div>
           <div class="tabs" data-tabs="admin">
+            <button class="tab" data-tab="portal">Página inicial e livros</button>
             <button class="tab active" data-tab="levels">Níveis e permissões</button>
             <button class="tab" data-tab="users">Usuários</button>
             <button class="tab" data-tab="data">Dados de mercado</button>
+            <button class="tab" data-tab="quality">Qualidade dos dados</button>
             <button class="tab" data-tab="jobs">Fila de trabalhos</button>
             <button class="tab" data-tab="operations">Operação</button>
             <button class="tab" data-tab="system">Sistema</button>

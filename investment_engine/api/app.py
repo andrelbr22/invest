@@ -6,6 +6,8 @@ from datetime import date, datetime, timedelta, timezone
 from secrets import compare_digest, token_urlsafe
 from pathlib import Path
 import csv
+import hashlib
+import hmac
 import io
 import logging
 import math
@@ -57,6 +59,15 @@ from ..core.repositories.news_cache import NewsCacheRepository, news_cache_dict,
 from ..core.repositories.alerts import AlertRepository, alert_dict, event_dict
 from ..core.repositories.background_jobs import BackgroundJobRepository, background_job_dict
 from ..core.repositories.economic_series import InterestCurveHistoryRepository, SharedSnapshotRepository
+from ..core.repositories.investor_events import (
+    InvestorEventsRepository,
+    alb_observation_dict,
+    official_calendar_event_dict,
+    relevant_fact_dict,
+)
+from ..core.repositories.portal import PortalRepository, portal_book_dict, portal_media_dict, portal_page_dict
+from ..core.investor_events.service import DataQualityService
+from ..core.portal import decode_portal_image
 from ..core.jobs.schedules import (
     REFRESH_SCHEDULES,
     all_refresh_statuses,
@@ -85,6 +96,7 @@ from ..integrations.backtest_delivery import CALLBACK_API_VERSION, delivery_chec
 from ..core.backtesting.study import build_strategy_configuration_catalog, build_strategy_study
 from ..core.alerts.catalog import market_alert_catalog, market_alert_item
 from ..core.alerts.service import AlertMonitor, AlertService, valid_email
+from ..core.auth.email_code import EmailLoginCodeService, EmailLoginRequestGuard, normalized_email
 from ..integrations.email_delivery import AlertEmailSender
 from ..integrations.github_actions import GitHubActionsError, dispatch_official_backtests
 from ..infrastructure.db.models import AssetORM, BacktestRequestUsageORM, UserNewsCacheORM
@@ -102,6 +114,7 @@ from .. import __version__
 
 _ALERT_MONITOR = AlertMonitor()
 _REQUEST_LOGGER = logging.getLogger("investment_engine.http")
+_EMAIL_LOGIN_REQUEST_GUARD = EmailLoginRequestGuard()
 _IN_PROCESS_WORKER_STOP = threading.Event()
 _IN_PROCESS_WORKER_THREAD: threading.Thread | None = None
 
@@ -150,6 +163,7 @@ _SESSION_SECRET = settings.session_secret or token_urlsafe(48)
 app.add_middleware(
     SessionMiddleware,
     secret_key=_SESSION_SECRET,
+    session_cookie=settings.session_cookie_name,
     same_site="lax",
     https_only=bool(settings.secure_cookies),
     max_age=60 * 60 * 12,
@@ -210,6 +224,7 @@ async def security_headers(request, call_next):
                 request.url.path,
                 request.method,
                 getattr(request.state, "metric_category", None),
+                request.query_params.get("limit"),
             ),
             (monotonic() - started) * 1000,
             500,
@@ -225,6 +240,7 @@ async def security_headers(request, call_next):
             request.url.path,
             request.method,
             getattr(request.state, "metric_category", None),
+            request.query_params.get("limit"),
         ),
         duration_ms,
         response.status_code,
@@ -240,10 +256,10 @@ async def security_headers(request, call_next):
     )
     private_path = request.url.path.startswith((
         "/session", "/search", "/alerts", "/portfolios", "/backtests",
-        "/access", "/insights", "/automation", "/market-dashboard", "/admin/jobs",
-        "/admin/operations",
+        "/access", "/auth", "/insights", "/automation", "/market-dashboard", "/admin",
+        "/investor-events",
     ))
-    immutable_book_cover = request.url.path.startswith("/portal-assets/books/")
+    immutable_book_cover = request.url.path.startswith(("/portal-assets/books/", "/portal-media/"))
     response.headers["Cache-Control"] = (
         "no-store" if private_path
         else "public, max-age=31536000, immutable" if immutable_book_cover
@@ -272,7 +288,7 @@ def _request_email(request: Request, x_app_user_email: str = Header(default=""))
             return email
     if not settings.app_auth_required:
         return str(x_app_user_email or "").strip().lower() or "local-owner@localhost"
-    raise HTTPException(401, "authenticated_google_account_required")
+    raise HTTPException(401, "authenticated_account_required")
 
 
 def _access_policy(db: Session, email: str) -> dict:
@@ -902,6 +918,7 @@ class AccessPolicyUpdateRequest(BaseModel):
     can_alert_change_negative: bool | None = None
     can_sync_market: bool | None = None
     can_manage_users: bool | None = None
+    can_manage_portal: bool | None = None
     custom_filter_limit: int | None = Field(default=None, ge=0, le=3)
     alert_asset_limit: int | None = Field(default=None)
     backtest_asset_limit: int | None = Field(default=None)
@@ -1006,6 +1023,39 @@ def _safe_platform_destination(value: object) -> str:
     return candidate if candidate in _PLATFORM_DESTINATIONS else "/plataforma/"
 
 
+class EmailLoginRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    next: str | None = Field(default=None, max_length=80)
+
+
+class EmailLoginVerifyRequest(EmailLoginRequest):
+    code: str = Field(min_length=6, max_length=16)
+
+
+class PortalPageUpdateRequest(BaseModel):
+    patch: dict[str, Any]
+    expected_revision: int | None = Field(default=None, ge=1)
+
+
+class PortalBookCreateRequest(BaseModel):
+    values: dict[str, Any]
+    sales_links: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+
+
+class PortalBookUpdateRequest(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict)
+    sales_links: list[dict[str, Any]] | None = Field(default=None, max_length=3)
+
+
+class PortalBookOrderRequest(BaseModel):
+    ordered_ids: list[UUID] = Field(min_length=1, max_length=200)
+
+
+class PortalMediaUploadRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    data_url: str = Field(min_length=32, max_length=5_700_000)
+
+
 @app.get("/", include_in_schema=False)
 def public_portal():
     return FileResponse(_WEB_ROOT / "portal.html")
@@ -1014,6 +1064,34 @@ def public_portal():
 @app.head("/", include_in_schema=False)
 def public_portal_head():
     return Response(status_code=200, media_type="text/html")
+
+
+@app.get("/public/portal", include_in_schema=False)
+def public_portal_content(db: Session = Depends(get_db)):
+    """Database-backed portal content; the static HTML remains the safe fallback."""
+    payload = PortalRepository(db).public_payload()
+    db.commit()
+    return payload
+
+
+@app.get("/portal-media/{media_id}", include_in_schema=False)
+def public_portal_media(media_id: UUID, request: Request, db: Session = Depends(get_db)):
+    row = PortalRepository(db).get_public_media(media_id)
+    if row is None:
+        raise HTTPException(404, "portal_media_not_found")
+    etag = f'"{row.sha256}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "public, max-age=31536000, immutable"})
+    return Response(
+        content=row.content,
+        media_type=row.content_type,
+        headers={
+            "ETag": etag,
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "Content-Disposition": f'inline; filename="{row.filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.get("/plataforma", include_in_schema=False)
@@ -1048,6 +1126,94 @@ async def login(request: Request):
     request.session["oauth_next"] = destination
     redirect_uri = settings.oauth_redirect_uri.strip() or str(request.url_for("oauth2callback"))
     return await client.authorize_redirect(request, redirect_uri)
+
+
+@app.post("/auth/email/request", include_in_schema=False)
+def request_email_login_code(
+    req: EmailLoginRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Send a single-use code; a new successful request replaces the prior code."""
+    try:
+        email = normalized_email(req.email)
+        client_address = request.client.host if request.client else "unknown"
+        client_fingerprint = hmac.new(
+            hashlib.sha256(_SESSION_SECRET.encode("utf-8")).digest(),
+            str(client_address).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        retry_after = _EMAIL_LOGIN_REQUEST_GUARD.reserve(client_fingerprint)
+        if retry_after is not None:
+            return JSONResponse(
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+                content={
+                    "detail": "email_login_temporarily_limited",
+                    "retry_after_seconds": retry_after,
+                },
+            )
+        _row, code = EmailLoginCodeService(db, secret=_SESSION_SECRET).issue(email)
+    except ValueError as exc:
+        detail = str(exc)
+        if detail.startswith("email_login_rate_limited:"):
+            retry_after = detail.rsplit(":", 1)[-1]
+            return JSONResponse(
+                status_code=429,
+                headers={"Retry-After": retry_after},
+                content={"detail": "email_login_rate_limited", "retry_after_seconds": int(retry_after)},
+            )
+        raise HTTPException(422, "invalid_email_address")
+    # Persist the challenge and its cooldown before touching the SMTP server.
+    # If delivery fails, another immediate request still cannot bypass the
+    # one-minute rule and cause an uncontrolled retry storm.
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        _REQUEST_LOGGER.exception("email_login_persistence_failed")
+        raise HTTPException(503, "email_login_delivery_failed")
+    try:
+        AlertEmailSender().send_login_code(recipient=email, code=code, expires_minutes=10)
+    except Exception:
+        _REQUEST_LOGGER.exception("email_login_delivery_failed")
+        raise HTTPException(503, "email_login_delivery_failed")
+    return {
+        "status": "sent",
+        "expires_in_seconds": 600,
+        "retry_after_seconds": 60,
+        "destination": _safe_platform_destination(req.next),
+    }
+
+
+@app.post("/auth/email/verify", include_in_schema=False)
+def verify_email_login_code(req: EmailLoginVerifyRequest, request: Request, db: Session = Depends(get_db)):
+    try:
+        email = normalized_email(req.email)
+        accepted = EmailLoginCodeService(db, secret=_SESSION_SECRET).verify(email, req.code)
+    except ValueError:
+        accepted = False
+        email = ""
+    if not accepted:
+        db.commit()
+        raise HTTPException(401, "email_login_code_invalid_or_expired")
+    row = AccessPolicyRepository(db).register(
+        email,
+        email.split("@", 1)[0],
+        is_owner=email in settings.owner_emails,
+    )
+    db.commit()
+    request.session.clear()
+    request.session["user"] = {
+        "email": email,
+        "name": row.display_name or email.split("@", 1)[0],
+        "picture": "",
+        "auth_method": "email_code",
+    }
+    return {
+        "authenticated": True,
+        "destination": _safe_platform_destination(req.next),
+    }
 
 
 @app.get("/oauth2callback", include_in_schema=False, name="oauth2callback")
@@ -1169,6 +1335,167 @@ def admin_operations(
     )
     db.commit()
     return payload
+
+
+@app.get("/admin/data-quality")
+def admin_data_quality(
+    access=Depends(require_permission("can_sync_market")),
+    db: Session = Depends(get_db),
+):
+    """Coverage, freshness, provenance and last failures without live upstream calls."""
+    _job, scheduled = enqueue_refresh(
+        db, "data_quality", trigger="access", requested_by=access.get("email"),
+    )
+    payload = DataQualityService(db).report(sync_incidents=False)
+    latest_alb = InvestorEventsRepository(db).latest_alb_observation()
+    db.commit()
+    return {
+        **payload,
+        "scheduled": scheduled,
+        "update": refresh_status(db, "data_quality"),
+        "alb": alb_observation_dict(latest_alb) if latest_alb is not None else None,
+        "alb_update": refresh_status(db, "alb_monitor"),
+    }
+
+
+def _portal_http_error(exc: ValueError) -> HTTPException:
+    detail = str(exc)
+    if detail in {"portal_media_not_found", "portal_book_not_found"}:
+        return HTTPException(404, detail)
+    if detail in {
+        "portal_page_revision_conflict", "portal_book_slug_exists",
+        "portal_media_in_use", "portal_book_order_duplicate",
+        "portal_book_order_must_include_all",
+    }:
+        return HTTPException(409, detail)
+    return HTTPException(422, detail)
+
+
+@app.get("/admin/portal")
+def admin_portal_content(
+    access=Depends(require_permission("can_manage_portal")),
+    db: Session = Depends(get_db),
+):
+    payload = PortalRepository(db).admin_payload()
+    db.commit()
+    return payload
+
+
+@app.put("/admin/portal/page")
+def update_admin_portal_page(
+    request: PortalPageUpdateRequest,
+    access=Depends(require_permission("can_manage_portal")),
+    db: Session = Depends(get_db),
+):
+    try:
+        row = PortalRepository(db).update_page(
+            request.patch,
+            actor=access["email"],
+            expected_revision=request.expected_revision,
+        )
+        db.commit()
+        return portal_page_dict(row)
+    except ValueError as exc:
+        db.rollback()
+        raise _portal_http_error(exc)
+
+
+@app.post("/admin/portal/books")
+def create_admin_portal_book(
+    request: PortalBookCreateRequest,
+    access=Depends(require_permission("can_manage_portal")),
+    db: Session = Depends(get_db),
+):
+    try:
+        row = PortalRepository(db).create_book(
+            request.values, sales_links=request.sales_links, actor=access["email"],
+        )
+        db.commit()
+        return portal_book_dict(row, include_audit=True)
+    except ValueError as exc:
+        db.rollback()
+        raise _portal_http_error(exc)
+
+
+@app.put("/admin/portal/books/order")
+def reorder_admin_portal_books(
+    request: PortalBookOrderRequest,
+    access=Depends(require_permission("can_manage_portal")),
+    db: Session = Depends(get_db),
+):
+    try:
+        rows = PortalRepository(db).reorder_books(request.ordered_ids, actor=access["email"])
+        db.commit()
+        return [portal_book_dict(row, include_audit=True) for row in rows]
+    except ValueError as exc:
+        db.rollback()
+        raise _portal_http_error(exc)
+
+
+@app.put("/admin/portal/books/{book_id}")
+def update_admin_portal_book(
+    book_id: UUID,
+    request: PortalBookUpdateRequest,
+    access=Depends(require_permission("can_manage_portal")),
+    db: Session = Depends(get_db),
+):
+    try:
+        row = PortalRepository(db).update_book(
+            book_id, request.values, sales_links=request.sales_links, actor=access["email"],
+        )
+        if row is None:
+            raise ValueError("portal_book_not_found")
+        db.commit()
+        return portal_book_dict(row, include_audit=True)
+    except ValueError as exc:
+        db.rollback()
+        raise _portal_http_error(exc)
+
+
+@app.delete("/admin/portal/books/{book_id}")
+def delete_admin_portal_book(
+    book_id: UUID,
+    _access=Depends(require_permission("can_manage_portal")),
+    db: Session = Depends(get_db),
+):
+    if not PortalRepository(db).delete_book(book_id):
+        db.rollback()
+        raise HTTPException(404, "portal_book_not_found")
+    db.commit()
+    return {"deleted": True}
+
+
+@app.post("/admin/portal/media")
+def upload_admin_portal_media(
+    request: PortalMediaUploadRequest,
+    access=Depends(require_permission("can_manage_portal")),
+    db: Session = Depends(get_db),
+):
+    try:
+        upload = decode_portal_image(request.data_url, request.filename)
+        row, created = PortalRepository(db).save_media(upload, actor=access["email"])
+        db.commit()
+        return {**portal_media_dict(row), "created": created, "url": f"/portal-media/{row.id}"}
+    except ValueError as exc:
+        db.rollback()
+        raise _portal_http_error(exc)
+
+
+@app.delete("/admin/portal/media/{media_id}")
+def delete_admin_portal_media(
+    media_id: UUID,
+    _access=Depends(require_permission("can_manage_portal")),
+    db: Session = Depends(get_db),
+):
+    try:
+        deleted = PortalRepository(db).delete_media(media_id)
+        if not deleted:
+            raise ValueError("portal_media_not_found")
+        db.commit()
+        return {"deleted": True}
+    except ValueError as exc:
+        db.rollback()
+        raise _portal_http_error(exc)
 
 
 @app.get("/admin/jobs/{job_id}")
@@ -2610,6 +2937,87 @@ def portfolio_detail(portfolio_id: UUID, access=Depends(require_permission("can_
     p = PortfolioRepository(db).get_portfolio(portfolio_id, access["email"])
     if p is None: raise HTTPException(404, "portfolio_not_found")
     return _portfolio_snapshot(db, p)
+
+
+@app.get("/investor-events/dividends")
+def portfolio_dividend_calendar(
+    portfolio_id: UUID | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = Query(default=500, ge=1, le=2000),
+    access=Depends(require_permission("can_view_portfolio")),
+    db: Session = Depends(get_db),
+):
+    """Return confirmed B3 cash events for the authenticated user's positions."""
+    initial = start or date.today() - timedelta(days=45)
+    final = end or date.today() + timedelta(days=370)
+    if initial > final or (final - initial).days > 3650:
+        raise HTTPException(422, "invalid_investor_event_period")
+    if portfolio_id is not None and PortfolioRepository(db).get_portfolio(portfolio_id, access["email"]) is None:
+        raise HTTPException(404, "portfolio_not_found")
+    _job, scheduled = enqueue_refresh(
+        db, "portfolio_dividends", trigger="access", requested_by=access.get("email"),
+    )
+    rows = InvestorEventsRepository(db).list_portfolio_dividends(
+        access["email"], portfolio_id=portfolio_id, start=initial, end=final, limit=limit,
+    )
+    db.commit()
+    return {
+        "items": rows,
+        "period": {"start": initial, "end": final},
+        "source": "B3 • Empresas Listadas",
+        "scheduled": scheduled,
+        "update": refresh_status(db, "portfolio_dividends"),
+        "gross_amount_note": (
+            "O total estimado usa a quantidade atual da posição e não substitui o informe da corretora."
+        ),
+    }
+
+
+@app.get("/investor-events/relevant-facts")
+def relevant_facts_feed(
+    ticker: str | None = Query(default=None, max_length=24, pattern=r"^[A-Za-z0-9_.-]+$"),
+    limit: int = Query(default=50, ge=1, le=500),
+    access=Depends(require_permission("can_view_market")),
+    db: Session = Depends(get_db),
+):
+    """Expose official CVM IPE metadata and links without copying filing contents."""
+    _job, scheduled = enqueue_refresh(
+        db, "cvm_relevant_facts", trigger="access", requested_by=access.get("email"),
+    )
+    rows = InvestorEventsRepository(db).list_relevant_facts(ticker=ticker, limit=limit)
+    db.commit()
+    return {
+        "items": [relevant_fact_dict(row) for row in rows],
+        "source": "CVM • Dados Abertos IPE",
+        "scheduled": scheduled,
+        "update": refresh_status(db, "cvm_relevant_facts"),
+    }
+
+
+@app.get("/investor-events/calendar")
+def official_investor_calendar(
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = Query(default=500, ge=1, le=2000),
+    access=Depends(require_permission("can_view_market")),
+    db: Session = Depends(get_db),
+):
+    initial = start or date.today() - timedelta(days=30)
+    final = end or date.today() + timedelta(days=730)
+    if initial > final or (final - initial).days > 3650:
+        raise HTTPException(422, "invalid_investor_event_period")
+    _job, scheduled = enqueue_refresh(
+        db, "official_calendar", trigger="access", requested_by=access.get("email"),
+    )
+    rows = InvestorEventsRepository(db).list_calendar(start=initial, end=final, limit=limit)
+    db.commit()
+    return {
+        "items": [official_calendar_event_dict(row) for row in rows],
+        "period": {"start": initial, "end": final},
+        "scheduled": scheduled,
+        "update": refresh_status(db, "official_calendar"),
+    }
 
 
 @app.get("/portfolios/{portfolio_id}/custom-investments/catalog")

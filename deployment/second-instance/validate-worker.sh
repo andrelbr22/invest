@@ -49,8 +49,8 @@ try:
     revision = session.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).scalar_one()
 finally:
     session.close()
-if revision != "0023_v1_22_screener_performance":
+if revision != "0026_v1_23_email_login":
     raise SystemExit(f"Migração inesperada no banco: {revision}")
-print("DNS externo, banco privado e migração V1.22.1 validados.")
+print("DNS externo, banco privado e migração V1.23.0 validados.")
 PY
 echo "Worker remoto pronto para a preparação em modo de espera."
