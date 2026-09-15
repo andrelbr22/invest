@@ -63,6 +63,8 @@ Os testes de `tests_v1230` cobrem:
 - produção e staging usam nomes de cookie e chaves de assinatura diferentes;
 - o staging usa `investment_staging`, sem superusuário, criação de banco,
   criação de papel ou replicação;
+- o dump é restaurado diretamente por `investment_staging`, sem tentar
+  transferir objetos internos pertencentes ao administrador PostgreSQL;
 - cada clone elimina códigos de e-mail ativos e cancela somente os trabalhos
   que estavam `queued` ou `running` na cópia;
 - o arquivo `deployment/runtime/staging.env` é local, modo `0600`, ignorado pelo

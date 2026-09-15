@@ -48,14 +48,14 @@ docker compose -f "${COMPOSE_FILE}" exec -T postgres dropdb --if-exists --force 
 docker compose -f "${COMPOSE_FILE}" exec -T postgres createdb -U investment -O "${STAGING_USER}" "${STAGING_DB}"
 docker compose -f "${COMPOSE_FILE}" exec -T postgres pg_dump -U investment -d "${SOURCE_DB}" --no-owner --no-privileges | \
   docker compose -f "${COMPOSE_FILE}" exec -T postgres \
-    psql -v ON_ERROR_STOP=1 -U investment -d "${STAGING_DB}" >/dev/null
+    psql -v ON_ERROR_STOP=1 -U "${STAGING_USER}" -d "${STAGING_DB}" >/dev/null
 
 # Never copy a usable production passwordless challenge into homologation.
 # Active background work is also cancelled inside the copy so the staging
 # worker cannot replay an e-mail or external integration requested in
 # production before the snapshot was taken.
 docker compose -f "${COMPOSE_FILE}" exec -T postgres \
-  psql -v ON_ERROR_STOP=1 -U investment -d "${STAGING_DB}" >/dev/null <<'SQL'
+  psql -v ON_ERROR_STOP=1 -U "${STAGING_USER}" -d "${STAGING_DB}" >/dev/null <<'SQL'
 DO $scrub$
 BEGIN
   IF to_regclass('public.email_login_codes') IS NOT NULL THEN
@@ -78,7 +78,6 @@ BEGIN
   END IF;
 END
 $scrub$;
-REASSIGN OWNED BY investment TO investment_staging;
 SQL
 
 unset STAGING_PASSWORD

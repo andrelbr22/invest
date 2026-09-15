@@ -440,7 +440,7 @@ def test_anbima_history_handler_does_not_claim_complete_or_advance_after_a_gap(m
     monkeypatch.setattr(handlers, "get_session_factory", lambda: factory)
     monkeypatch.setattr(settings, "anbima_client_id", "configured-client")
     monkeypatch.setattr(settings, "anbima_client_secret", "configured-secret")
-    today = date.today()
+    today = handlers._market_today()
     failed_day = today - timedelta(days=2)
 
     class FakeProvider:

@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from zoneinfo import ZoneInfo
 import math
 
 from sqlalchemy import select
@@ -40,6 +41,14 @@ from ..repositories.economic_series import (
 )
 from ..repositories.background_jobs import BackgroundJobRepository
 from ..backtesting.service import BacktestService
+
+
+SAO_PAULO = ZoneInfo("America/Sao_Paulo")
+
+
+def _market_today() -> date:
+    """Return the Brazilian market date, independent from the server timezone."""
+    return utcnow().astimezone(SAO_PAULO).date()
 
 
 def handle_noop(payload: dict) -> dict:
@@ -673,7 +682,7 @@ def handle_anbima_ima_history_refresh(payload: dict) -> dict:
         finally:
             session.close()
 
-    today = utcnow().date()
+    today = _market_today()
     configured_start = str(
         payload.get("start_date") or settings.anbima_ima_history_start_date or "2004-04-30"
     ).strip()
