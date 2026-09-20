@@ -10,6 +10,14 @@ def _read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
+def test_deployment_shell_scripts_use_linux_line_endings():
+    scripts = sorted((ROOT / "deployment").rglob("*.sh"))
+
+    assert scripts
+    assert all(b"\r\n" not in script.read_bytes() for script in scripts)
+    assert _read(".gitattributes").strip() == "*.sh text eol=lf"
+
+
 def test_promotion_refreshes_proxy_and_checks_public_ready_before_completion():
     script = _read("deployment/promote-staging-to-production.sh")
 
