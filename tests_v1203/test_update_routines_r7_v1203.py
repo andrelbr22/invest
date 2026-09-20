@@ -156,7 +156,7 @@ def test_interface_shows_update_metadata_and_worker_isolated_from_web_process():
     assert "próxima rodada" in script
     assert "Atualização parcial" in script
     assert 'IN_PROCESS_BACKGROUND_WORKER_ENABLED: "true"' in compose
-    assert 'DATABASE_POOL_SIZE: "1"' in compose
+    assert 'DATABASE_POOL_SIZE: "4"' in compose
     app_block, worker_block = compose.split("  worker:", 1)
     assert 'ALERT_MONITOR_ENABLED: "false"' in app_block
     assert 'ALERT_MONITOR_ENABLED: "true"' in worker_block

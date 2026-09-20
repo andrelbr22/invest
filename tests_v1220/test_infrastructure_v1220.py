@@ -72,9 +72,13 @@ def test_remote_compose_contains_only_a_worker_and_safe_coordinator_defaults():
     assert 'BACKGROUND_SCHEDULER_ENABLED: "${FDI_COORDINATOR_ENABLED:-false}"' in worker
     assert 'ALERT_MONITOR_ENABLED: "${FDI_COORDINATOR_ENABLED:-false}"' in worker
     assert "./worker_secrets.toml:/app/secrets/worker_secrets.toml:ro" in worker
-    assert "DATABASE_POOL_SIZE: \"3\"" in worker
-    assert "DATABASE_MAX_OVERFLOW: \"0\"" in worker
+    assert "DATABASE_POOL_SIZE: \"4\"" in worker
+    assert "DATABASE_MAX_OVERFLOW: \"1\"" in worker
+    assert "DATABASE_POOL_TIMEOUT_SECONDS: \"20\"" in worker
     assert "scripts.check_worker_heartbeat" in worker
+    assert "timeout: 30s" in worker
+    assert "retries: 5" in worker
+    assert "start_period: 90s" in worker
     assert "stop_grace_period: 10m" in worker
 
     environment = _read("deployment/second-instance/worker.env.example")
@@ -143,7 +147,7 @@ def test_staging_and_production_propagate_the_exact_approved_commit():
     assert "investment-production-commit" in promote
 
 
-def test_promotion_has_remote_cutover_local_fallback_and_truthful_rollback_metadata():
+def test_promotion_has_remote_cutover_local_fallback_and_no_unsafe_automatic_downgrade():
     promote = _read("deployment/promote-staging-to-production.sh")
 
     assert 'FDI_WORKER_LOCATION="local"' in promote
@@ -153,14 +157,16 @@ def test_promotion_has_remote_cutover_local_fallback_and_truthful_rollback_metad
     stop_local = promote.index('stop worker', remote_branch)
     activate_remote = promote.index('activate-worker.sh', remote_branch)
     assert stop_local < activate_remote
-    assert 'FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate worker' in promote
+    local_start = promote.index('FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}"', activate_remote)
+    assert 'up -d --no-deps --force-recreate worker' in promote[local_start:]
 
-    # Regression: a failed release must not advertise the failed commit after
-    # restoring the rollback image, nor start a second coordinator while the
-    # remote coordinator is still active.
+    # Regression: nunca relançar código antigo sobre um banco que já pode ter
+    # recebido migrações da nova versão, nem iniciar dois coordenadores.
     assert 'FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate app worker' not in promote
-    assert "ROLLBACK_COMMIT" in promote
-    assert 'FDI_RELEASE_COMMIT="${ROLLBACK_COMMIT}"' in promote
+    assert 'FDI_RELEASE_COMMIT="${ROLLBACK_COMMIT}"' not in promote
+    assert "alembic downgrade" not in promote
+    assert "A promoção falhou; a aplicação e o trabalhador anteriores foram restaurados." not in promote
+    assert "Não foi feito downgrade automático" in promote
 
 
 def test_cutover_and_failback_never_intentionally_run_two_coordinators():

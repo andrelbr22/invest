@@ -1,5 +1,9 @@
 # Relatório de validação — V1.23.0
 
+> Complemento R2: a promoção passou a reiniciar e validar o proxy, confirmar
+> o heartbeat do worker no commit aprovado e impedir rollback automático de
+> código antigo sobre um banco já migrado. Consulte `PATCH_V1230_R2.md`.
+
 ## Objetivo
 
 Validar que os novos eventos oficiais, a administração da página inicial e o login por e-mail foram adicionados sem retirar recursos já homologados e sem criar dados financeiros artificiais.

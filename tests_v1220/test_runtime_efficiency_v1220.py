@@ -38,6 +38,12 @@ def test_primary_runtime_prioritizes_the_site_and_bounds_auxiliary_services():
     assert 'DATABASE_MAX_OVERFLOW: "1"' in app
     assert 'DATABASE_POOL_SIZE: "2"' in staging
     assert 'DATABASE_MAX_OVERFLOW: "0"' in staging
+    assert 'DATABASE_POOL_SIZE: "4"' in worker
+    assert 'DATABASE_MAX_OVERFLOW: "1"' in worker
+    assert 'DATABASE_POOL_TIMEOUT_SECONDS: "20"' in worker
+    assert "timeout: 30s" in worker
+    assert "retries: 5" in worker
+    assert "start_period: 90s" in worker
 
     for service in (postgres, app, staging, worker, proxy):
         assert "pids_limit:" in service

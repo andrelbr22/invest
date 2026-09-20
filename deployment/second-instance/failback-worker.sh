@@ -21,14 +21,14 @@ if [[ "${FDI_WORKER_LOCATION:-local}" == "remote" ]]; then
 fi
 FDI_RELEASE_COMMIT="${COMMIT}" docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate worker
 CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q worker)"
-for _ in $(seq 1 36); do
+for _ in $(seq 1 120); do
   STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${CONTAINER_ID}" 2>/dev/null || echo missing)"
   if [[ "${STATUS}" == "healthy" ]]; then
     sed -i 's/^FDI_WORKER_LOCATION=.*/FDI_WORKER_LOCATION=local/' "${LOCATION_FILE}"
     echo "Retorno concluído: worker ativo novamente na VM principal."
     exit 0
   fi
-  [[ "${STATUS}" == "unhealthy" || "${STATUS}" == "missing" ]] && break
+  [[ "${STATUS}" == "missing" || "${STATUS}" == "exited" || "${STATUS}" == "dead" ]] && break
   sleep 5
 done
 docker compose -f "${COMPOSE_FILE}" logs --tail=120 worker || true

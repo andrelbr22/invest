@@ -15,10 +15,15 @@ FDI_COORDINATOR_ENABLED=true FDI_RELEASE_COMMIT="${COMMIT}" \
 FDI_COORDINATOR_ENABLED=true FDI_RELEASE_COMMIT="${COMMIT}" \
   docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --force-recreate worker
 CONTAINER_ID="$(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps -q worker)"
-for _ in $(seq 1 36); do
+for _ in $(seq 1 120); do
   STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${CONTAINER_ID}" 2>/dev/null || echo missing)"
-  [[ "${STATUS}" == "healthy" ]] && { echo "Worker remoto ativo no commit ${COMMIT}."; exit 0; }
-  [[ "${STATUS}" == "unhealthy" || "${STATUS}" == "missing" ]] && break
+  if [[ "${STATUS}" == "healthy" ]] && \
+    docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" exec -T worker \
+      python -m scripts.check_worker_heartbeat >/dev/null 2>&1; then
+    echo "Worker remoto ativo no commit ${COMMIT}."
+    exit 0
+  fi
+  [[ "${STATUS}" == "missing" || "${STATUS}" == "exited" || "${STATUS}" == "dead" ]] && break
   sleep 5
 done
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" logs --tail=100 worker || true

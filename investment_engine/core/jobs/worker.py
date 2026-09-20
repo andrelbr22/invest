@@ -89,7 +89,7 @@ class BackgroundWorker:
                 session.commit()
             except Exception:
                 session.rollback()
-                LOGGER.warning("background_job_heartbeat_failed job_id=%s", job_id)
+                LOGGER.exception("background_job_heartbeat_failed job_id=%s", job_id)
             finally:
                 session.close()
 

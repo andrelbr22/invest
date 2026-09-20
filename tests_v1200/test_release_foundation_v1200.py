@@ -30,4 +30,4 @@ def test_deployment_runs_the_lightweight_worker_separately_from_the_web_app():
     assert 'profiles: ["worker"]' not in compose
     assert "start-worker.sh" in compose
     assert 'BACKGROUND_SCHEDULER_ENABLED: "true"' in compose
-    assert 'DATABASE_POOL_SIZE: "1"' in compose
+    assert 'DATABASE_POOL_SIZE: "4"' in compose

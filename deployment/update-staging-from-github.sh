@@ -8,6 +8,7 @@ FAILED_FILE="${PROJECT_DIR}/.git/investment-staging-failed-commit"
 LOCK_FILE="/tmp/investment-staging-update.lock"
 CANDIDATE_IMAGE="formacao-do-investidor-staging:candidate"
 ROLLBACK_IMAGE="formacao-do-investidor-staging:rollback"
+PUBLIC_READY_URL="https://formacaodoinvestidor.com.br/testefdi/ready"
 
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
@@ -56,23 +57,29 @@ fi
 FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate staging
 
 CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q staging)"
-for _ in $(seq 1 48); do
+for _ in $(seq 1 120); do
   STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${CONTAINER_ID}" 2>/dev/null || echo missing)"
   if [[ "${STATUS}" == "healthy" ]]; then
-    echo "${TARGET_COMMIT}" > "${DEPLOYED_FILE}"
-    rm -f "${FAILED_FILE}"
-    echo "Teste atualizado: https://formacaodoinvestidor.com.br/testefdi/"
-    exit 0
+    # A recriação troca o IP interno do staging. Recarregar o Caddy evita
+    # que /testefdi continue apontando para o contêiner anterior.
+    docker compose -f "${COMPOSE_FILE}" restart proxy
+    for _ in $(seq 1 36); do
+      PAYLOAD="$(curl --fail --silent --show-error --max-time 15 "${PUBLIC_READY_URL}" 2>/dev/null || true)"
+      if [[ "${PAYLOAD}" == *'"status":"ready"'* && "${PAYLOAD}" == *'"environment":"staging"'* ]]; then
+        echo "${TARGET_COMMIT}" > "${DEPLOYED_FILE}"
+        rm -f "${FAILED_FILE}"
+        echo "Teste atualizado: https://formacaodoinvestidor.com.br/testefdi/"
+        exit 0
+      fi
+      sleep 5
+    done
+    break
   fi
   if [[ "${STATUS}" == "unhealthy" || "${STATUS}" == "missing" ]]; then break; fi
   sleep 5
 done
 
 docker compose -f "${COMPOSE_FILE}" logs --tail=120 staging || true
-if docker image inspect "${ROLLBACK_IMAGE}" >/dev/null 2>&1; then
-  docker tag "${ROLLBACK_IMAGE}" "${CANDIDATE_IMAGE}"
-  docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate staging
-fi
 echo "${TARGET_COMMIT}" > "${FAILED_FILE}"
-echo "A versão nova falhou; o ambiente oficial não foi alterado."
+echo "A versão nova falhou; o ambiente oficial não foi alterado e não houve downgrade automático do banco de teste."
 exit 1

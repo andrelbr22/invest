@@ -18,9 +18,9 @@ services:
       ALERT_MONITOR_ENABLED: "${FDI_COORDINATOR_ENABLED:-false}"
       SERVICE_HEARTBEAT_SECONDS: "30"
       RUNTIME_LEASE_SECONDS: "180"
-      DATABASE_POOL_SIZE: "3"
-      DATABASE_MAX_OVERFLOW: "0"
-      DATABASE_POOL_TIMEOUT_SECONDS: "30"
+      DATABASE_POOL_SIZE: "4"
+      DATABASE_MAX_OVERFLOW: "1"
+      DATABASE_POOL_TIMEOUT_SECONDS: "20"
     volumes:
       - ./worker_secrets.toml:/app/secrets/worker_secrets.toml:ro
     # OCI DNS remains first; Cloudflare is only a fallback for public providers.
@@ -38,8 +38,8 @@ services:
     stop_grace_period: 10m
     healthcheck:
       test: ["CMD", "python", "-m", "scripts.check_worker_heartbeat"]
-      interval: 30s
-      timeout: 10s
-      retries: 4
-      start_period: 45s
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 90s
 

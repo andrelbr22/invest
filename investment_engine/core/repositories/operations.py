@@ -181,6 +181,9 @@ class OperationsRepository:
             row.last_seen_at = utcnow()
             self.session.flush()
 
+    def get_service(self, service_id: str) -> ServiceHeartbeatORM | None:
+        return self.session.get(ServiceHeartbeatORM, str(service_id or "").strip())
+
     def recent_services(self, *, role: str | None = None, limit: int = 20) -> list[ServiceHeartbeatORM]:
         statement = select(ServiceHeartbeatORM)
         if role:
