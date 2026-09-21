@@ -52,7 +52,7 @@ def test_portfolio_dividend_asset_query_uses_exists_instead_of_distinct_json_com
     statement = handlers._portfolio_dividend_assets_statement()
     sql = str(statement.compile(dialect=postgresql.dialect())).upper()
 
-    assert " EXISTS " in sql
+    assert "EXISTS (" in sql
     assert " DISTINCT " not in sql
 
 

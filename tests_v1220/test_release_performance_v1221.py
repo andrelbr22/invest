@@ -15,11 +15,11 @@ def test_release_metadata_is_v1221_with_performance_migration():
     assert (ROOT / "alembic" / "versions" / "0023_v1_22_screener_performance.py").is_file()
 
 
-def test_publication_and_readme_point_to_v1230_r2_staging_validation():
+def test_publication_and_readme_point_to_current_v1230_staging_validation():
     publisher = (ROOT / "PUBLICAR_GITHUB.ps1").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "Estabiliza promocao, proxy e worker na V1.23.0 R2 em teste" in publisher
-    assert "valide a V1.23.0 R2" in publisher
+    assert "Corrige testes de homologacao na V1.23.0 R5 em teste" in publisher
+    assert "valide a V1.23.0 R5" in publisher
     assert readme.startswith("# Formação do Investidor • V1.23.0")
     assert "INSTRUCOES_ORACLE_V1221.md" in readme
