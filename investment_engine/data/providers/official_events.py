@@ -31,6 +31,8 @@ from .market_dashboard import (
 
 B3_API_ROOT = "https://sistemaswebb3-listados.b3.com.br/listedCompaniesProxy/CompanyCall"
 B3_PUBLIC_ROOT = "https://sistemaswebb3-listados.b3.com.br/listedCompaniesPage/main"
+B3_FUNDS_API_ROOT = "https://sistemaswebb3-listados.b3.com.br/fundsListedProxy/Search"
+B3_FUNDS_PUBLIC_ROOT = "https://sistemaswebb3-listados.b3.com.br/fundsListedPage/events-main"
 CVM_IPE_ROOT = "https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/IPE/DADOS"
 CVM_IPE_DATASET = "https://dados.cvm.gov.br/dataset/cia_aberta-doc-ipe"
 CVM_IPE_CKAN_API = "https://dados.cvm.gov.br/api/3/action/package_show?id=cia_aberta-doc-ipe"
@@ -178,7 +180,7 @@ def _issuer_name_key(value: object) -> str:
 
 
 class B3CorporateEventsProvider:
-    """Read confirmed cash distributions from B3's listed-company service."""
+    """Read confirmed cash distributions from B3 company and fund services."""
 
     def __init__(self, http: HttpClient | None = None):
         self.http = http or HttpClient(timeout=20, retries=3)
@@ -189,6 +191,17 @@ class B3CorporateEventsProvider:
         data = response.json()
         if not isinstance(data, dict):
             raise ValueError("b3_response_not_object")
+        return data, url
+
+    def _request_fund(self, method: str, payload: dict) -> tuple[dict, str]:
+        url = f"{B3_FUNDS_API_ROOT}/{method}/{_token(payload)}"
+        response = self.http.get(url, headers={
+            "Accept": "application/json",
+            "Referer": f"{B3_FUNDS_PUBLIC_ROOT}/{payload.get('idCEM') or ''}",
+        })
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("b3_fund_response_not_object")
         return data, url
 
     def trading_name(self, ticker: str) -> tuple[str, dict]:
@@ -264,7 +277,9 @@ class B3CorporateEventsProvider:
             record, ticker=ticker, expected_isin=expected_isin,
         ):
             return None
-        label = str(_first(record, "corporateAction", "provento", "type", "eventType") or "").strip()
+        label = str(_first(
+            record, "corporateAction", "provento", "type", "eventType", "label",
+        ) or "").strip()
         event_map = {
             "dividendo": "dividend", "jrs cap proprio": "jcp", "juros sobre capital proprio": "jcp",
             "rendimento": "income", "restituicao de capital": "capital_return",
@@ -297,6 +312,39 @@ class B3CorporateEventsProvider:
             "retrieved_at": datetime.now(timezone.utc),
         }
 
+    @staticmethod
+    def normalize_fund_record(
+        record: dict,
+        *,
+        ticker: str,
+        source_url: str,
+        expected_isin: str | None = None,
+    ) -> dict | None:
+        """Normalize only the fund's principal quota, never subscription rights.
+
+        The official fund endpoint is already scoped by ``idCEM``, but it can
+        return both the main quota and temporary rights.  Exact catalog ISIN
+        wins; otherwise the standard B3 fund-quota ISIN (``BR<code>CTF000``)
+        is required.  This keeps portfolio entitlement fail-closed.
+        """
+        clean = re.sub(r"[^A-Z0-9]", "", str(ticker or "").upper())
+        fund_code = re.sub(r"\d+$", "", clean)
+        row_isin = str(_first(record, "isinCode", "isin", "assetIssued") or "").strip().upper()
+        target_isin = str(expected_isin or "").strip().upper()
+        if not row_isin or not fund_code:
+            return None
+        if target_isin:
+            if row_isin != target_isin:
+                return None
+        elif row_isin != f"BR{fund_code}CTF000":
+            return None
+        return B3CorporateEventsProvider.normalize_record(
+            record,
+            ticker=clean,
+            source_url=source_url,
+            expected_isin=row_isin,
+        )
+
     def fetch_ticker(self, ticker: str, *, expected_isin: str | None = None) -> dict:
         clean = str(ticker or "").strip().upper()
         trading_name, company = self.trading_name(clean)
@@ -323,6 +371,49 @@ class B3CorporateEventsProvider:
             "ignored_records": ignored_records,
         }
 
+    def fetch_fund_ticker(self, ticker: str, *, expected_isin: str | None = None) -> dict:
+        clean = re.sub(r"[^A-Z0-9]", "", str(ticker or "").upper())
+        fund_code = re.sub(r"\d+$", "", clean)
+        if not fund_code:
+            raise ValueError("b3_fund_code_missing")
+        data, api_url = self._request_fund("GetEventsCorporateActions", {
+            "language": "pt-br", "idCEM": fund_code,
+        })
+        public_url = f"{B3_FUNDS_PUBLIC_ROOT}/{fund_code}"
+        items = []
+        ignored_records = 0
+        for record in data.get("cashDividends") or []:
+            if not isinstance(record, dict):
+                continue
+            normalized = self.normalize_fund_record(
+                record,
+                ticker=clean,
+                source_url=public_url,
+                expected_isin=expected_isin,
+            )
+            if normalized is None:
+                ignored_records += 1
+            else:
+                items.append(normalized)
+        primary_isin = expected_isin
+        if not primary_isin and items:
+            primary_isin = str(items[0].get("isin") or "").strip().upper() or None
+        issuer = {
+            "issuer_cnpj": None,
+            "cvm_code": str(data.get("codeCVM") or "").strip() or None,
+            "issuing_company": fund_code,
+            "issuer_name": str(data.get("fund") or "").strip() or None,
+            "isin": primary_isin,
+        }
+        return {
+            "ticker": clean,
+            "items": items,
+            "api_url": api_url,
+            "source_url": public_url,
+            "issuer": issuer,
+            "ignored_records": ignored_records,
+        }
+
     def fetch(self, tickers: list[str | dict], *, max_assets: int = 500) -> dict:
         identities: dict[str, dict] = {}
         for value in tickers:
@@ -342,10 +433,9 @@ class B3CorporateEventsProvider:
         for ticker in selected:
             try:
                 expected_isin = str(identities[ticker].get("isin") or "").strip().upper() or None
-                result = (
-                    self.fetch_ticker(ticker, expected_isin=expected_isin)
-                    if expected_isin else self.fetch_ticker(ticker)
-                )
+                asset_type = str(identities[ticker].get("asset_type") or "").strip().lower()
+                fetcher = self.fetch_fund_ticker if asset_type == "fii" else self.fetch_ticker
+                result = fetcher(ticker, expected_isin=expected_isin) if expected_isin else fetcher(ticker)
                 items.extend(result["items"])
                 ignored_records += int(result.get("ignored_records") or 0)
                 if result.get("issuer"):

@@ -528,6 +528,7 @@ def handle_investor_dividends_refresh(payload: dict) -> dict:
             {
                 "ticker": asset.ticker,
                 "isin": str((asset.metadata_json or {}).get("isin") or "").strip() or None,
+                "asset_type": asset.asset_type,
             }
             for asset in selected_assets
         ], max_assets=batch_limit)
@@ -571,7 +572,7 @@ def handle_investor_dividends_refresh(payload: dict) -> dict:
             }
             SharedSnapshotRepository(session).save_valid(
                 snapshot_key=snapshot_key, snapshot_kind="portfolio_dividends",
-                payload=result, source="B3 • Empresas Listadas", as_of=utcnow(),
+                payload=result, source="B3 • Empresas e Fundos Listados", as_of=utcnow(),
                 valid_until=utcnow() + timedelta(hours=24),
             )
             session.commit()

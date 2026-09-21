@@ -6,7 +6,7 @@ O escopo, as invariantes e a sequência completa da linha V1.20 estão documenta
 
 A V1.23.0 mantém integralmente a plataforma homologada e acrescenta recursos que não bloqueiam a navegação:
 
-- calendário de proventos das carteiras com eventos confirmados pela B3;
+- calendário de proventos das carteiras com eventos confirmados pelos serviços oficiais de Empresas e Fundos Listados da B3;
 - feed de fatos relevantes a partir dos dados abertos IPE da CVM;
 - histórico incremental de IMA-B e IRF-M pelo ANBIMA Feed, ativado somente com credenciais oficiais;
 - agenda anual renovável, incluindo eleições e feriados de negociação, com fonte e indicação transparente de fallback;

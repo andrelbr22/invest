@@ -5,6 +5,7 @@ import threading
 import time as time_module
 import zipfile
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -19,6 +20,7 @@ from investment_engine.core.repositories.investor_events import InvestorEventsRe
 from investment_engine.core.repositories.economic_series import SharedSnapshotRepository
 from investment_engine.data.providers.official_events import (
     ANBIMA_IMA_RESULTS_URL,
+    B3_FUNDS_API_ROOT,
     CVM_IPE_CKAN_API,
     AnbimaImaHistoryProvider,
     B3CorporateEventsProvider,
@@ -240,6 +242,64 @@ def test_b3_ex_date_uses_next_exchange_business_day_only_for_official_cum_field(
     assert official["ex_date"] == date(2026, 9, 8)
     assert generic["last_cum_date"] == date(2026, 9, 4)
     assert generic["ex_date"] is None
+
+
+def test_b3_fund_endpoint_keeps_only_the_principal_quota_and_normalizes_income():
+    class FundHttp:
+        def __init__(self):
+            self.urls = []
+
+        def get(self, url, **_kwargs):
+            self.urls.append(url)
+            return JsonResponse({
+                "fund": "FII XP MALLS",
+                "code": "XPML",
+                "cashDividends": [
+                    {
+                        "isinCode": "BRXPMLCTF000", "assetIssued": "BRXPMLCTF000",
+                        "label": "RENDIMENTO", "approvedOn": "18/09/2026",
+                        "lastDatePrior": "18/09/2026", "paymentDate": "25/09/2026",
+                        "rate": "0,92000000000", "relatedTo": "08/2026",
+                    },
+                    {
+                        "isinCode": "BRXPMLR44M16", "assetIssued": "BRXPMLR44M16",
+                        "label": "RENDIMENTO", "lastDatePrior": "18/09/2026",
+                        "paymentDate": "25/09/2026", "rate": "0,32437932000",
+                    },
+                ],
+            })
+
+    http = FundHttp()
+    result = B3CorporateEventsProvider(http=http).fetch([
+        {"ticker": "XPML11", "asset_type": "fii"},
+    ])
+
+    assert len(result["items"]) == 1
+    assert result["items"][0]["ticker"] == "XPML11"
+    assert result["items"][0]["event_type"] == "income"
+    assert result["items"][0]["isin"] == "BRXPMLCTF000"
+    assert result["items"][0]["amount"] == Decimal("0.92000000000")
+    assert result["items"][0]["last_cum_date"] == date(2026, 9, 18)
+    assert result["items"][0]["payment_date"] == date(2026, 9, 25)
+    assert result["ignored_ambiguous_or_mismatched_records"] == 1
+    assert result["issuers"]["XPML11"]["isin"] == "BRXPMLCTF000"
+    assert http.urls[0].startswith(f"{B3_FUNDS_API_ROOT}/GetEventsCorporateActions/")
+
+
+def test_b3_fund_endpoint_respects_a_catalog_isin_fail_closed():
+    record = {
+        "isinCode": "BRXPMLCTF000", "label": "RENDIMENTO",
+        "lastDatePrior": "18/09/2026", "rate": "0,92",
+    }
+
+    assert B3CorporateEventsProvider.normalize_fund_record(
+        record, ticker="XPML11", source_url="https://b3.example/XPML",
+        expected_isin="BRXPMLCTF000",
+    ) is not None
+    assert B3CorporateEventsProvider.normalize_fund_record(
+        record, ticker="XPML11", source_url="https://b3.example/XPML",
+        expected_isin="BRDIFFERENT000",
+    ) is None
 
 
 def test_cvm_ticker_mapping_uses_cvm_code_when_catalog_has_no_cnpj():
