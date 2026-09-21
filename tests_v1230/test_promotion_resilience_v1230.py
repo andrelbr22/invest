@@ -18,6 +18,13 @@ def test_deployment_shell_scripts_use_linux_line_endings():
     assert _read(".gitattributes").strip() == "*.sh text eol=lf"
 
 
+def test_background_job_failures_keep_the_original_traceback_in_logs():
+    worker = _read("investment_engine/core/jobs/worker.py")
+
+    assert 'LOGGER.exception("background_job_failed job_type=%s job_id=%s"' in worker
+    assert 'LOGGER.warning("background_job_failed job_type=%s job_id=%s"' not in worker
+
+
 def test_promotion_refreshes_proxy_and_checks_public_ready_before_completion():
     script = _read("deployment/promote-staging-to-production.sh")
 

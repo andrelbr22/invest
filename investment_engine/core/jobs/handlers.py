@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from zoneinfo import ZoneInfo
 import math
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 
 from ...data.providers.market_dashboard import MarketDashboardService
 from ...data.providers.intraday import IntradayQuoteProvider
@@ -486,6 +486,20 @@ def handle_user_news_refresh(payload: dict) -> dict:
         session.close()
 
 
+def _portfolio_dividend_assets_statement():
+    """Select eligible portfolio assets without DISTINCT over JSON columns."""
+    has_position = exists().where(PortfolioPositionORM.asset_id == AssetORM.id)
+    return (
+        select(AssetORM)
+        .where(
+            has_position,
+            AssetORM.is_active.is_(True),
+            AssetORM.asset_type.in_(("stock", "fii", "etf", "bdr")),
+        )
+        .order_by(AssetORM.ticker)
+    )
+
+
 def handle_investor_dividends_refresh(payload: dict) -> dict:
     """Refresh B3 cash events in rotating, explicitly bounded portfolio batches."""
     snapshot_key = str(payload.get("snapshot_key") or "investor-events:dividends")
@@ -495,11 +509,7 @@ def handle_investor_dividends_refresh(payload: dict) -> dict:
     ))
     session = get_session_factory()()
     try:
-        assets = list(session.scalars(
-            select(AssetORM).join(PortfolioPositionORM, PortfolioPositionORM.asset_id == AssetORM.id)
-            .where(AssetORM.is_active.is_(True), AssetORM.asset_type.in_(("stock", "fii", "etf", "bdr")))
-            .distinct().order_by(AssetORM.ticker)
-        ))
+        assets = list(session.scalars(_portfolio_dividend_assets_statement()))
         previous = SharedSnapshotRepository(session).get(snapshot_key)
         previous_payload = dict(previous.payload_json or {}) if previous is not None else {}
     finally:

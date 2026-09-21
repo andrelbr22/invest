@@ -158,7 +158,7 @@ class BackgroundWorker:
                 LOGGER.exception("background_job_failure_persistence_error job_id=%s", row.id)
             finally:
                 session.close()
-            LOGGER.warning("background_job_failed job_type=%s job_id=%s", row.job_type, row.id)
+            LOGGER.exception("background_job_failed job_type=%s job_id=%s", row.job_type, row.id)
         finally:
             heartbeat_stop.set()
             heartbeat_thread.join(timeout=5)

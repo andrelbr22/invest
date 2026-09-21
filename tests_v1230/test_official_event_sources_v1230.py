@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, func, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -45,6 +46,14 @@ class JsonResponse:
 class ContentResponse:
     def __init__(self, content):
         self.content = content
+
+
+def test_portfolio_dividend_asset_query_uses_exists_instead_of_distinct_json_comparison():
+    statement = handlers._portfolio_dividend_assets_statement()
+    sql = str(statement.compile(dialect=postgresql.dialect())).upper()
+
+    assert " EXISTS " in sql
+    assert " DISTINCT " not in sql
 
 
 class AnbimaHttp:
