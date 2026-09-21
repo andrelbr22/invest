@@ -15,12 +15,15 @@ STOCK_STRATEGIES = {
     ),
     "alb": StockStrategy(
         id="alb", name="ALB",
-        # Mantém o viés de qualidade, valor e dividendos sem exigir CAGR,
-        # campo que costuma faltar em parte relevante do universo brasileiro.
-        filters=StockFilterSet(roe_min=10, net_margin_min=5, pe_min=0.1, pe_max=18, pbv_max=3,
-                               dividend_yield_min=4, current_ratio_min=1,
-                               daily_liquidity_min=1_000_000, require_below_graham=True),
+        # Calibração 1.1 medida contra o universo consolidado em 21/09/2026.
+        # Preserva qualidade, valor, dividendos e liquidez sem exigir CAGR,
+        # campo ausente em parte relevante do universo brasileiro. O resultado
+        # observado foi 15 ativos, dentro da faixa operacional de 5 a 20.
+        filters=StockFilterSet(roe_min=15, net_margin_min=8, pe_min=0.1, pe_max=15, pbv_max=2.5,
+                               dividend_yield_min=5, current_ratio_min=1,
+                               daily_liquidity_min=2_000_000, require_below_graham=True),
         weights=StrategyWeights(quality=.25, value=.25, growth=.15, technical=.10, risk=.15, liquidity=.10),
+        version="1.1",
     ),
 }
 
