@@ -49,7 +49,7 @@ try:
     revision = session.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).scalar_one()
 finally:
     session.close()
-if revision != "0026_v1_23_email_login":
+if revision != "0027_v1_23_analysis_settings":
     raise SystemExit(f"Migração inesperada no banco: {revision}")
 print("DNS externo, banco privado e migração V1.23.0 validados.")
 PY

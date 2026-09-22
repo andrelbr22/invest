@@ -17,6 +17,17 @@ A V1.23.0 mantém integralmente a plataforma homologada e acrescenta recursos qu
 
 O proprietário recebe a permissão de edição da página automaticamente e pode delegá-la por nível de acesso. A interface pública conserva uma página estática completa como contingência se o banco estiver indisponível.
 
+### Revisão R8 — continuidade, análises e alocação
+
+A R8 preserva os critérios homologados da R7 e acrescenta três recursos sem substituir dados existentes:
+
+- atalho permanente da plataforma para a página principal, mantendo a sessão autenticada;
+- configuração alternativa, exclusiva do proprietário, para os filtros Padrão, FDI e ALB em cada classe de ativo, com ativação opcional, revisão contra edições concorrentes e restauração integral do padrão de fábrica;
+- padrão administrável de colunas visíveis e de sua ordem, sem retirar do usuário a possibilidade de personalizar a própria visualização;
+- gráfico hierárquico da carteira: o anel interno mostra os tipos de investimento e o externo mostra setor ou segmento; o clique abre o detalhamento do tipo sem nova consulta ao servidor.
+
+As configurações originais continuam imutáveis no código. Restaurar um item desativa apenas a alternativa administrativa e nunca apaga filtros pessoais, carteiras, históricos ou resultados.
+
 ## Desempenho e estabilidade V1.22.1
 
 A V1.22.1 elimina a varredura integral dos históricos no screener, acrescenta índices próprios para localizar o snapshot mais recente e mostra a lista antes de carregar os sinais complementares de backtests. Consultas simultâneas são reaproveitadas, o cache deixa de ser apagado por simples pedidos de atualização e a produção recebe prioridade de recursos sobre staging e tarefas de fundo.

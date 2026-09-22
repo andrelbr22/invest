@@ -7,10 +7,12 @@ from sqlalchemy.orm import Session
 
 from ..jobs.schedules import REFRESH_SCHEDULES, refresh_status
 from ..repositories.assets import AssetRepository
+from ..repositories.analysis_settings import AnalysisSettingsRepository
 from ..repositories.economic_series import SharedSnapshotRepository
 from ..repositories.investor_events import InvestorEventsRepository, alb_observation_dict
 from ..repositories.operations import OperationsRepository
 from ..strategies.presets import STOCK_STRATEGIES
+from ..screening.advanced import advanced_screen
 from ...infrastructure.db.models import (
     AssetORM,
     EconomicSeriesORM,
@@ -166,13 +168,44 @@ class AlbUniverseMonitor:
     def run(self, *, now: datetime | None = None) -> dict:
         current = _aware(now or datetime.now(timezone.utc))
         strategy = STOCK_STRATEGIES["alb"]
-        # This is intentionally the exact system preset. Unlike the UI's
-        # usability fallback tiers, monitoring never relaxes a criterion.
-        rows = AssetRepository(self.session).screen_latest_stocks(strategy.filters, limit=1000)
-        tickers = [row[0].ticker for row in rows]
+        setting = AnalysisSettingsRepository(self.session).get_preset("stock", "alb")
+        owner_configuration = (
+            dict(setting.owner_configuration_json or {})
+            if setting is not None and setting.owner_enabled and setting.owner_configuration_json
+            else None
+        )
+        preset_version = strategy.version
+        recorded_filters: dict = strategy.filters.model_dump(mode="json")
+        tickers: list[str]
+        if owner_configuration and owner_configuration.get("ibov_membership", "any") == "any":
+            # Owner alternatives use the full advanced schema. The monitor can
+            # reflect every locally evaluable criterion, while deliberately
+            # avoiding the UI's relaxed ALB fallback tiers.
+            arguments = {
+                key: owner_configuration.get(key)
+                for key in (
+                    "fundamental_filters", "score_filters", "valuation_flags", "valuation_assumptions",
+                    "technical_filters", "trend_period", "pivot_timeframe", "include_technical_columns",
+                    "allowed_tickers", "company_sizes", "ibov_membership",
+                )
+                if key in owner_configuration
+            }
+            result = advanced_screen(
+                AssetRepository(self.session), asset_type="stock", limit=1000, **arguments,
+            )
+            tickers = [str(row.get("ticker") or "").strip().upper() for row in result.get("rows", [])]
+            tickers = [ticker for ticker in tickers if ticker]
+            preset_version = f"alb-owner-r{int(setting.revision)}"
+            recorded_filters = owner_configuration
+        else:
+            # Factory R7 remains the safe fallback when no owner alternative is
+            # active, or when it requires a live IBOV membership lookup that is
+            # intentionally unavailable in this background monitor.
+            rows = AssetRepository(self.session).screen_latest_stocks(strategy.filters, limit=1000)
+            tickers = [row[0].ticker for row in rows]
         observation = InvestorEventsRepository(self.session).save_alb_observation(
-            reference_date=current.date(), preset_version=strategy.version,
-            filters=strategy.filters.model_dump(mode="json"), tickers=tickers,
+            reference_date=current.date(), preset_version=preset_version,
+            filters=recorded_filters, tickers=tickers,
             target_min=self.TARGET_MIN, target_max=self.TARGET_MAX,
         )
         alerts = []

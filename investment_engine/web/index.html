@@ -70,6 +70,9 @@
           <kbd>/</kbd>
           <div id="search-results" class="search-results hidden"></div>
         </div>
+        <a id="home-page-link" class="topbar-home-link" href="../" aria-label="Voltar à página principal" title="Página principal">
+          <span class="topbar-home-icon" aria-hidden="true">⌂</span><span class="topbar-home-label">Página principal</span>
+        </a>
         <button class="icon-button notification-button" title="Alertas" data-view-link="portfolio" data-tab-link="alerts">
           ◌<span id="notification-count" class="badge hidden">0</span>
         </button>
@@ -193,6 +196,7 @@
             <button class="tab" data-tab="portal">Página inicial e livros</button>
             <button class="tab active" data-tab="levels">Níveis e permissões</button>
             <button class="tab" data-tab="users">Usuários</button>
+            <button class="tab owner-only hidden" data-tab="analysis-settings">Filtros e colunas</button>
             <button class="tab" data-tab="data">Dados de mercado</button>
             <button class="tab" data-tab="quality">Qualidade dos dados</button>
             <button class="tab" data-tab="jobs">Fila de trabalhos</button>

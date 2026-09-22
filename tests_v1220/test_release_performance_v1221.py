@@ -19,7 +19,7 @@ def test_publication_and_readme_point_to_current_v1230_staging_validation():
     publisher = (ROOT / "PUBLICAR_GITHUB.ps1").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "Calibra ALB e consolida proventos na V1.23.0 R7 em teste" in publisher
-    assert "valide a V1.23.0 R7" in publisher
+    assert "Adiciona ajustes de analises e alocacao hierarquica na V1.23.0 R8 em teste" in publisher
+    assert "valide a V1.23.0 R8" in publisher
     assert readme.startswith("# Formação do Investidor • V1.23.0")
     assert "INSTRUCOES_ORACLE_V1221.md" in readme

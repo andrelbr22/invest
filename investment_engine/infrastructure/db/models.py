@@ -363,6 +363,44 @@ class SavedScreeningFilterORM(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class ScreeningPresetSettingORM(Base):
+    """Immutable R7 baseline plus one optional global owner alternative."""
+
+    __tablename__ = "screening_preset_settings"
+    __table_args__ = (
+        UniqueConstraint("asset_type", "preset_key", name="uq_screening_preset_setting_type_key"),
+        Index("ix_screening_preset_settings_type", "asset_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    preset_key: Mapped[str] = mapped_column(String(16), nullable=False)
+    factory_version: Mapped[str] = mapped_column(String(40), nullable=False, default="v1.23.0-r7")
+    factory_configuration_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    owner_configuration_json: Mapped[dict | None] = mapped_column(JSON)
+    owner_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AnalysisColumnSettingORM(Base):
+    """Default visible columns/order; every other catalog column remains available."""
+
+    __tablename__ = "analysis_column_settings"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_type: Mapped[str] = mapped_column(String(16), nullable=False, unique=True, index=True)
+    factory_columns_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    owner_columns_json: Mapped[list | None] = mapped_column(JSON)
+    owner_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class PortfolioPositionORM(Base):
     __tablename__ = "portfolio_positions"
     __table_args__ = (

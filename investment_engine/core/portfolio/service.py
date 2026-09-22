@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable
+import unicodedata
 
 
 ASSET_CLASS_LABELS = {
@@ -15,6 +16,21 @@ ASSET_CLASS_LABELS = {
     "crypto": "Cripto",
     "other": "Outros",
     "cash": "Caixa",
+}
+
+
+CONSOLIDATED_ALLOCATION_LABELS = {
+    **ASSET_CLASS_LABELS,
+    "funds": "Fundos",
+    "pension": "Previdência",
+}
+
+
+CUSTOM_ALLOCATION_GROUPS = {
+    "renda fixa": "fixed_income",
+    "fundos": "funds",
+    "previdencia": "pension",
+    "outros": "other",
 }
 
 STAGE_LABELS = {
@@ -107,6 +123,204 @@ def classification_for(
     else:
         raw = sector or segment or industry or category
     return localize_classification(raw) or "Não classificado"
+
+
+def _clean_allocation_label(value, default: str = "Não classificado") -> str:
+    clean = " ".join(str(value or "").strip().split())
+    return clean or default
+
+
+def _fold_allocation_label(value) -> str:
+    clean = _clean_allocation_label(value, "")
+    decomposed = unicodedata.normalize("NFKD", clean)
+    return "".join(char for char in decomposed if not unicodedata.combining(char)).casefold()
+
+
+def _allocation_identifier(value) -> str:
+    folded = _fold_allocation_label(value)
+    identifier = "-".join("".join(char if char.isalnum() else " " for char in folded).split())
+    return identifier or "nao-classificado"
+
+
+def _custom_allocation_type(item: dict) -> tuple[str, str]:
+    group_label = _clean_allocation_label(item.get("allocation_group"), "Outros")
+    type_id = CUSTOM_ALLOCATION_GROUPS.get(_fold_allocation_label(group_label), "other")
+    return type_id, CONSOLIDATED_ALLOCATION_LABELS.get(type_id, group_label)
+
+
+def build_consolidated_allocation_hierarchy(snapshot: dict, custom_investments: Iterable[dict] = ()) -> dict:
+    """Build the two-level allocation payload used by portfolio visualizations.
+
+    The first level represents investment types.  The second level represents one
+    mutually exclusive economic classification, preventing sector and segment from
+    double-counting the same position.  Existing snapshot fields are only read; this
+    function deliberately does not mutate them.
+
+    Missing quotations stay explicit and never become zero-valued positions.  Manual
+    investments already carry a current value, so they can safely be added to the
+    known-value allocation without changing the snapshot completeness flag.
+    """
+    summary = dict(snapshot.get("summary") or {})
+    type_values: dict[str, dict] = {}
+
+    def ensure_type(type_id: str, label: str) -> dict:
+        clean_id = str(type_id or "other").strip().lower() or "other"
+        row = type_values.get(clean_id)
+        if row is None:
+            row = {
+                "id": clean_id,
+                "label": _clean_allocation_label(
+                    label, CONSOLIDATED_ALLOCATION_LABELS.get(clean_id, clean_id.upper())
+                ),
+                "value": 0.0,
+                "missing_price_positions": 0,
+                "breakdown": {},
+            }
+            type_values[clean_id] = row
+        return row
+
+    def add_breakdown(
+        parent: dict,
+        *,
+        label,
+        value=0.0,
+        missing_price_positions=0,
+        dimension="classification",
+        sector=None,
+        segment=None,
+    ) -> None:
+        clean_label = _clean_allocation_label(label)
+        key = _fold_allocation_label(clean_label)
+        child = parent["breakdown"].get(key)
+        if child is None:
+            child = {
+                "id": _allocation_identifier(clean_label),
+                "label": clean_label,
+                "dimension": dimension,
+                "sector": _clean_allocation_label(sector, "") or None,
+                "segment": _clean_allocation_label(segment, "") or None,
+                "value": 0.0,
+                "missing_price_positions": 0,
+            }
+            parent["breakdown"][key] = child
+        child["value"] += max(_f(value), 0.0)
+        child["missing_price_positions"] += max(int(missing_price_positions or 0), 0)
+        if child["sector"] is None and sector:
+            child["sector"] = _clean_allocation_label(sector, "") or None
+        if child["segment"] is None and segment:
+            child["segment"] = _clean_allocation_label(segment, "") or None
+
+    # The existing class allocation is authoritative for listed positions and cash.
+    for item in snapshot.get("class_allocation") or []:
+        type_id = str(item.get("asset_class") or "other").strip().lower() or "other"
+        parent = ensure_type(
+            type_id,
+            item.get("asset_class_label") or CONSOLIDATED_ALLOCATION_LABELS.get(type_id, type_id.upper()),
+        )
+        parent["value"] += max(_f(item.get("known_current_value")), 0.0)
+        parent["missing_price_positions"] += max(int(item.get("missing_price_positions") or 0), 0)
+
+    for item in snapshot.get("sector_allocation") or []:
+        type_id = str(item.get("asset_class") or "other").strip().lower() or "other"
+        parent = ensure_type(
+            type_id,
+            item.get("asset_class_label") or CONSOLIDATED_ALLOCATION_LABELS.get(type_id, type_id.upper()),
+        )
+        classification = item.get("classification") or "Não classificado"
+        is_segment = type_id == "fii"
+        add_breakdown(
+            parent,
+            label=classification,
+            value=item.get("known_current_value"),
+            missing_price_positions=item.get("missing_price_positions"),
+            dimension="segment" if is_segment else "sector",
+            sector=None if is_segment else classification,
+            segment=classification if is_segment else None,
+        )
+
+    cash_value = max(_f(summary.get("cash_balance")), 0.0)
+    if cash_value > 0:
+        cash = ensure_type("cash", CONSOLIDATED_ALLOCATION_LABELS["cash"])
+        add_breakdown(cash, label="Disponível", value=cash_value, dimension="cash")
+
+    for item in custom_investments or ():
+        value = max(_f(item.get("current_value")), 0.0)
+        if value <= 0:
+            continue
+        type_id, type_label = _custom_allocation_type(item)
+        parent = ensure_type(type_id, type_label)
+        parent["value"] += value
+        segment = _clean_allocation_label(item.get("segment"), "") or None
+        sector = _clean_allocation_label(item.get("sector"), "") or None
+        if segment:
+            label, dimension = segment, "segment"
+        elif sector:
+            label, dimension = sector, "sector"
+        else:
+            label = item.get("category_label") or "Não classificado"
+            dimension = "category"
+        add_breakdown(
+            parent,
+            label=label,
+            value=value,
+            dimension=dimension,
+            sector=sector,
+            segment=segment,
+        )
+
+    # Cash has no entry in sector_allocation.  The same safeguard also preserves
+    # accounting if a future asset class is introduced before a classification is.
+    for parent in type_values.values():
+        classified_value = sum(child["value"] for child in parent["breakdown"].values())
+        residual = parent["value"] - classified_value
+        if residual > 0.0000001:
+            add_breakdown(
+                parent,
+                label="Não classificado",
+                value=residual,
+                dimension="classification",
+            )
+
+    visible_types = [
+        item for item in type_values.values()
+        if item["value"] > 0 or item["missing_price_positions"] > 0
+    ]
+    known_total = sum(item["value"] for item in visible_types)
+    result_types = []
+    for parent in sorted(visible_types, key=lambda item: (-item["value"], item["label"].casefold())):
+        parent_value = parent["value"]
+        children = []
+        for child in sorted(
+            parent["breakdown"].values(),
+            key=lambda item: (-item["value"], item["label"].casefold()),
+        ):
+            if child["value"] <= 0 and child["missing_price_positions"] <= 0:
+                continue
+            children.append({
+                **child,
+                "value": round(child["value"], 2),
+                "global_weight_pct": (
+                    round(child["value"] / known_total * 100.0, 4) if known_total > 0 else None
+                ),
+                "within_type_weight_pct": (
+                    round(child["value"] / parent_value * 100.0, 4) if parent_value > 0 else None
+                ),
+            })
+        result_types.append({
+            "id": parent["id"],
+            "label": parent["label"],
+            "value": round(parent_value, 2),
+            "weight_pct": round(parent_value / known_total * 100.0, 4) if known_total > 0 else None,
+            "missing_price_positions": parent["missing_price_positions"],
+            "breakdown": children,
+        })
+
+    return {
+        "known_total_value": round(known_total, 2),
+        "allocation_complete": bool(summary.get("allocation_complete", True)),
+        "missing_price_positions": max(int(summary.get("missing_price_positions") or 0), 0),
+        "types": result_types,
+    }
 
 
 def build_portfolio_snapshot(positions: Iterable[dict], *, cash_balance: float = 0.0, target_cash_pct: float = 0.0) -> dict:

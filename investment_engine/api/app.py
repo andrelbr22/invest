@@ -38,7 +38,13 @@ from ..core.valuation.catalog import (
 )
 from ..core.strategies.presets import STOCK_STRATEGIES, FII_STRATEGIES
 from ..core.screening.filters import stock_passes, fii_passes
-from ..core.screening.advanced import advanced_screen, row_from_orm, technical_features
+from ..core.screening.advanced import (
+    FUNDAMENTAL_FIELDS,
+    SCORE_FIELDS,
+    advanced_screen,
+    row_from_orm,
+    technical_features,
+)
 from ..core.screening.universe import COMPANY_SIZE_LABELS, company_size_category
 from ..core.repositories.assets import AssetRepository
 from ..core.repositories.portfolio import PortfolioRepository
@@ -66,6 +72,7 @@ from ..core.repositories.investor_events import (
     relevant_fact_dict,
 )
 from ..core.repositories.portal import PortalRepository, portal_book_dict, portal_media_dict, portal_page_dict
+from ..core.analysis_settings import AnalysisSettingsService
 from ..core.investor_events.service import DataQualityService
 from ..core.portal import decode_portal_image
 from ..core.jobs.schedules import (
@@ -82,7 +89,12 @@ from ..core.observability import (
     request_metric_category,
     screener_metric_category,
 )
-from ..core.portfolio.service import build_portfolio_snapshot, classification_for, localize_classification
+from ..core.portfolio.service import (
+    build_consolidated_allocation_hierarchy,
+    build_portfolio_snapshot,
+    classification_for,
+    localize_classification,
+)
 from ..core.portfolio.custom_investments import (
     CUSTOM_INVESTMENT_CATEGORIES,
     CustomInvestmentRepository,
@@ -1012,6 +1024,22 @@ class SavedScreeningFilterCreateRequest(BaseModel):
 class SavedScreeningFilterUpdateRequest(BaseModel):
     name: str | None = Field(default=None, max_length=120)
     filters: dict | None = None
+
+
+class AdminAnalysisPresetUpdateRequest(BaseModel):
+    configuration: dict[str, Any]
+    owner_enabled: bool = True
+    expected_revision: int = Field(ge=1)
+
+
+class AdminAnalysisColumnsUpdateRequest(BaseModel):
+    columns: list[str] = Field(min_length=1, max_length=64)
+    owner_enabled: bool = True
+    expected_revision: int = Field(ge=1)
+
+
+class AdminAnalysisResetRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
 
 
 _PLATFORM_DESTINATIONS = frozenset({"/plataforma/", "/testefdi/plataforma/"})
@@ -1985,41 +2013,202 @@ def _technical_preset_configuration(asset_type: str, preset_id: str) -> dict:
     ).model_dump(mode="json")
 
 
+def _factory_preset_items(asset_type: str) -> list[dict]:
+    if asset_type not in {"stock", "fii"}:
+        return [
+            {
+                "id": preset_id,
+                "name": rule["name"],
+                "description": rule["description"],
+                "system": True,
+                "configuration": _technical_preset_configuration(asset_type, preset_id),
+                "weights": None,
+            }
+            for preset_id, rule in _TECHNICAL_PRESET_RULES.items()
+        ]
+    strategies = STOCK_STRATEGIES if asset_type == "stock" else FII_STRATEGIES
+    return [
+        {
+            "id": strategy.id,
+            "name": strategy.name,
+            "system": True,
+            "configuration": _preset_screen_configuration(asset_type, strategy),
+            "weights": strategy.weights.model_dump() if asset_type == "stock" else None,
+        }
+        for strategy in strategies.values()
+    ]
+
+
+def _factory_preset_configuration(asset_type: str, preset_id: str) -> dict:
+    item = next((item for item in _factory_preset_items(asset_type) if item["id"] == preset_id), None)
+    if item is None:
+        raise ValueError("analysis_preset_not_found")
+    return dict(item["configuration"])
+
+
+def _analysis_settings_service(db: Session) -> AnalysisSettingsService:
+    return AnalysisSettingsService(db, _factory_preset_configuration)
+
+
+def _validated_admin_preset_configuration(asset_type: str, payload: dict) -> dict:
+    raw = dict(payload or {})
+    supplied_type = raw.get("asset_type")
+    if supplied_type is not None and str(supplied_type) != asset_type:
+        raise ValueError("analysis_preset_asset_type_mismatch")
+    allowed_top_level = set(AdvancedScreenRequest.model_fields)
+    unknown = sorted(set(raw) - allowed_top_level)
+    if unknown:
+        raise ValueError(f"unsupported_analysis_configuration:{unknown[0]}")
+    unknown_fundamentals = sorted(set(raw.get("fundamental_filters") or {}) - FUNDAMENTAL_FIELDS)
+    if unknown_fundamentals:
+        raise ValueError(f"unsupported_fundamental_filter:{unknown_fundamentals[0]}")
+    unknown_scores = sorted(set(raw.get("score_filters") or {}) - SCORE_FIELDS)
+    if unknown_scores:
+        raise ValueError(f"unsupported_score_filter:{unknown_scores[0]}")
+    technical = raw.get("technical_filters") or {}
+    unknown_technical = sorted(set(technical) - set(AdvancedTechnicalFiltersRequest.model_fields))
+    if unknown_technical:
+        raise ValueError(f"unsupported_technical_filter:{unknown_technical[0]}")
+    raw["asset_type"] = asset_type
+    return AdvancedScreenRequest(**raw).model_dump(mode="json")
+
+
+def _analysis_settings_http_error(exc: ValueError) -> HTTPException:
+    detail = str(exc)
+    if detail in {"analysis_preset_not_found", "analysis_columns_not_found"}:
+        return HTTPException(404, detail)
+    if detail == "analysis_settings_revision_conflict":
+        return HTTPException(409, detail)
+    return HTTPException(422, detail)
+
+
 @app.get("/screen/presets")
 def screening_presets(
     asset_type: Literal["stock", "fii", "etf", "bdr", "future"] = "stock",
     _access=Depends(require_permission("can_view_market")),
+    db: Session = Depends(get_db),
 ):
+    items = _factory_preset_items(asset_type)
+    payload = {"asset_type": asset_type, "items": items}
     if asset_type not in {"stock", "fii"}:
-        return {
-            "asset_type": asset_type,
-            "basis": "technical",
-            "items": [
-                {
-                    "id": preset_id,
-                    "name": rule["name"],
-                    "description": rule["description"],
-                    "system": True,
-                    "configuration": _technical_preset_configuration(asset_type, preset_id),
-                    "weights": None,
-                }
-                for preset_id, rule in _TECHNICAL_PRESET_RULES.items()
-            ],
-        }
-    strategies = STOCK_STRATEGIES if asset_type == "stock" else FII_STRATEGIES
-    return {
-        "asset_type": asset_type,
-        "items": [
-            {
-                "id": strategy.id,
-                "name": strategy.name,
-                "system": True,
-                "configuration": _preset_screen_configuration(asset_type, strategy),
-                "weights": strategy.weights.model_dump() if asset_type == "stock" else None,
-            }
-            for strategy in strategies.values()
-        ],
-    }
+        payload["basis"] = "technical"
+    # Direct function calls in legacy tests omit FastAPI dependency injection.
+    # They retain the exact historical payload; HTTP requests receive the
+    # additive owner/factory metadata from the persistent settings table.
+    if isinstance(db, Session):
+        service = _analysis_settings_service(db)
+        for item in items:
+            setting = service.preset_payload(asset_type, item["id"])
+            item.update({
+                "configuration": setting["configuration"],
+                "factory_configuration": setting["factory_configuration"],
+                "owner_configuration": setting["owner_configuration"],
+                "owner_enabled": setting["owner_enabled"],
+                "active_variant": setting["active_variant"],
+                "revision": setting["revision"],
+            })
+        payload["columns"] = service.columns_payload(asset_type)
+    return payload
+
+
+@app.get("/admin/analysis-settings")
+def admin_analysis_settings(
+    _access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    service = _analysis_settings_service(db)
+    payload = service.admin_payload()
+    db.commit()
+    return payload
+
+
+@app.put("/admin/analysis-settings/presets/{asset_type}/{preset_id}")
+def update_admin_analysis_preset(
+    asset_type: str,
+    preset_id: str,
+    request: AdminAnalysisPresetUpdateRequest,
+    access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    try:
+        configuration = _validated_admin_preset_configuration(asset_type, request.configuration)
+        payload = _analysis_settings_service(db).update_preset(
+            asset_type,
+            preset_id,
+            configuration=configuration,
+            enabled=request.owner_enabled,
+            expected_revision=request.expected_revision,
+            actor=access["email"],
+        )
+        db.commit()
+        return payload
+    except ValueError as exc:
+        db.rollback()
+        raise _analysis_settings_http_error(exc)
+
+
+@app.post("/admin/analysis-settings/presets/{asset_type}/{preset_id}/reset")
+def reset_admin_analysis_preset(
+    asset_type: str,
+    preset_id: str,
+    request: AdminAnalysisResetRequest,
+    access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    try:
+        payload = _analysis_settings_service(db).reset_preset(
+            asset_type,
+            preset_id,
+            expected_revision=request.expected_revision,
+            actor=access["email"],
+        )
+        db.commit()
+        return payload
+    except ValueError as exc:
+        db.rollback()
+        raise _analysis_settings_http_error(exc)
+
+
+@app.put("/admin/analysis-settings/columns/{asset_type}")
+def update_admin_analysis_columns(
+    asset_type: str,
+    request: AdminAnalysisColumnsUpdateRequest,
+    access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    try:
+        payload = _analysis_settings_service(db).update_columns(
+            asset_type,
+            columns=request.columns,
+            enabled=request.owner_enabled,
+            expected_revision=request.expected_revision,
+            actor=access["email"],
+        )
+        db.commit()
+        return payload
+    except ValueError as exc:
+        db.rollback()
+        raise _analysis_settings_http_error(exc)
+
+
+@app.post("/admin/analysis-settings/columns/{asset_type}/reset")
+def reset_admin_analysis_columns(
+    asset_type: str,
+    request: AdminAnalysisResetRequest,
+    access=Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    try:
+        payload = _analysis_settings_service(db).reset_columns(
+            asset_type,
+            expected_revision=request.expected_revision,
+            actor=access["email"],
+        )
+        db.commit()
+        return payload
+    except ValueError as exc:
+        db.rollback()
+        raise _analysis_settings_http_error(exc)
 
 
 def _require_custom_filter_access(access: dict):
@@ -2659,11 +2848,37 @@ def _alb_stock_rows(repo: AssetRepository, *, limit: int, offset: int = 0):
     maximum = min(max(int(limit), 1), 20)
     return selected[max(0, int(offset)):max(0, int(offset)) + maximum]
 
+
+def _owner_preset_rows(
+    configuration: dict,
+    *,
+    asset_type: str,
+    limit: int,
+    offset: int,
+    access: dict,
+    db: Session,
+) -> list[dict]:
+    start = max(0, int(offset))
+    page_size = max(1, min(int(limit), 300))
+    # AdvancedScreenRequest is also used when saving the owner variant. Re-run
+    # it here so even a manually edited database row cannot bypass validation.
+    values = dict(configuration or {})
+    values.update({"asset_type": asset_type, "limit": min(300, start + page_size)})
+    payload = screen_advanced(AdvancedScreenRequest(**values), _access=access, db=db)
+    rows = list(payload.get("rows") or [])
+    return rows[start:start + page_size]
+
+
 @app.get("/screen/db/stocks/{strategy_id}")
 def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, access=Depends(require_permission("can_view_market")), db: Session=Depends(get_db)):
     strategy=STOCK_STRATEGIES.get(strategy_id)
     if not strategy: raise HTTPException(404,"strategy_not_found")
     _require_system_analysis_access(strategy_id, access)
+    setting = _analysis_settings_service(db).preset_payload("stock", strategy_id)
+    if setting["active_variant"] == "owner":
+        return _owner_preset_rows(
+            setting["configuration"], asset_type="stock", limit=limit, offset=offset, access=access, db=db,
+        )
     repo = AssetRepository(db)
     rows = _alb_stock_rows(repo, limit=limit, offset=offset) if strategy_id == "alb" else repo.screen_latest_stocks(strategy.filters,limit=limit,offset=offset)
     return _stock_screen_result(rows, access)
@@ -2674,6 +2889,11 @@ def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, access=De
     if not strategy:
         raise HTTPException(404, "strategy_not_found")
     _require_system_analysis_access(strategy_id, access)
+    setting = _analysis_settings_service(db).preset_payload("fii", strategy_id)
+    if setting["active_variant"] == "owner":
+        return _owner_preset_rows(
+            setting["configuration"], asset_type="fii", limit=limit, offset=offset, access=access, db=db,
+        )
     rows = AssetRepository(db).screen_latest_fiis(strategy.filters, limit=limit, offset=offset)
     return _fii_screen_result(rows)
 
@@ -2904,6 +3124,7 @@ def _portfolio_snapshot(db: Session, portfolio):
         "custom_value": round(custom_total, 2),
     }
     snap["consolidated_allocation"] = consolidated_allocation
+    snap["consolidated_allocation_hierarchy"] = build_consolidated_allocation_hierarchy(snap, custom)
     return {
         "portfolio": _portfolio_header(portfolio), **snap,
         "price_update": refresh_status(db, "technical_intraday"),

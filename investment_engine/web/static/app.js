@@ -22,6 +22,7 @@ const state = {
   analysisRows: [],
   analysisPreset: "default",
   analysisCatalog: {},
+  analysisColumnCatalog: {},
   analysisLoadedType: null,
   analysisCustom: [],
   analysisCustomCache: {},
@@ -41,8 +42,11 @@ const state = {
   curveHistoryLoading: false,
   curveHistoryLoaded: false,
   visibleColumns: JSON.parse(localStorage.getItem("fdi-visible-columns") || "{}"),
+  visibleColumnsStorageKey: "fdi-visible-columns",
   portfolios: [],
   portfolioId: null,
+  portfolioAllocationType: null,
+  portfolioAllocationHierarchy: null,
   portfolioNewsMode: "portfolio",
   recommendationCategory: "all",
   newsRefreshTimer: null,
@@ -58,6 +62,8 @@ const state = {
   requestControllers: new Map(),
   emailLoginAddress: "",
   portalAdmin: null,
+  adminAnalysisSettings: null,
+  adminAnalysisType: "stock",
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -205,6 +211,10 @@ function configureAccess() {
   const avatar = $("#profile-avatar");
   avatar.textContent = (user.name || user.email || "U").slice(0, 1).toUpperCase();
   if (user.picture) avatar.innerHTML = `<img src="${esc(user.picture)}" alt="">`;
+  state.visibleColumnsStorageKey=`fdi-visible-columns:${String(user.email||"anonymous").trim().toLowerCase()}`;
+  const personalColumns=localStorage.getItem(state.visibleColumnsStorageKey);
+  if(personalColumns){try{state.visibleColumns=JSON.parse(personalColumns)||{};}catch(_){state.visibleColumns={};}}
+  else {localStorage.setItem(state.visibleColumnsStorageKey,JSON.stringify(state.visibleColumns||{}));}
   $$(".owner-only").forEach(node => node.classList.toggle("hidden", !access.is_owner));
   $$(".permission-study").forEach(node => node.classList.toggle("hidden", !access.can_view_backtest_studies));
   const canAdmin=Boolean(access.is_owner||access.can_manage_users||access.can_sync_market||access.can_manage_portal);
@@ -225,12 +235,14 @@ function configureAccess() {
   for(const tab of ["data","quality"]){const node=$(`.tabs[data-tabs="admin"] [data-tab="${tab}"]`);if(node)node.classList.toggle("hidden",!(access.is_owner||access.can_sync_market));}
   const portalTab=$('.tabs[data-tabs="admin"] [data-tab="portal"]');
   if(portalTab)portalTab.classList.toggle("hidden",!(access.is_owner||access.can_manage_portal));
-  for(const tab of ["jobs","operations","system"]){const node=$(`.tabs[data-tabs="admin"] [data-tab="${tab}"]`);if(node)node.classList.toggle("hidden",!access.is_owner);}
+  for(const tab of ["analysis-settings","jobs","operations","system"]){const node=$(`.tabs[data-tabs="admin"] [data-tab="${tab}"]`);if(node)node.classList.toggle("hidden",!access.is_owner);}
   if(!access.is_owner&&!access.can_manage_users){
     state.tabs.admin=access.can_manage_portal?"portal":"data";
     activateTab("admin",state.tabs.admin,false);
   }
 }
+
+function persistVisibleColumns(){localStorage.setItem(state.visibleColumnsStorageKey,JSON.stringify(state.visibleColumns));}
 
 function emailLoginMessage(message,type=""){
   const node=$("#email-login-message");
@@ -901,12 +913,12 @@ function validateAnalysisRequest(request) {
 }
 
 function revealSelectedValuationColumns(request) {
-  const type=analysisType(),columns=analysisColumns(type),active=new Set(visibleAnalysisColumns(type,columns).map(column=>column.id));
+  const type=analysisType(),columns=orderedAnalysisColumns(type,analysisColumns(type)),active=new Set(visibleAnalysisColumns(type,columns).map(column=>column.id));
   const economicColumns={stock:["economic","economic_upside"],etf:["nav","nav_upside"],bdr:["parity","parity_upside"],future:["carry","basis"]}[type]||[];
   const map={below_graham:["graham","graham_upside"],below_barsi_6pct:["barsi","barsi_upside"],below_relative_value:["relative","relative_upside"],below_economic_value:economicColumns};
   Object.entries(map).forEach(([flag,ids])=>{if(request.valuation_flags?.[flag])ids.forEach(id=>active.add(id));});
   state.visibleColumns[type]=columns.filter(column=>column.always||active.has(column.id)).map(column=>column.id);
-  localStorage.setItem("fdi-visible-columns",JSON.stringify(state.visibleColumns));
+  persistVisibleColumns();
 }
 
 function renderCustomPresetButtons() {
@@ -930,6 +942,7 @@ async function loadAnalysisCatalog(type, force=false) {
   if(force||!state.analysisCatalog[type]){
     const presetPayload=await api(`/screen/presets?asset_type=${type}`,{cacheTtlMs:300000,bypassCache:force});
     state.analysisCatalog[type]=Object.fromEntries((presetPayload.items||[]).map(item=>[item.id,item]));
+    state.analysisColumnCatalog[type]=presetPayload.columns||null;
   }
   if(Number(state.session?.access?.custom_filter_limit||0)>0&&(force||!state.analysisCustomCache[type])) {
     try {
@@ -946,8 +959,8 @@ function markActiveAnalysis({presetId=null,custom=null}={}) {
   state.currentCustomFilter=custom;
   if(presetId)state.analysisPreset=presetId;
   $$("#analysis-preset-row .preset-button").forEach(button=>button.classList.toggle("active",presetId?button.dataset.presetId===presetId:button.dataset.customFilterId===custom?.id));
-  const label=custom?.name||state.analysisCatalog[analysisType()]?.[presetId]?.name||"Ajustes livres";
-  $("#active-analysis-summary").textContent=`${label} • ${custom?"análise personalizada":"critérios originais do sistema"}`;
+  const preset=state.analysisCatalog[analysisType()]?.[presetId],label=custom?.name||preset?.name||"Ajustes livres";
+  $("#active-analysis-summary").textContent=`${label} • ${custom?"análise personalizada":preset?.active_variant==="owner"?"configuração administrativa ativa":"critérios originais do sistema"}`;
   if($("#custom-filter-name"))$("#custom-filter-name").value=custom?.name||"";
   updateCustomFilterControls();
 }
@@ -1020,8 +1033,12 @@ async function loadAnalysisResults(force=false) {
   else root.innerHTML = loadingCards(6);
   try {
     let rows, warnings=[];
+    const presetItem=state.analysisCatalog[type]?.[state.analysisPreset];
     if (state.currentCustomFilter) {
       const payload=await api(`/screen/db/custom/${state.currentCustomFilter.id}?limit=${state.analysisLimit}`,{requestKey:"analysis"});rows=payload.rows||payload;warnings=payload?.meta?.warnings||[];
+    } else if(presetItem?.active_variant==="owner") {
+      const configuration={...(presetItem.configuration||{}),asset_type:type,limit:state.analysisLimit};
+      const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify(configuration)});rows=payload.rows||payload;warnings=payload?.meta?.warnings||[];
     } else if (type === "stock") rows = await api(`/screen/db/stocks/${state.analysisPreset}?limit=${state.analysisLimit}`, {requestKey:"analysis"});
     else if (type === "fii") rows = await api(`/screen/db/fiis/${state.analysisPreset}?limit=${state.analysisLimit}`, {requestKey:"analysis"});
     else if(state.analysisPreset==="default") rows=await api(`/screen/db/universe/${type}?limit=${state.analysisLimit}`,{requestKey:"analysis"});
@@ -1130,20 +1147,31 @@ function analysisColumns(type) {
   return [common[0],{id:"category",label:"Categoria",render:r=>esc(r.asset_type_label||r.classification||"—")},common[1],{id:"signal",label:"Sinal",render:r=>esc(r.signal_tv||"—")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},{id:"technical",label:"Nota técnica",render:r=>number(r.technical_score,1)},common[2]];
 }
 
+function orderedAnalysisColumns(type,columns){
+  const fallback={stock:["ticker","sector","price","pe","pbv","dy","roe","graham_upside","barsi","relative","best_signal"],fii:["ticker","segment","price","pbv","dy","ffo","vacancy","barsi","relative","best_signal"],etf:["ticker","price","nav","nav_upside","premium","relative","best_signal"],bdr:["ticker","sector","price","pbv","relative","relative_upside","best_signal"],future:["ticker","price","front","expiry","spot","carry","basis","best_signal"]};
+  const preferred=state.analysisColumnCatalog[type]?.columns||state.analysisColumnCatalog[type]?.factory_columns||fallback[type]||[];
+  const byId=new Map(columns.map(column=>[column.id,column])),ordered=[];
+  preferred.forEach(id=>{const column=byId.get(id);if(column){ordered.push(column);byId.delete(id);}});
+  columns.forEach(column=>{if(byId.has(column.id)){ordered.push(column);byId.delete(column.id);}});
+  return ordered;
+}
+
 function visibleAnalysisColumns(type, columns) {
   const defaults={stock:["ticker","sector","price","pe","pbv","dy","roe","graham_upside","barsi","relative","best_signal"],fii:["ticker","segment","price","pbv","dy","ffo","vacancy","barsi","relative","best_signal"],etf:["ticker","price","nav","nav_upside","premium","relative","best_signal"],bdr:["ticker","sector","price","pbv","relative","relative_upside","best_signal"],future:["ticker","price","front","expiry","spot","carry","basis","best_signal"]};
+  const ordered=orderedAnalysisColumns(type,columns);
   const saved=state.visibleColumns[type];
-  const active=new Set(Array.isArray(saved)?saved:(defaults[type]||columns.map(column=>column.id)));
-  return columns.filter(column=>column.always||active.has(column.id));
+  const platformDefault=state.analysisColumnCatalog[type]?.columns||defaults[type]||ordered.map(column=>column.id);
+  const active=new Set(Array.isArray(saved)?saved:platformDefault);
+  return ordered.filter(column=>column.always||active.has(column.id));
 }
 
 function renderAnalysisRows(rows) {
   $("#analysis-count").textContent = `${rows.length} ativo${rows.length===1?"":"s"}`;
   if (!rows.length) { $("#analysis-table").innerHTML='<div class="empty-state"><strong>Nenhum ativo passou pelos filtros</strong>Abra os ajustes para ampliar ou alterar os critérios.</div>'; return; }
   const type = analysisType();
-  const allColumns=analysisColumns(type), columns=visibleAnalysisColumns(type,allColumns);
+  const allColumns=orderedAnalysisColumns(type,analysisColumns(type)), columns=visibleAnalysisColumns(type,allColumns);
   const active=new Set(columns.map(column=>column.id));
-  const picker=`<details class="column-picker"><summary>Colunas visíveis</summary><div>${allColumns.filter(column=>!column.always).map(column=>`<label class="check"><input type="checkbox" data-column-id="${column.id}" ${active.has(column.id)?"checked":""}> ${esc(column.label)}</label>`).join("")}</div></details>`;
+  const picker=`<details class="column-picker"><summary>Colunas visíveis</summary><div>${allColumns.filter(column=>!column.always).map(column=>`<label class="check"><input type="checkbox" data-column-id="${column.id}" ${active.has(column.id)?"checked":""}> ${esc(column.label)}</label>`).join("")}<button type="button" class="button ghost compact wide-action" data-reset-personal-columns="${esc(type)}">Usar padrão da plataforma</button></div></details>`;
   $("#analysis-table").innerHTML = `<div class="table-toolbar">${picker}<span>Clique em um ativo para abrir todos os dados.</span></div><div class="table-scroll"><table><thead><tr>${columns.map(c=>`<th>${esc(c.label)}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr data-ticker="${esc(r.ticker)}">${columns.map(c=>`<td>${c.render(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
@@ -1234,6 +1262,74 @@ function allocationDonut(items) {
   return `<div class="allocation-visual"><div class="allocation-donut" style="background:conic-gradient(${stops.join(",")})"><span>${money(rows.reduce((sum,item)=>sum+Number(item.value||0),0))}</span></div><div class="allocation-legend">${rows.map((item,index)=>`<div><i class="legend-dot" style="background:${colors[index%colors.length]}"></i><span>${esc(item.label)}</span><strong>${pct(item.weight_pct)}</strong></div>`).join("")}</div></div>`;
 }
 
+const allocationTypeColors={
+  stock:"#0b5d4b",fii:"#c79b3b",etf:"#4f7cac",bdr:"#8b5fbf",future:"#e07a5f",
+  fixed_income:"#2a9d8f",crypto:"#5b6ee1",funds:"#7a8b3a",pension:"#b56576",cash:"#6c757d",other:"#9a8f82",
+};
+const allocationFallbackColors=["#0b5d4b","#c79b3b","#4f7cac","#8b5fbf","#e07a5f","#2a9d8f","#5b6ee1","#7a8b3a","#b56576","#6c757d"];
+
+function allocationPolar(cx,cy,radius,angle){return [cx+radius*Math.cos(angle),cy+radius*Math.sin(angle)];}
+
+function allocationArcPath(start,end,innerRadius,outerRadius,cx=160,cy=160){
+  const span=Math.max(0,end-start),full=span>=Math.PI*2-.000001;
+  if(full){
+    return `M ${cx} ${cy-outerRadius} A ${outerRadius} ${outerRadius} 0 1 1 ${cx} ${cy+outerRadius} A ${outerRadius} ${outerRadius} 0 1 1 ${cx} ${cy-outerRadius} L ${cx} ${cy-innerRadius} A ${innerRadius} ${innerRadius} 0 1 0 ${cx} ${cy+innerRadius} A ${innerRadius} ${innerRadius} 0 1 0 ${cx} ${cy-innerRadius} Z`;
+  }
+  const [outerStartX,outerStartY]=allocationPolar(cx,cy,outerRadius,start),[outerEndX,outerEndY]=allocationPolar(cx,cy,outerRadius,end);
+  const [innerEndX,innerEndY]=allocationPolar(cx,cy,innerRadius,end),[innerStartX,innerStartY]=allocationPolar(cx,cy,innerRadius,start);
+  const large=span>Math.PI?1:0;
+  return `M ${outerStartX.toFixed(3)} ${outerStartY.toFixed(3)} A ${outerRadius} ${outerRadius} 0 ${large} 1 ${outerEndX.toFixed(3)} ${outerEndY.toFixed(3)} L ${innerEndX.toFixed(3)} ${innerEndY.toFixed(3)} A ${innerRadius} ${innerRadius} 0 ${large} 0 ${innerStartX.toFixed(3)} ${innerStartY.toFixed(3)} Z`;
+}
+
+function allocationChildColor(typeIndex,childIndex){
+  const hues=[160,42,210,274,18,174,231,78,342,205,28],hue=hues[typeIndex%hues.length];
+  const lightness=[42,53,63,72][childIndex%4];
+  return `hsl(${hue} 48% ${lightness}%)`;
+}
+
+function allocationDetailPanel(hierarchy){
+  const selected=(hierarchy?.types||[]).find(item=>item.id===state.portfolioAllocationType);
+  if(!selected)return "";
+  const rows=(selected.breakdown||[]).filter(item=>Number(item.value)>0);
+  let cursor=-Math.PI/2;
+  const paths=rows.map((item,index)=>{
+    const span=Math.PI*2*(Number(item.within_type_weight_pct||0)/100),start=cursor,end=cursor+span;cursor=end;
+    const color=allocationChildColor((hierarchy.types||[]).indexOf(selected),index);
+    return `<path d="${allocationArcPath(start,end,72,126)}" fill="${color}" tabindex="0"><title>${esc(item.label)}: ${money(item.value)} • ${pct(item.within_type_weight_pct)} de ${esc(selected.label)}</title></path>`;
+  }).join("");
+  const legend=rows.map((item,index)=>`<div><i class="legend-dot" style="background:${allocationChildColor((hierarchy.types||[]).indexOf(selected),index)}"></i><span>${esc(item.label)}${item.sector&&item.segment?`<small>${esc(item.sector)} • ${esc(item.segment)}</small>`:""}</span><strong>${pct(item.within_type_weight_pct)}</strong></div>`).join("");
+  return `<section class="data-card allocation-detail-card" aria-live="polite"><div class="card-heading"><div><p class="eyebrow">Detalhamento de ${esc(selected.label)}</p><h3>Setores e segmentos</h3><small>${pct(selected.weight_pct)} do patrimônio conhecido</small></div><button type="button" class="icon-button" data-allocation-close aria-label="Fechar detalhamento">×</button></div><div class="allocation-visual allocation-detail-visual"><div class="allocation-svg-wrap"><svg class="allocation-svg allocation-detail-svg" viewBox="0 0 320 320" role="img" aria-label="Distribuição por setor ou segmento de ${esc(selected.label)}">${paths}<circle cx="160" cy="160" r="66" class="allocation-center"/><text x="160" y="155" class="allocation-center-label">${esc(selected.label)}</text><text x="160" y="176" class="allocation-center-value">${esc(money(selected.value))}</text></svg></div><div class="allocation-legend">${legend}</div></div></section>`;
+}
+
+function hierarchicalAllocationDonut(hierarchy,fallbackItems=[]){
+  const types=(hierarchy?.types||[]).filter(item=>Number(item.value)>0);
+  if(!types.length)return allocationDonut(fallbackItems);
+  let cursor=-Math.PI/2;
+  const inner=[],outer=[],legend=[];
+  types.forEach((type,typeIndex)=>{
+    const typeSpan=Math.PI*2*(Number(type.weight_pct||0)/100),typeStart=cursor,typeEnd=cursor+typeSpan;
+    const color=allocationTypeColors[type.id]||allocationFallbackColors[typeIndex%allocationFallbackColors.length];
+    inner.push(`<path class="allocation-type-slice ${state.portfolioAllocationType===type.id?"selected":""}" d="${allocationArcPath(typeStart,typeEnd,55,91)}" fill="${color}" role="button" tabindex="0" data-allocation-type="${esc(type.id)}"><title>${esc(type.label)}: ${money(type.value)} • ${pct(type.weight_pct)}</title></path>`);
+    let childCursor=typeStart;
+    (type.breakdown||[]).filter(item=>Number(item.value)>0).forEach((item,childIndex)=>{
+      const span=Math.PI*2*(Number(item.global_weight_pct||0)/100),start=childCursor,end=Math.min(typeEnd,childCursor+span);childCursor=end;
+      outer.push(`<path class="allocation-breakdown-slice" d="${allocationArcPath(start,end,98,142)}" fill="${allocationChildColor(typeIndex,childIndex)}" tabindex="0"><title>${esc(type.label)} › ${esc(item.label)}: ${money(item.value)} • ${pct(item.global_weight_pct)} do total • ${pct(item.within_type_weight_pct)} de ${esc(type.label)}</title></path>`);
+    });
+    legend.push(`<button type="button" class="allocation-legend-row ${state.portfolioAllocationType===type.id?"selected":""}" data-allocation-type="${esc(type.id)}"><i class="legend-dot" style="background:${color}"></i><span>${esc(type.label)}<small>Clique para detalhar setores e segmentos</small></span><strong>${pct(type.weight_pct)}</strong></button>`);
+    cursor=typeEnd;
+  });
+  const partial=hierarchy.allocation_complete===false?`<div class="notice warning allocation-partial"><strong>Composição parcial.</strong> ${number(hierarchy.missing_price_positions||0,0)} posição(ões) sem cotação não foi(foram) tratada(s) como zero.</div>`:"";
+  return `<div class="allocation-hierarchy">${partial}<div class="allocation-visual"><div class="allocation-svg-wrap"><svg class="allocation-svg" viewBox="0 0 320 320" role="img" aria-label="Alocação da carteira: tipos no anel interno e setores ou segmentos no anel externo">${outer.join("")}${inner.join("")}<circle cx="160" cy="160" r="49" class="allocation-center"/><text x="160" y="154" class="allocation-center-label">Patrimônio conhecido</text><text x="160" y="176" class="allocation-center-value">${esc(money(hierarchy.known_total_value))}</text></svg><small class="allocation-ring-help">Interno: tipo • externo: setor ou segmento</small></div><div class="allocation-legend">${legend.join("")}</div></div><div id="allocation-detail-panel">${allocationDetailPanel(hierarchy)}</div></div>`;
+}
+
+function showPortfolioAllocationType(type){
+  state.portfolioAllocationType=type||null;
+  const panel=$("#allocation-detail-panel");
+  if(panel)panel.innerHTML=allocationDetailPanel(state.portfolioAllocationHierarchy);
+  $$("[data-allocation-type]").forEach(node=>node.classList.toggle("selected",node.dataset.allocationType===state.portfolioAllocationType));
+  panel?.scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+
 function newsCacheStatus(cache) {
   const labels={not_requested:"Aguardando primeira atualização",pending:"Na fila",queued:"Na fila",running:"Atualizando",completed:"Atualizado",failed:"Falha na última tentativa"};
   return labels[cache?.status]||cache?.status||"Aguardando";
@@ -1306,8 +1402,10 @@ async function renderPortfolioTab() {
     } else if (tab==="allocation") {
       const [data,catalog]=await Promise.all([api(`/portfolios/${state.portfolioId}`,{cacheTtlMs:30000}),api(`/portfolios/${state.portfolioId}/custom-investments/catalog`,{cacheTtlMs:300000})]);
       const rows=data.custom_investments||[],summary=data.consolidated_summary||{},today=new Date().toISOString().slice(0,10);
+      state.portfolioAllocationHierarchy=data.consolidated_allocation_hierarchy||null;
+      if(state.portfolioAllocationType&&!state.portfolioAllocationHierarchy?.types?.some(item=>item.id===state.portfolioAllocationType))state.portfolioAllocationType=null;
       const form=state.session.access.can_write_portfolio?`<details class="data-card" ${rows.length?"":"open"}><summary><strong>Adicionar investimento sem ticker</strong></summary><form id="custom-investment-form" class="filter-grid" style="margin-top:16px"><div class="field"><label>Tipo</label><select name="category" required>${catalog.map(item=>`<option value="${esc(item.id)}">${esc(item.label)}</option>`).join("")}</select></div><div class="field"><label>Nome do investimento</label><input name="name" required maxlength="200" placeholder="Ex.: CDB Banco X 110% CDI"></div><div class="field"><label>Instituição</label><input name="institution" maxlength="160" placeholder="Banco ou corretora"></div><div class="field"><label>Setor</label><input name="sector" maxlength="120" placeholder="Ex.: Renda fixa"></div><div class="field"><label>Segmento</label><input name="segment" maxlength="120" placeholder="Ex.: Bancário pós-fixado"></div><div class="field"><label>Data da aplicação</label><input type="date" name="application_date" required value="${today}"></div><div class="field"><label>Vencimento (opcional)</label><input type="date" name="maturity_date"></div><div class="field"><label>Valor aplicado</label><input type="number" name="invested_value" min="0.01" step="0.01" required></div><div class="field"><label>Valor atual</label><input type="number" name="current_value" min="0" step="0.01" required></div><div class="field"><label>Data do valor atual</label><input type="date" name="current_value_as_of" required value="${today}"></div><div class="field"><label>Indexador / referência</label><input name="benchmark" maxlength="80" placeholder="Ex.: 110% do CDI"></div><div class="field"><label>Liquidez</label><input name="liquidity" maxlength="120" placeholder="Ex.: no vencimento ou D+1"></div><div class="field wide-action"><label>Observações</label><textarea name="notes" rows="2"></textarea></div><button class="button primary wide-action" type="submit">Salvar investimento</button></form></details>`:"";
-      root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Patrimônio conhecido",money(summary.known_total_value))}${metricCard("Investimentos sem ticker",money(data.custom_summary?.current_value||0),`${rows.length} cadastro(s)`)}${metricCard("Valor aplicado",money(data.custom_summary?.invested_value||0))}${metricCard("Variação",pct(data.custom_summary?.variation_pct,true))}</div>${sectionCard("Composição consolidada",allocationDonut(data.consolidated_allocation||[]),summary.allocation_complete?"Valores de mercado e valores informados manualmente":"Composição parcial: existe posição sem cotação")}${sectionCard("Renda fixa, fundos e outros",marketTable(rows,[{label:"Investimento",render:r=>`<strong>${esc(r.name)}</strong><br><small>${esc(r.category_label)}</small>`},{label:"Setor / segmento",render:r=>`${esc(r.sector||"—")}<br><small>${esc(r.segment||"—")}</small>`},{label:"Instituição",render:r=>esc(r.institution||"—")},{label:"Aplicação",render:r=>dateOnly(r.application_date)},{label:"Vencimento",render:r=>dateOnly(r.maturity_date)},{label:"Aplicado",render:r=>money(r.invested_value)},{label:"Atual",render:r=>`${money(r.current_value)}<br><small>${dateOnly(r.current_value_as_of)}</small>`},{label:"Variação",render:r=>pct(r.variation_pct,true),className:r=>variationClass(r.variation_pct)},{label:"",render:r=>state.session.access.can_write_portfolio?`<span class="row-actions"><button class="button ghost compact" data-update-custom-investment="${esc(r.id)}" data-current-value="${esc(r.current_value)}">Atualizar valor</button><button class="button ghost compact danger" data-delete-custom-investment="${esc(r.id)}">Arquivar</button></span>`:""}]),"O histórico preserva cada valor informado por data")}${form}`;
+      root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Patrimônio conhecido",money(summary.known_total_value))}${metricCard("Investimentos sem ticker",money(data.custom_summary?.current_value||0),`${rows.length} cadastro(s)`)}${metricCard("Valor aplicado",money(data.custom_summary?.invested_value||0))}${metricCard("Variação",pct(data.custom_summary?.variation_pct,true))}</div>${sectionCard("Composição consolidada",hierarchicalAllocationDonut(state.portfolioAllocationHierarchy,data.consolidated_allocation||[]),summary.allocation_complete?"Valores de mercado e valores informados manualmente":"Composição parcial: existe posição sem cotação")}${sectionCard("Renda fixa, fundos e outros",marketTable(rows,[{label:"Investimento",render:r=>`<strong>${esc(r.name)}</strong><br><small>${esc(r.category_label)}</small>`},{label:"Setor / segmento",render:r=>`${esc(r.sector||"—")}<br><small>${esc(r.segment||"—")}</small>`},{label:"Instituição",render:r=>esc(r.institution||"—")},{label:"Aplicação",render:r=>dateOnly(r.application_date)},{label:"Vencimento",render:r=>dateOnly(r.maturity_date)},{label:"Aplicado",render:r=>money(r.invested_value)},{label:"Atual",render:r=>`${money(r.current_value)}<br><small>${dateOnly(r.current_value_as_of)}</small>`},{label:"Variação",render:r=>pct(r.variation_pct,true),className:r=>variationClass(r.variation_pct)},{label:"",render:r=>state.session.access.can_write_portfolio?`<span class="row-actions"><button class="button ghost compact" data-update-custom-investment="${esc(r.id)}" data-current-value="${esc(r.current_value)}">Atualizar valor</button><button class="button ghost compact danger" data-delete-custom-investment="${esc(r.id)}">Arquivar</button></span>`:""}]),"O histórico preserva cada valor informado por data")}${form}`;
     } else if (tab==="dividends") {
       await renderPortfolioDividends(root);
     } else if (tab==="news") {
@@ -1978,6 +2076,109 @@ async function loadAdminQuality(root){
   root.innerHTML=`<div class="admin-monitor-row operations-summary ${esc(payload.status)}"><span><strong>Qualidade dos dados: ${payload.status==="ok"?"normal":payload.status==="critical"?"crítica":"atenção"}</strong><small>Leitura em ${dateTime(payload.generated_at)} • somente metadados persistidos, sem bloquear o site</small></span><button class="button secondary" data-reload-admin-quality>Atualizar diagnóstico</button></div><div class="metric-grid">${metricCard("Fontes monitoradas",number(summary.total||0,0),"Séries, snapshots e cobertura por ativo")}${metricCard("Atualizadas",number(summary.updated||0,0),"Dentro do prazo esperado")}${metricCard("Parciais",number(summary.partial||0,0),"Cobertura abaixo de 80%")}${metricCard("Vencidas ou indisponíveis",number((summary.stale||0)+(summary.unavailable_or_failed||0),0),"Exigem atualização ou revisão")}</div>${sectionCard("Filtro ALB — controle diário",albBody,"A faixa esperada é de 5 a 20 ativos; um alerta operacional é aberto fora dela")}${sectionCard("Cobertura, frescor e proveniência",sourceRows,"Cada linha informa a fonte, a última atualização e eventuais falhas")}`;
 }
 
+const adminAnalysisAssetTypes=[
+  {id:"stock",label:"Ações"},{id:"fii",label:"FIIs"},{id:"etf",label:"ETFs"},{id:"bdr",label:"BDRs"},{id:"future",label:"Futuros"},
+];
+const adminAnalysisPresetLabels={default:"Padrão",cnpi:"FDI",alb:"ALB"};
+const adminFundamentalFields={
+  stock:["price","pe","pbv","dividend_yield_pct","ev_ebitda","ebit_margin_pct","net_margin_pct","current_ratio","roe_pct","roic_pct","gross_debt_to_equity","net_debt_to_ebitda","revenue_cagr_5y_pct","earnings_cagr_5y_pct","daily_liquidity"],
+  fii:["price","pbv","dividend_yield_pct","ffo_yield_pct","cap_rate_pct","vacancy_pct","financial_vacancy_pct","ltv_pct","daily_liquidity"],
+};
+
+function adminAnalysisLabel(group,key){
+  const rows=group==="score"?filterDefinitions.scores:filterDefinitions.fundamental;
+  return rows.find(([id])=>id===key)?.[1]||key.replaceAll("_"," ");
+}
+
+function adminRangeEditor(group,key,configuration){
+  const source=group==="score"?configuration.score_filters:configuration.fundamental_filters,range=source?.[key]||{};
+  return `<div class="field admin-analysis-range" data-admin-analysis-range="${group}" data-admin-analysis-field="${esc(key)}"><label>${esc(adminAnalysisLabel(group,key))}</label><div class="range-pair"><input type="number" step="any" data-bound="min" value="${esc(range.min??"")}" placeholder="Mín."><input type="number" step="any" data-bound="max" value="${esc(range.max??"")}" placeholder="Máx."></div></div>`;
+}
+
+function adminConfigurationSummary(configuration={}){
+  const items=[];
+  for(const [field,range] of Object.entries(configuration.fundamental_filters||{}))items.push(`${adminAnalysisLabel("fundamental",field)}: ${nullable(range.min)?"—":`mín. ${number(range.min)}`} ${nullable(range.max)?"":`máx. ${number(range.max)}`}`.trim());
+  for(const [field,range] of Object.entries(configuration.score_filters||{}))items.push(`${adminAnalysisLabel("score",field)}: ${nullable(range.min)?"—":`mín. ${number(range.min)}`} ${nullable(range.max)?"":`máx. ${number(range.max)}`}`.trim());
+  const technical=configuration.technical_filters||{};
+  for(const [key,label] of [["daily_trend","Tendência diária"],["weekly_trend","Tendência semanal"],["monthly_trend","Tendência mensal"]])if(technical[key]&&technical[key]!=="any")items.push(`${label}: ${technical[key]==="up"?"alta":"baixa"}`);
+  if(technical.rsi14)items.push(`RSI 14: ${nullable(technical.rsi14.min)?"—":`mín. ${number(technical.rsi14.min)}`} ${nullable(technical.rsi14.max)?"":`máx. ${number(technical.rsi14.max)}`}`.trim());
+  const valuationLabels={below_graham:"Número de Graham",below_barsi_6pct:"Preço-teto por dividendos",below_relative_value:"Valuation relativo",below_economic_value:"Valor econômico"};
+  Object.entries(valuationLabels).forEach(([key,label])=>{if(configuration.valuation_flags?.[key])items.push(label);});
+  if(configuration.ibov_membership&&configuration.ibov_membership!=="any")items.push(configuration.ibov_membership==="inside"?"Somente IBOV":"Fora do IBOV");
+  return items.length?`<div class="tag-list admin-analysis-summary-tags">${items.map(item=>`<span>${esc(item)}</span>`).join("")}</div>`:'<span class="muted">Sem critérios adicionais; utiliza o universo integral da classe.</span>';
+}
+
+function adminPresetEditor(row){
+  const configuration=JSON.parse(JSON.stringify(row.owner_configuration||row.factory_configuration||{})),technical=configuration.technical_filters||{},valuation=configuration.valuation_flags||{};
+  const fundamental=(adminFundamentalFields[row.asset_type]||[]).map(key=>adminRangeEditor("fundamental",key,configuration)).join("");
+  const scores=["quality_score","value_score","growth_score","technical_score","risk_score","liquidity_score","alb_score","data_quality_score"].map(key=>adminRangeEditor("score",key,configuration)).join("");
+  const rsi=technical.rsi14||{},economic=configuration.valuation_assumptions?.economic_value||{};
+  const scenarios=economic.scenarios||{},scenario=(name,field,fallback)=>scenarios[name]?.[field]??fallback;
+  const stockUniverse=row.asset_type==="stock"?`<details class="filter-subgroup"><summary>Universo de ações</summary><div class="filter-grid compact-grid"><div class="field"><label>Participação no IBOV</label><select data-admin-analysis-value="ibov_membership"><option value="any" ${configuration.ibov_membership==="any"||!configuration.ibov_membership?"selected":""}>Qualquer</option><option value="inside" ${configuration.ibov_membership==="inside"?"selected":""}>Somente no IBOV</option><option value="outside" ${configuration.ibov_membership==="outside"?"selected":""}>Fora do IBOV</option></select></div><div class="field"><label>Porte</label><select data-admin-analysis-value="company_sizes" multiple size="3"><option value="large" ${(configuration.company_sizes||[]).includes("large")?"selected":""}>Blue Chip / Large Cap</option><option value="mid" ${(configuration.company_sizes||[]).includes("mid")?"selected":""}>Mid Cap</option><option value="small" ${(configuration.company_sizes||[]).includes("small")?"selected":""}>Small Cap</option></select></div></div></details>`:"";
+  const economicFields=row.asset_type==="stock"?`<details class="filter-subgroup"><summary>Cenários de valor econômico</summary><label class="check"><input type="checkbox" data-admin-analysis-economic="use_ttm_dividend" ${economic.use_ttm_dividend?"checked":""}> Confirmar proventos dos últimos 12 meses como D0</label><div class="filter-grid compact-grid">${[["conservative","Conservador",16,1],["base","Base",13,3],["optimistic","Otimista",11,4]].map(([key,label,ret,growth])=>`<div class="field"><label>${label}: retorno (%)</label><input type="number" step="0.1" data-admin-analysis-economic="${key}.required_return_pct" value="${esc(scenario(key,"required_return_pct",ret))}"></div><div class="field"><label>${label}: crescimento (%)</label><input type="number" step="0.1" data-admin-analysis-economic="${key}.growth_pct" value="${esc(scenario(key,"growth_pct",growth))}"></div>`).join("")}<div class="field"><label>Margem de segurança (%)</label><input type="number" min="0" max="99" step="0.1" data-admin-analysis-economic="margin_of_safety_pct" value="${esc(economic.margin_of_safety_pct??20)}"></div></div></details>`:"";
+  return `<form class="access-level-card admin-analysis-preset" data-admin-preset-form data-asset-type="${esc(row.asset_type)}" data-preset-id="${esc(row.preset_id)}" data-revision="${Number(row.revision||0)}"><div class="admin-analysis-preset-heading"><span><strong>${esc(adminAnalysisPresetLabels[row.preset_id]||row.preset_id)}</strong><small>${row.active_variant==="owner"?"Alternativa administrativa ativa":"Padrão original ativo"} • revisão ${number(row.revision||0,0)}</small></span><span class="pill ${row.active_variant==="owner"?"":"muted"}">${row.active_variant==="owner"?"Alternativa":"Original"}</span></div><details class="filter-subgroup"><summary>Padrão original preservado</summary><div class="notice info">Esta referência é imutável e sempre poderá ser restaurada.</div>${adminConfigurationSummary(row.factory_configuration)}</details><div class="admin-analysis-owner-toggle"><label class="check"><input type="checkbox" name="owner_enabled" ${row.owner_enabled?"checked":""}> Ativar esta configuração alternativa para os usuários autorizados</label><small>Desmarcar preserva a alternativa, mas volta a usar o padrão original.</small></div>${fundamental?`<details class="filter-subgroup" open><summary>Indicadores fundamentalistas</summary><div class="filter-grid">${fundamental}</div></details>`:""}${row.asset_type==="stock"||row.asset_type==="fii"?`<details class="filter-subgroup"><summary>Notas e qualidade</summary><div class="filter-grid">${scores}</div></details>`:""}<details class="filter-subgroup" open><summary>Indicadores técnicos</summary><div class="filter-grid"><div class="field"><label>RSI 14</label><div class="range-pair"><input type="number" step="any" data-admin-rsi="min" value="${esc(rsi.min??"")}" placeholder="Mín."><input type="number" step="any" data-admin-rsi="max" value="${esc(rsi.max??"")}" placeholder="Máx."></div></div><div class="field"><label>Média da tendência</label><select data-admin-analysis-value="trend_period"><option value="20" ${Number(configuration.trend_period)===20?"selected":""}>20 períodos</option><option value="21" ${Number(configuration.trend_period)!==20?"selected":""}>21 períodos</option></select></div>${[["daily_trend","Diária"],["weekly_trend","Semanal"],["monthly_trend","Mensal"]].map(([key,label])=>`<div class="field"><label>Tendência ${label.toLowerCase()}</label><select data-admin-technical="${key}"><option value="any" ${!technical[key]||technical[key]==="any"?"selected":""}>Qualquer</option><option value="up" ${technical[key]==="up"?"selected":""}>Alta</option><option value="down" ${technical[key]==="down"?"selected":""}>Baixa</option></select></div>`).join("")}<label class="check"><input type="checkbox" data-admin-technical="volume_daily_above_ma9" ${technical.volume_daily_above_ma9?"checked":""}> Volume diário acima da média 9</label><label class="check"><input type="checkbox" data-admin-technical="volume_monthly_above_ma9" ${technical.volume_monthly_above_ma9?"checked":""}> Volume mensal acima da média 9</label></div></details><details class="filter-subgroup"><summary>Metodologias de valor</summary><div class="valuation-choice-grid">${[["below_graham","Número de Graham"],["below_barsi_6pct","Preço-teto por dividendos"],["below_relative_value","Valuation relativo"],["below_economic_value","Valor econômico"]].map(([key,label])=>`<label class="check"><input type="checkbox" data-admin-valuation="${key}" ${valuation[key]?"checked":""}> ${label}</label>`).join("")}</div><div class="filter-grid compact-grid"><div class="field"><label>Combinação</label><select data-admin-valuation="logic"><option value="all" ${(valuation.logic||"all")==="all"?"selected":""}>Todos</option><option value="any" ${valuation.logic==="any"?"selected":""}>Ao menos um</option></select></div><div class="field"><label>Potencial mínimo (%)</label><input type="number" min="0" step="0.1" data-admin-valuation="minimum_upside_pct" value="${esc(valuation.minimum_upside_pct??"")}"></div></div></details>${economicFields}${stockUniverse}<div class="admin-analysis-actions"><button type="button" class="button ghost danger" data-reset-admin-preset="${esc(row.preset_id)}" data-asset-type="${esc(row.asset_type)}">Restaurar padrão original</button><button class="button primary" type="submit">Salvar configuração alternativa</button></div></form>`;
+}
+
+function adminColumnsEditor(row){
+  const available=row.available_columns||[],byId=new Map(available.map(item=>[item.id,item])),preferred=row.owner_columns||row.factory_columns||[];
+  const ordered=[];preferred.forEach(id=>{if(byId.has(id)){ordered.push(byId.get(id));byId.delete(id);}});available.forEach(item=>{if(byId.has(item.id)){ordered.push(item);byId.delete(item.id);}});
+  const active=new Set(preferred);
+  return `<form class="access-level-card admin-column-settings" data-admin-columns-form data-asset-type="${esc(row.asset_type)}" data-revision="${Number(row.revision||0)}"><div class="admin-analysis-preset-heading"><span><strong>Colunas padrão de ${esc(adminAnalysisAssetTypes.find(item=>item.id===row.asset_type)?.label||row.asset_type)}</strong><small>${row.active_variant==="owner"?"Ordem administrativa ativa":"Ordem original ativa"}</small></span><label class="check"><input type="checkbox" name="owner_enabled" ${row.owner_enabled?"checked":""}> Ativar alternativa</label></div><div class="notice info">Marque as colunas visíveis por padrão e use as setas para definir a ordem. O Ativo permanece obrigatório. Cada usuário ainda pode personalizar sua própria tabela.</div><div class="admin-column-order">${ordered.map((item,index)=>`<div class="admin-column-row" data-admin-column-id="${esc(item.id)}"><label class="check"><input type="checkbox" ${active.has(item.id)||item.always?"checked":""} ${item.always?"disabled":""}> ${esc(item.label)}</label><span><button type="button" class="icon-button" data-move-admin-column="up" aria-label="Mover ${esc(item.label)} para cima" ${index===0?"disabled":""}>↑</button><button type="button" class="icon-button" data-move-admin-column="down" aria-label="Mover ${esc(item.label)} para baixo" ${index===ordered.length-1?"disabled":""}>↓</button></span></div>`).join("")}</div><div class="admin-analysis-actions"><button type="button" class="button ghost danger" data-reset-admin-columns="${esc(row.asset_type)}">Restaurar colunas originais</button><button class="button primary" type="submit">Salvar colunas e ordem</button></div></form>`;
+}
+
+function renderAdminAnalysisSettings(root){
+  const payload=state.adminAnalysisSettings||{},type=state.adminAnalysisType;
+  const presets=(payload.presets||[]).filter(item=>item.asset_type===type),columns=(payload.columns||[]).find(item=>item.asset_type===type);
+  root.innerHTML=`<div class="notice info"><strong>Configurações seguras:</strong> os padrões homologados continuam imutáveis. A alternativa só passa a valer quando é salva e ativada; restaurar nunca apaga filtros pessoais nem históricos.</div><div class="admin-analysis-type-picker"><label for="admin-analysis-type"><strong>Classe de ativo</strong></label><select id="admin-analysis-type">${adminAnalysisAssetTypes.map(item=>`<option value="${item.id}" ${item.id===type?"selected":""}>${item.label}</option>`).join("")}</select></div>${sectionCard("Filtros Padrão, FDI e ALB",`<div class="admin-analysis-preset-list">${presets.map(adminPresetEditor).join("")}</div>`,`Padrão de fábrica ${esc(payload.factory_version||"V1.23.0 R7")}`)}${columns?sectionCard("Colunas padrão e ordem",adminColumnsEditor(columns),"A preferência individual continua prevalecendo para quem já personalizou a tabela"):""}`;
+}
+
+async function loadAdminAnalysisSettings(root){
+  state.adminAnalysisSettings=await api("/admin/analysis-settings",{bypassCache:true});
+  renderAdminAnalysisSettings(root);
+}
+
+function adminSetNested(target,path,value){const parts=path.split(".");let cursor=target;for(const part of parts.slice(0,-1)){cursor[part]??={};cursor=cursor[part];}cursor[parts.at(-1)]=value;}
+
+function adminPresetConfigurationFromForm(form){
+  const row=state.adminAnalysisSettings.presets.find(item=>item.asset_type===form.dataset.assetType&&item.preset_id===form.dataset.presetId),configuration=JSON.parse(JSON.stringify(row.owner_configuration||row.factory_configuration||{}));
+  configuration.asset_type=form.dataset.assetType;configuration.fundamental_filters={};configuration.score_filters={};configuration.technical_filters={...(configuration.technical_filters||{})};configuration.valuation_flags={...(configuration.valuation_flags||{})};
+  form.querySelectorAll("[data-admin-analysis-range]").forEach(group=>{const min=group.querySelector('[data-bound="min"]').value,max=group.querySelector('[data-bound="max"]').value;if(min!==""||max!==""){const target=group.dataset.adminAnalysisRange==="score"?configuration.score_filters:configuration.fundamental_filters;target[group.dataset.adminAnalysisField]={min:min===""?null:Number(min),max:max===""?null:Number(max)};}});
+  const rsiMin=form.querySelector('[data-admin-rsi="min"]')?.value||"",rsiMax=form.querySelector('[data-admin-rsi="max"]')?.value||"";if(rsiMin!==""||rsiMax!=="")configuration.technical_filters.rsi14={min:rsiMin===""?null:Number(rsiMin),max:rsiMax===""?null:Number(rsiMax)};else delete configuration.technical_filters.rsi14;
+  form.querySelectorAll("[data-admin-technical]").forEach(input=>{configuration.technical_filters[input.dataset.adminTechnical]=input.type==="checkbox"?input.checked:input.value;});
+  form.querySelectorAll("[data-admin-valuation]").forEach(input=>{const key=input.dataset.adminValuation,value=input.type==="checkbox"?input.checked:input.value;configuration.valuation_flags[key]=key==="minimum_upside_pct"?(value===""?null:Number(value)):value;});
+  const trend=form.querySelector('[data-admin-analysis-value="trend_period"]');if(trend)configuration.trend_period=Number(trend.value);
+  const ibov=form.querySelector('[data-admin-analysis-value="ibov_membership"]');if(ibov)configuration.ibov_membership=ibov.value;
+  const sizes=form.querySelector('[data-admin-analysis-value="company_sizes"]');if(sizes)configuration.company_sizes=[...sizes.selectedOptions].map(option=>option.value);
+  const economicInputs=form.querySelectorAll("[data-admin-analysis-economic]");if(economicInputs.length){const economic={scenarios:{}};economicInputs.forEach(input=>{const path=input.dataset.adminAnalysisEconomic,value=input.type==="checkbox"?input.checked:Number(input.value);if(path.includes(".")){const [scenario,field]=path.split(".");economic.scenarios[scenario]??={};economic.scenarios[scenario][field]=value;}else economic[path]=value;});configuration.valuation_assumptions={...(configuration.valuation_assumptions||{}),economic_value:economic};}
+  configuration.include_technical_columns=true;configuration.limit=Number(configuration.limit||50);
+  return configuration;
+}
+
+async function saveAdminPreset(form){
+  const button=form.querySelector('button[type="submit"]');button.disabled=true;
+  try{const configuration=adminPresetConfigurationFromForm(form);validateAnalysisRequest(configuration);await api(`/admin/analysis-settings/presets/${encodeURIComponent(form.dataset.assetType)}/${encodeURIComponent(form.dataset.presetId)}`,{method:"PUT",body:JSON.stringify({configuration,owner_enabled:Boolean(form.elements.owner_enabled.checked),expected_revision:Number(form.dataset.revision||0)})});state.analysisCatalog={};state.analysisColumnCatalog={};state.analysisResultCache.clear();toast("Configuração alternativa salva.","success");await loadAdminAnalysisSettings($("#admin-tab-content"));}catch(error){toast(error.message,"error");button.disabled=false;}
+}
+
+async function resetAdminPreset(button){
+  if(!window.confirm(`Restaurar o preset ${adminAnalysisPresetLabels[button.dataset.resetAdminPreset]||button.dataset.resetAdminPreset} ao padrão original homologado?`))return;
+  const row=state.adminAnalysisSettings.presets.find(item=>item.asset_type===button.dataset.assetType&&item.preset_id===button.dataset.resetAdminPreset);
+  try{await api(`/admin/analysis-settings/presets/${encodeURIComponent(button.dataset.assetType)}/${encodeURIComponent(button.dataset.resetAdminPreset)}/reset`,{method:"POST",body:JSON.stringify({expected_revision:Number(row?.revision||0)})});state.analysisCatalog={};state.analysisResultCache.clear();toast("Padrão original restaurado.","success");await loadAdminAnalysisSettings($("#admin-tab-content"));}catch(error){toast(error.message,"error");}
+}
+
+function refreshAdminColumnMoveButtons(form){const rows=$$("[data-admin-column-id]",form);rows.forEach((row,index)=>{const buttons=$$("[data-move-admin-column]",row);buttons.forEach(button=>button.disabled=button.dataset.moveAdminColumn==="up"?index===0:index===rows.length-1);});}
+function moveAdminColumn(button){const row=button.closest("[data-admin-column-id]"),form=button.closest("[data-admin-columns-form]"),sibling=button.dataset.moveAdminColumn==="up"?row.previousElementSibling:row.nextElementSibling;if(!sibling)return;if(button.dataset.moveAdminColumn==="up")row.parentNode.insertBefore(row,sibling);else row.parentNode.insertBefore(sibling,row);refreshAdminColumnMoveButtons(form);}
+
+async function saveAdminColumns(form){
+  const row=state.adminAnalysisSettings.columns.find(item=>item.asset_type===form.dataset.assetType),columns=$$("[data-admin-column-id]",form).filter(item=>item.querySelector('input[type="checkbox"]').checked).map(item=>item.dataset.adminColumnId),button=form.querySelector('button[type="submit"]');button.disabled=true;
+  try{await api(`/admin/analysis-settings/columns/${encodeURIComponent(form.dataset.assetType)}`,{method:"PUT",body:JSON.stringify({columns,owner_enabled:Boolean(form.elements.owner_enabled.checked),expected_revision:Number(row?.revision||0)})});state.analysisColumnCatalog={};state.analysisCatalog={};toast("Colunas padrão e ordem salvas.","success");await loadAdminAnalysisSettings($("#admin-tab-content"));}catch(error){toast(error.message,"error");button.disabled=false;}
+}
+
+async function resetAdminColumns(assetType){
+  if(!window.confirm("Restaurar as colunas visíveis e a ordem originais desta classe?"))return;
+  const row=state.adminAnalysisSettings.columns.find(item=>item.asset_type===assetType);
+  try{await api(`/admin/analysis-settings/columns/${encodeURIComponent(assetType)}/reset`,{method:"POST",body:JSON.stringify({expected_revision:Number(row?.revision||0)})});state.analysisColumnCatalog={};state.analysisCatalog={};toast("Colunas originais restauradas.","success");await loadAdminAnalysisSettings($("#admin-tab-content"));}catch(error){toast(error.message,"error");}
+}
+
 function portalField(content,path,label,{textarea=false,wide=false,list=false}={}){
   const parts=path.split(".");let value=content;for(const part of parts)value=value?.[part];
   if(list)value=(value||[]).join("\n");
@@ -2068,6 +2269,7 @@ async function loadAdmin() {
     if(state.tabs.admin==="portal")await loadAdminPortal(root);
     else if(state.tabs.admin==="levels")await loadAccessLevels(root);
     else if(state.tabs.admin==="users")await loadAdminUsers(root);
+    else if(state.tabs.admin==="analysis-settings")await loadAdminAnalysisSettings(root);
     else if(state.tabs.admin==="data")await loadAdminUpdates(root);
     else if(state.tabs.admin==="quality")await loadAdminQuality(root);
     else if(state.tabs.admin==="jobs")await loadAdminJobs(root);
@@ -2258,12 +2460,18 @@ function bindEvents() {
     const usersPage=event.target.closest("[data-admin-users-page]");if(usersPage){changeAdminUsersPage(usersPage.dataset.adminUsersPage);return;}
     const runMonitor=event.target.closest("[data-run-alert-monitor]");if(runMonitor){runAlertMonitorNow(runMonitor);return;}
     const retryJob=event.target.closest("[data-retry-admin-job]");if(retryJob){retryAdminJob(retryJob);return;}
+    const resetAdminPresetButton=event.target.closest("[data-reset-admin-preset]");if(resetAdminPresetButton){resetAdminPreset(resetAdminPresetButton);return;}
+    const resetAdminColumnsButton=event.target.closest("[data-reset-admin-columns]");if(resetAdminColumnsButton){resetAdminColumns(resetAdminColumnsButton.dataset.resetAdminColumns);return;}
+    const moveAdminColumnButton=event.target.closest("[data-move-admin-column]");if(moveAdminColumnButton){moveAdminColumn(moveAdminColumnButton);return;}
     if(event.target.closest("[data-reload-admin-jobs]")){loadAdmin();return;}
     if(event.target.closest("[data-reload-admin-operations]")){loadAdmin();return;}
     if(event.target.closest("[data-reload-admin-quality]")){loadAdmin();return;}
     const deletePortal=event.target.closest("[data-portal-book-delete]");if(deletePortal){deletePortalBook(deletePortal.dataset.portalBookDelete);return;}
     const movePortal=event.target.closest("[data-portal-book-move]");if(movePortal){movePortalBook(movePortal.dataset.portalBookId,movePortal.dataset.portalBookMove);return;}
     const portfolioPricesButton=event.target.closest("[data-portfolio-prices-refresh]");if(portfolioPricesButton){refreshPortfolioPrices(portfolioPricesButton.dataset.portfolioPricesRefresh);return;}
+    const allocationType=event.target.closest("[data-allocation-type]");if(allocationType){showPortfolioAllocationType(allocationType.dataset.allocationType);return;}
+    if(event.target.closest("[data-allocation-close]")){showPortfolioAllocationType(null);return;}
+    const resetPersonalColumns=event.target.closest("[data-reset-personal-columns]");if(resetPersonalColumns){delete state.visibleColumns[resetPersonalColumns.dataset.resetPersonalColumns];persistVisibleColumns();renderAnalysisRows(state.analysisRows);toast("Colunas restauradas para o padrão da plataforma.","success");return;}
     const updateCustom=event.target.closest("[data-update-custom-investment]");if(updateCustom){updateCustomInvestmentValue(updateCustom);return;}
     const deleteCustom=event.target.closest("[data-delete-custom-investment]");if(deleteCustom){deleteCustomInvestment(deleteCustom);return;}
     const deletePosition=event.target.closest("[data-delete-position]");if(deletePosition){deletePortfolioPosition(deletePosition);return;}
@@ -2295,6 +2503,7 @@ function bindEvents() {
   $("#save-custom-filter").addEventListener("click",saveCustomFilter);
   $("#delete-custom-filter").addEventListener("click",deleteCustomFilter);
   document.addEventListener("change",event=>{
+    if(event.target.id==="admin-analysis-type"){state.adminAnalysisType=event.target.value;renderAdminAnalysisSettings($("#admin-tab-content"));return;}
     if(event.target.id==="alert-market-scope"){const input=$("#alert-symbol");if(input)input.value="";renderAlertSuggestions("");}
     if(event.target.id==="below-economic"&&event.target.checked&&analysisType()==="stock"){const details=$("#economic-assumptions");if(details){details.open=true;details.scrollIntoView({behavior:"smooth",block:"nearest"});}}
     if(event.target.matches('#finance-transaction-form [name="kind"]')){
@@ -2313,7 +2522,7 @@ function bindEvents() {
       const custom=event.target.value==="custom";
       event.target.form?.querySelectorAll("[data-backtest-custom-date]").forEach(field=>field.hidden=!custom);
     }
-    if(event.target.id==="portfolio-selector"){state.portfolioId=event.target.value;renderPortfolioTab();}
+    if(event.target.id==="portfolio-selector"){state.portfolioId=event.target.value;state.portfolioAllocationType=null;state.portfolioAllocationHierarchy=null;renderPortfolioTab();}
     if(event.target.id==="finance-month"){state.financeMonth=event.target.value;loadFinances();}
     if(event.target.id==="analysis-limit"){state.analysisLimit=Number(event.target.value);$("#analysis-limit-label").textContent=state.analysisLimit;}
     if(event.target.matches("[data-comparison-series]")){
@@ -2326,13 +2535,14 @@ function bindEvents() {
       renderComparison();
     }
     if(event.target.matches("[data-column-id]")){
-      const type=analysisType(),columns=analysisColumns(type).filter(column=>!column.always);
+      const type=analysisType(),columns=orderedAnalysisColumns(type,analysisColumns(type)).filter(column=>!column.always);
       state.visibleColumns[type]=columns.filter(column=>$(`[data-column-id="${column.id}"]`)?.checked).map(column=>column.id);
-      localStorage.setItem("fdi-visible-columns",JSON.stringify(state.visibleColumns));renderAnalysisRows(state.analysisRows);
+      persistVisibleColumns();renderAnalysisRows(state.analysisRows);
     }
   });
   document.addEventListener("input",event=>{if(event.target.id==="alert-symbol")renderAlertSuggestions(event.target.value);});
-  document.addEventListener("submit",event=>{if(event.target.id==="email-login-request-form"){event.preventDefault();requestEmailLogin(event.target);}if(event.target.id==="email-login-verify-form"){event.preventDefault();verifyEmailLogin(event.target);}if(event.target.id==="backtest-form"){event.preventDefault();runBacktest(event.target);}if(event.target.id==="portfolio-position-form"){event.preventDefault();savePortfolioPosition(event.target);}if(event.target.id==="custom-investment-form"){event.preventDefault();saveCustomInvestment(event.target);}if(event.target.id==="custom-value-form"){event.preventDefault();saveCustomInvestmentValue(event.target);}if(event.target.id==="finance-transaction-form"){event.preventDefault();saveFinanceTransaction(event.target);}if(event.target.id==="finance-budget-form"){event.preventDefault();saveFinanceBudget(event.target);}if(event.target.id==="price-alert-form"){event.preventDefault();savePriceAlert(event.target);}if(event.target.id==="alert-preference-form"){event.preventDefault();saveAlertPreferences(event.target);}if(event.target.id==="portal-page-form"){event.preventDefault();savePortalPage(event.target);}if(event.target.matches("[data-portal-book-form]")){event.preventDefault();savePortalBook(event.target);}if(event.target.matches("[data-access-level-form]")){event.preventDefault();saveAccessLevel(event.target);}if(event.target.id==="create-access-level-form"){event.preventDefault();createAccessLevel(event.target);}if(event.target.id==="admin-user-filter-form"){event.preventDefault();applyAdminUserFilters(event.target);}});
+  document.addEventListener("keydown",event=>{const slice=event.target.closest?.("[data-allocation-type]");if(slice&&(event.key==="Enter"||event.key===" ")){event.preventDefault();showPortfolioAllocationType(slice.dataset.allocationType);}});
+  document.addEventListener("submit",event=>{if(event.target.id==="email-login-request-form"){event.preventDefault();requestEmailLogin(event.target);}if(event.target.id==="email-login-verify-form"){event.preventDefault();verifyEmailLogin(event.target);}if(event.target.id==="backtest-form"){event.preventDefault();runBacktest(event.target);}if(event.target.id==="portfolio-position-form"){event.preventDefault();savePortfolioPosition(event.target);}if(event.target.id==="custom-investment-form"){event.preventDefault();saveCustomInvestment(event.target);}if(event.target.id==="custom-value-form"){event.preventDefault();saveCustomInvestmentValue(event.target);}if(event.target.id==="finance-transaction-form"){event.preventDefault();saveFinanceTransaction(event.target);}if(event.target.id==="finance-budget-form"){event.preventDefault();saveFinanceBudget(event.target);}if(event.target.id==="price-alert-form"){event.preventDefault();savePriceAlert(event.target);}if(event.target.id==="alert-preference-form"){event.preventDefault();saveAlertPreferences(event.target);}if(event.target.id==="portal-page-form"){event.preventDefault();savePortalPage(event.target);}if(event.target.matches("[data-portal-book-form]")){event.preventDefault();savePortalBook(event.target);}if(event.target.matches("[data-access-level-form]")){event.preventDefault();saveAccessLevel(event.target);}if(event.target.id==="create-access-level-form"){event.preventDefault();createAccessLevel(event.target);}if(event.target.id==="admin-user-filter-form"){event.preventDefault();applyAdminUserFilters(event.target);}if(event.target.matches("[data-admin-preset-form]")){event.preventDefault();saveAdminPreset(event.target);}if(event.target.matches("[data-admin-columns-form]")){event.preventDefault();saveAdminColumns(event.target);}});
 }
 
 async function initialize() {
