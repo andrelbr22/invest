@@ -97,5 +97,8 @@ def test_browser_makes_scenarios_help_and_fast_class_queries_discoverable():
     assert "valuation-mini-scenarios" in source
     assert "/screen/db/universe/${type}?limit=${state.analysisLimit}" in source
     assert "analysisResultCache" in source
-    assert "state.analysisEnsureSentAt>300000" in source
+    assert "analysisEnsureSentAt" in source
+    assert '["unavailable","stale","failed"].includes(updatePayload.updates?.[group]?.status)' in source
+    assert "/market-dashboard/groups/${encodeURIComponent(group)}/ensure" in source
+    assert "/market-dashboard/groups/${encodeURIComponent(group)}/refresh" in source
     assert 'node.disabled=!supportsTechnical||Boolean(permission&&!access[permission])' in source

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ...infrastructure.db.models import BackgroundJobORM
@@ -284,3 +285,36 @@ class BackgroundJobRepository:
             .order_by(BackgroundJobORM.created_at.desc())
             .limit(1)
         )
+
+    def latest_for_deduplications(
+        self, keys: Iterable[str],
+    ) -> dict[str, BackgroundJobORM]:
+        """Return the latest job for each deduplication key using one query."""
+        clean_keys = {
+            str(key or "").strip()
+            for key in keys
+            if str(key or "").strip()
+        }
+        if not clean_keys:
+            return {}
+        ranked = (
+            select(
+                BackgroundJobORM.id.label("job_id"),
+                func.row_number().over(
+                    partition_by=BackgroundJobORM.deduplication_key,
+                    order_by=(BackgroundJobORM.created_at.desc(), BackgroundJobORM.id.desc()),
+                ).label("position"),
+            )
+            .where(BackgroundJobORM.deduplication_key.in_(clean_keys))
+            .subquery()
+        )
+        rows = self.session.scalars(
+            select(BackgroundJobORM)
+            .join(ranked, ranked.c.job_id == BackgroundJobORM.id)
+            .where(ranked.c.position == 1)
+        )
+        return {
+            row.deduplication_key: row
+            for row in rows
+            if row.deduplication_key is not None
+        }

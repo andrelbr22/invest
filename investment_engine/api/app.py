@@ -129,6 +129,15 @@ _REQUEST_LOGGER = logging.getLogger("investment_engine.http")
 _EMAIL_LOGIN_REQUEST_GUARD = EmailLoginRequestGuard()
 _IN_PROCESS_WORKER_STOP = threading.Event()
 _IN_PROCESS_WORKER_THREAD: threading.Thread | None = None
+_QUIET_SUCCESS_PATHS = frozenset({"/health", "/ready"})
+_STATIC_ASSET_PATH_PREFIXES = ("/ui-assets/", "/portal-assets/", "/portal-media/")
+
+
+def _is_quiet_successful_request(path: str, status_code: int) -> bool:
+    """Suppress only repetitive successful access logs; metrics and errors remain."""
+    return status_code < 400 and (
+        path in _QUIET_SUCCESS_PATHS or path.startswith(_STATIC_ASSET_PATH_PREFIXES)
+    )
 
 
 @asynccontextmanager
@@ -271,16 +280,24 @@ async def security_headers(request, call_next):
         "/access", "/auth", "/insights", "/automation", "/market-dashboard", "/admin",
         "/investor-events",
     ))
-    immutable_book_cover = request.url.path.startswith(("/portal-assets/books/", "/portal-media/"))
+    immutable_asset = (
+        request.url.path.startswith(("/portal-assets/books/", "/portal-media/"))
+        or (
+            request.url.path.startswith(("/ui-assets/", "/portal-assets/"))
+            and bool(request.query_params.get("v"))
+        )
+    )
     response.headers["Cache-Control"] = (
         "no-store" if private_path
-        else "public, max-age=31536000, immutable" if immutable_book_cover
+        else "public, max-age=31536000, immutable" if immutable_asset
         else "no-cache"
     )
-    _REQUEST_LOGGER.info(
-        "http_request request_id=%s method=%s path=%s status=%s duration_ms=%s",
-        request_id, request.method, request.url.path, response.status_code, duration_ms,
-    )
+    if not _is_quiet_successful_request(request.url.path, response.status_code):
+        log_request = _REQUEST_LOGGER.warning if response.status_code >= 400 else _REQUEST_LOGGER.info
+        log_request(
+            "http_request request_id=%s method=%s path=%s status=%s duration_ms=%s",
+            request_id, request.method, request.url.path, response.status_code, duration_ms,
+        )
     return response
 
 
@@ -3677,14 +3694,17 @@ def refresh_portfolio_prices(portfolio_id: UUID, access=Depends(require_permissi
 
 def _market_dashboard_payload(db: Session) -> dict:
     snapshots = SharedSnapshotRepository(db)
-    updates = all_refresh_statuses(db)
+    snapshot_rows = snapshots.get_many(
+        spec.snapshot_key for spec in REFRESH_SCHEDULES.values()
+    )
+    updates = all_refresh_statuses(db, snapshots_by_key=snapshot_rows)
     grouped: dict = {}
     generated = []
     for key in (
         "selic_current", "selic_focus", "macro", "global_markets",
         "rates_calendar", "crypto", "fx",
     ):
-        row = snapshots.get(REFRESH_SCHEDULES[key].snapshot_key)
+        row = snapshot_rows.get(REFRESH_SCHEDULES[key].snapshot_key)
         if row is None or not row.payload_json:
             continue
         generated.append(row.as_of)

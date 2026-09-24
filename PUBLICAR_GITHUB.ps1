@@ -36,7 +36,7 @@ if ($nestedProjectIndicators) {
 }
 
 $forbiddenDirectories = Get-ChildItem -LiteralPath $sourceRoot -Directory -Recurse -Force |
-    Where-Object { $_.Name -in @(".git", ".venv", "__pycache__") }
+    Where-Object { $_.Name -in @(".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache") }
 if ($forbiddenDirectories) {
     Stop-Publication "a pasta contem arquivos internos que nao devem ser publicados. Extraia novamente o ZIP oficial."
 }
@@ -62,9 +62,18 @@ $sensitiveFiles = Get-ChildItem -LiteralPath $sourceRoot -File -Recurse -Force |
         $looksLikeEnvironmentConfig -or
         $looksLikeSecretConfig -or
         ($_.Extension -in @(".key", ".pem", ".pfx", ".p12", ".db", ".sqlite", ".sqlite3"))
-    }
+}
 if ($sensitiveFiles) {
     Stop-Publication "foi encontrado um arquivo de senha ou chave. Nenhum arquivo foi enviado."
+}
+
+$diagnosticFiles = Get-ChildItem -LiteralPath $sourceRoot -File -Recurse -Force |
+    Where-Object {
+        ($_.Extension -eq ".log") -or
+        ($_.Name.ToLowerInvariant() -like "*diagnose*")
+    }
+if ($diagnosticFiles) {
+    Stop-Publication "foi encontrado um arquivo de log ou diagnostico local. Remova-o antes de publicar."
 }
 
 $gitCommand = Get-Command git -ErrorAction SilentlyContinue
@@ -91,7 +100,10 @@ if ($stagingConfirmation.Trim().ToUpperInvariant() -ne "SIM") {
     Stop-Publication "pare o timer antigo na Oracle e execute a publicacao novamente."
 }
 
-& $gitPath credential-manager configure | Out-Null
+$credentialHelpers = @(& $gitPath config --get-all credential.helper 2>$null)
+if (-not $credentialHelpers) {
+    & $gitPath credential-manager configure | Out-Null
+}
 
 $publicationRoot = Join-Path ([IO.Path]::GetTempPath()) ("investment-engine-publicacao-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
 New-Item -ItemType Directory -Path $publicationRoot | Out-Null
@@ -109,9 +121,38 @@ try {
         Stop-Publication "a branch main nao foi encontrada."
     }
 
-    & $gitPath ls-remote --exit-code --heads origin $backupBranch | Out-Null
+    $remoteBackupLine = @(& $gitPath ls-remote --exit-code --heads origin $backupBranch 2>$null) |
+        Select-Object -First 1
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "o backup $backupBranch nao foi localizado no GitHub."
+    }
+
+    $remoteBackupSha = (($remoteBackupLine -split "\s+")[0]).Trim()
+    if ($remoteBackupSha -notmatch "^[0-9a-fA-F]{40}$") {
+        Stop-Publication "nao foi possivel confirmar a versao atual da branch de backup."
+    }
+
+    $remoteMainLine = @(& $gitPath ls-remote --exit-code --heads origin main 2>$null) |
+        Select-Object -First 1
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Publication "nao foi possivel confirmar a branch main no GitHub."
+    }
+    $remoteMainSha = (($remoteMainLine -split "\s+")[0]).Trim()
+    if ($remoteMainSha -notmatch "^[0-9a-fA-F]{40}$") {
+        Stop-Publication "a versao atual da branch main nao pode ser validada."
+    }
+
+    # A branch de seguranca deve apontar para a versao que esta em main antes
+    # desta publicacao. --force-with-lease impede sobrescrever uma alteracao
+    # concorrente que nao tenha sido observada pelo clone temporario.
+    $localMainSha = (& $gitPath rev-parse HEAD).Trim()
+    if ($localMainSha -ne $remoteMainSha) {
+        Stop-Publication "a branch main mudou durante a preparacao. Execute a publicacao novamente para evitar perda de alteracoes."
+    }
+    $backupLease = "--force-with-lease=refs/heads/${backupBranch}:$remoteBackupSha"
+    & $gitPath push origin "HEAD:refs/heads/$backupBranch" $backupLease
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Publication "nao foi possivel atualizar o backup da versao anterior. Nenhum arquivo novo foi enviado."
     }
 
     & $gitPath rm -r --quiet .
@@ -157,7 +198,7 @@ try {
         return
     }
 
-    & $gitPath commit -m "Adiciona ajustes de analises e alocacao hierarquica na V1.23.0 R8 em teste"
+    & $gitPath commit -m "Otimiza desempenho e reforca publicacao segura na V1.23.1 R1 em teste"
     if ($LASTEXITCODE -ne 0) {
         Stop-Publication "nao foi possivel criar a atualizacao local."
     }
@@ -174,4 +215,4 @@ try {
 Write-Host ""
 Write-Host "PUBLICACAO CONCLUIDA." -ForegroundColor Green
 Write-Host "A versao foi enviada ao ambiente de teste. A producao depende de aprovacao manual."
-Write-Host "Depois da atualizacao automatica, valide a V1.23.0 R8 no endereco /testefdi antes de promover."
+Write-Host "Depois da atualizacao automatica, valide a V1.23.1 R1 no endereco /testefdi antes de promover."

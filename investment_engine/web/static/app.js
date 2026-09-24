@@ -633,7 +633,16 @@ async function loadMarket(force = false) {
     state.marketEnvelope = envelope;
     if (envelope?.data && Object.keys(envelope.data).length) state.market = envelope.data;
     renderMarketSummary(); renderDashboardTab();
-    const endpoint = force ? "/market-dashboard/refresh" : "/market-dashboard/ensure";
+    if (!force) {
+      // The scheduler owns routine refreshes. Access fallback remains active
+      // only when a required snapshot is unavailable, stale or failed. This
+      // avoids a write on every navigation without losing self-recovery when
+      // the scheduler is disabled (staging) or temporarily unavailable.
+      const requiredGroups=["selic_current","selic_focus","macro","global_markets","rates_calendar","crypto","fx"];
+      const needsEnsure=requiredGroups.some(key=>["unavailable","stale","failed"].includes(envelope.updates?.[key]?.status));
+      if(!needsEnsure){if(["queued","running"].includes(envelope.refresh_status))pollMarket();return;}
+    }
+    const endpoint=force?"/market-dashboard/refresh":"/market-dashboard/ensure";
     const queued = await api(endpoint, {method:"POST",invalidateCache:false});
     if (queued.scheduled || ["queued","running"].includes(queued.refresh_status)) pollMarket();
     else if (queued.data && Object.keys(queued.data).length) { state.marketEnvelope=queued; state.market=queued.data; renderMarketSummary(); renderDashboardTab(); }
@@ -1002,6 +1011,11 @@ async function loadAnalysis() {
     api("/market-dashboard/updates",{cacheTtlMs:60000}).then(updatePayload=>{
       state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),...(updatePayload.updates||{})};
       if(state.view==="analysis"&&$("#analysis-update-status"))$("#analysis-update-status").innerHTML=marketUpdatePanel(["fundamentals","technical_daily","technical_intraday"],"Atualizações dos dados de análise");
+      const ensureGroups=["catalog","fundamentals","technical_daily","technical_intraday"].filter(group=>["unavailable","stale","failed"].includes(updatePayload.updates?.[group]?.status));
+      if(ensureGroups.length&&Date.now()-state.analysisEnsureSentAt>300000){
+        state.analysisEnsureSentAt=Date.now();
+        setTimeout(()=>Promise.all(ensureGroups.map(group=>api(`/market-dashboard/groups/${encodeURIComponent(group)}/ensure`,{method:"POST",invalidateCache:false}))).catch(()=>{}),1500);
+      }
     }).catch(()=>{if(state.view==="analysis"&&$("#analysis-update-status"))$("#analysis-update-status").innerHTML='<div class="notice warning">O estado das atualizações não pôde ser consultado agora. Os dados disponíveis continuam acessíveis.</div>';});
   } else if($("#analysis-update-status")) {
     $("#analysis-update-status").innerHTML=marketUpdatePanel(["fundamentals","technical_daily","technical_intraday"],"Atualizações dos dados de análise");
@@ -1013,10 +1027,6 @@ async function loadAnalysis() {
   } catch(error){toast(`Configuração dos filtros: ${error.message}`,"error");}
   updateFilterAvailability();
   await loadAnalysisResults();
-  if(now-state.analysisEnsureSentAt>300000){
-    state.analysisEnsureSentAt=now;
-    setTimeout(()=>Promise.all(["catalog","fundamentals","technical_daily","technical_intraday"].map(group=>api(`/market-dashboard/groups/${group}/ensure`,{method:"POST",invalidateCache:false}))).catch(()=>{}),1500);
-  }
 }
 
 function analysisResultCacheKey(type) {
@@ -2215,7 +2225,7 @@ function portalPageEditor(payload){
   </form>`;
 }
 
-function portalCoverUrl(book){return book.cover_media_id?`${BASE_PATH}/portal-media/${encodeURIComponent(book.cover_media_id)}`:`${BASE_PATH}${book.fallback_cover_path||"/portal-assets/books/formacao-investidor-fundamentos.webp"}`;}
+function portalCoverUrl(book){return book.cover_media_id?`${BASE_PATH}/portal-media/${encodeURIComponent(book.cover_media_id)}`:`${BASE_PATH}${book.fallback_cover_path||"/portal-assets/books/formacao-investidor-fundamentos.webp"}?v=1.23.1-r1`;}
 function portalBookForm(book,index,total){
   const links=[...(book.sales_links||[])];while(links.length<3)links.push({label:"",url:""});
   const isNew=!book.id;

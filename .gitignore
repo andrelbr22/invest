@@ -6,6 +6,8 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 deployment/secrets/app_secrets.toml
@@ -20,6 +22,7 @@ chaves_oracle/
 *.sqlite
 *.sqlite3
 *.log
+gcm-diagnose*
 backups/
 .idea/
 .vscode/

@@ -10,7 +10,7 @@
   };
   const coverUrl = book => book.cover_media_id
     ? `${BASE_PATH}/portal-media/${encodeURIComponent(book.cover_media_id)}`
-    : `${BASE_PATH}${book.fallback_cover_path || "/portal-assets/books/formacao-investidor-fundamentos.webp"}`;
+    : `${BASE_PATH}${book.fallback_cover_path || "/portal-assets/books/formacao-investidor-fundamentos.webp"}?v=1.23.1-r1`;
 
   function setBrand(content) {
     all(".brand-monogram").forEach(node => { node.textContent = content.brand.monogram; });

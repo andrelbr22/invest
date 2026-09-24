@@ -63,7 +63,7 @@ def test_portal_presents_all_seven_books_and_only_local_cover_assets():
         assert title in portal
 
     cover_sources = re.findall(
-        r'<img[^>]+src="\./portal-assets/books/([^"?]+)"', portal,
+        r'<img[^>]+src="\./portal-assets/books/([^"?]+)(?:\?v=[^"]+)?"', portal,
     )
     assert set(cover_sources) == set(BOOK_COVERS)
     assert len(cover_sources) == 10  # 3 hero covers plus the 7 catalog cards.
@@ -97,8 +97,8 @@ def test_platform_redirect_is_relative_and_spa_has_prefix_safe_assets(client):
     assert response.status_code == 200
     assert 'id="app-shell"' in response.text
     assert 'href="../favicon.svg"' in response.text
-    assert 'href="../ui-assets/app.css"' in response.text
-    assert 'src="../ui-assets/app.js"' in response.text
+    assert 'href="../ui-assets/app.css?v=1.23.1-r1"' in response.text
+    assert 'src="../ui-assets/app.js?v=1.23.1-r1"' in response.text
 
     head = client.head("/plataforma/")
     assert head.status_code == 200
@@ -181,10 +181,10 @@ def test_caddy_and_browser_paths_keep_portal_and_platform_inside_testefdi():
     assert 'header X-Robots-Tag "noindex, nofollow"' in caddy
 
     # Relative URLs resolve correctly both at / and after Caddy strips /testefdi/.
-    assert 'href="./portal-assets/portal.css"' in portal
+    assert 'href="./portal-assets/portal.css?v=1.23.1-r1"' in portal
     assert 'href="./plataforma/"' in portal
-    assert 'href="../ui-assets/app.css"' in spa
-    assert 'src="../ui-assets/app.js"' in spa
+    assert 'href="../ui-assets/app.css?v=1.23.1-r1"' in spa
+    assert 'src="../ui-assets/app.js?v=1.23.1-r1"' in spa
     assert 'location.pathname === "/testefdi"' in browser
     assert 'const PLATFORM_PATH = `${BASE_PATH}/plataforma/`' in browser
     assert "encodeURIComponent(PLATFORM_PATH)" in browser

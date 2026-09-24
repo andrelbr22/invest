@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -123,6 +124,20 @@ class SharedSnapshotRepository:
         return self.session.scalar(select(SharedSnapshotORM).where(
             SharedSnapshotORM.snapshot_key == str(snapshot_key).strip().lower(),
         ))
+
+    def get_many(self, snapshot_keys: Iterable[str]) -> dict[str, SharedSnapshotORM]:
+        """Return snapshots keyed by their normalized key using one query."""
+        clean_keys = {
+            str(snapshot_key or "").strip().lower()
+            for snapshot_key in snapshot_keys
+            if str(snapshot_key or "").strip()
+        }
+        if not clean_keys:
+            return {}
+        rows = self.session.scalars(
+            select(SharedSnapshotORM).where(SharedSnapshotORM.snapshot_key.in_(clean_keys))
+        )
+        return {row.snapshot_key: row for row in rows}
 
     def save_valid(
         self,

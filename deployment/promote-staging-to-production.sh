@@ -111,6 +111,18 @@ if ! docker image inspect "${STAGING_IMAGE}" >/dev/null 2>&1; then
   echo "Não existe uma versão de teste saudável para promover."
   exit 1
 fi
+
+# O candidato deve cumprir as metas de resposta antes de qualquer backup,
+# troca de tag ou recriação de produção. O comando retorna código 2 se ao
+# menos uma rota ultrapassar a meta de p95 e também falha em qualquer HTTP
+# diferente de 200. Assim, uma regressão de desempenho não toca a produção.
+echo "Validando o desempenho da versão aprovada no ambiente de teste..."
+if ! docker compose -f "${COMPOSE_FILE}" exec -T staging \
+  python -m scripts.benchmark_application_routes --samples 20 --warmup 2; then
+  echo "Promoção interrompida: o candidato não cumpriu as metas de desempenho."
+  exit 1
+fi
+
 if [[ -f "${PROJECT_DIR}/deployment/backup-local-db.sh" ]]; then
   bash "${PROJECT_DIR}/deployment/backup-local-db.sh"
 fi

@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_metadata_is_v1221_with_performance_migration():
-    assert __version__ == "1.23.0"
+    assert __version__ == "1.23.1"
     assert (ROOT / "V1_22_1.md").is_file()
     assert (ROOT / "PATCH_V1221.md").is_file()
     assert (ROOT / "INSTRUCOES_ORACLE_V1221.md").is_file()
@@ -15,11 +15,11 @@ def test_release_metadata_is_v1221_with_performance_migration():
     assert (ROOT / "alembic" / "versions" / "0023_v1_22_screener_performance.py").is_file()
 
 
-def test_publication_and_readme_point_to_current_v1230_staging_validation():
+def test_publication_and_readme_point_to_current_v1231_r1_staging_validation():
     publisher = (ROOT / "PUBLICAR_GITHUB.ps1").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "Adiciona ajustes de analises e alocacao hierarquica na V1.23.0 R8 em teste" in publisher
-    assert "valide a V1.23.0 R8" in publisher
-    assert readme.startswith("# Formação do Investidor • V1.23.0")
+    assert "Otimiza desempenho e reforca publicacao segura na V1.23.1 R1 em teste" in publisher
+    assert "valide a V1.23.1 R1" in publisher
+    assert readme.startswith("# Formação do Investidor • V1.23.1")
     assert "INSTRUCOES_ORACLE_V1221.md" in readme

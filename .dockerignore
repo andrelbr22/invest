@@ -8,6 +8,10 @@
 __pycache__
 *.pyc
 .pytest_cache
+.mypy_cache
+.ruff_cache
+*.log
+gcm-diagnose*
 outputs
 work
 # Nenhuma credencial local pode entrar no contexto e nas camadas da imagem.

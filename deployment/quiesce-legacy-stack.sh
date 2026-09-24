@@ -27,22 +27,33 @@ if (( ${#containers[@]} == 0 )); then
   exit 0
 fi
 
-# Remover a política de reinício evita o retorno no próximo boot. Trate cada
-# contêiner isoladamente: um daemon concorrente pode concluir a remoção de um
-# ID entre a listagem e o update. Isso não deve abortar uma promoção válida.
+# Remover a política de reinício evita o retorno no próximo boot. Contêineres
+# que já estão parados e com restart=no não exigem nenhuma chamada ao daemon;
+# isso torna o procedimento realmente idempotente durante cada publicação.
+# Trate cada contêiner isoladamente: um daemon concorrente pode concluir a
+# remoção de um ID entre a listagem e a atualização.
 paused=0
 for container_id in "${containers[@]}"; do
   docker inspect "${container_id}" >/dev/null 2>&1 || continue
-  docker update --restart=no "${container_id}" >/dev/null 2>&1 || {
-    docker inspect "${container_id}" >/dev/null 2>&1 && exit 1
-    continue
-  }
-  docker inspect "${container_id}" >/dev/null 2>&1 || continue
-  docker stop --time 30 "${container_id}" >/dev/null 2>&1 || {
-    docker inspect "${container_id}" >/dev/null 2>&1 && exit 1
-    continue
-  }
-  paused=$((paused + 1))
+  running="$(docker inspect --format '{{.State.Running}}' "${container_id}" 2>/dev/null || true)"
+  restart_policy="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "${container_id}" 2>/dev/null || true)"
+  changed=0
+  if [[ "${restart_policy}" != "no" && "${restart_policy}" != "" ]]; then
+    docker update --restart=no "${container_id}" >/dev/null 2>&1 || {
+      docker inspect "${container_id}" >/dev/null 2>&1 && exit 1
+      continue
+    }
+    changed=1
+  fi
+  if [[ "${running}" == "true" ]]; then
+    docker inspect "${container_id}" >/dev/null 2>&1 || continue
+    docker stop --time 30 "${container_id}" >/dev/null 2>&1 || {
+      docker inspect "${container_id}" >/dev/null 2>&1 && exit 1
+      continue
+    }
+    changed=1
+  fi
+  paused=$((paused + changed))
 done
 if (( paused > 0 )); then
   echo "Pilha legada pausada com segurança (${paused} contêineres); nenhum dado foi removido."

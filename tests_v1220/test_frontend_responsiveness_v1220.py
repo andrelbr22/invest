@@ -22,14 +22,20 @@ def test_analysis_renders_rows_before_loading_backtest_leaders():
     assert "requestSerial!==state.analysisRequestSerial" in advanced
 
 
-def test_background_ensure_does_not_flush_unrelated_read_cache():
+def test_background_refreshes_do_not_flush_cache_and_ensure_only_stale_data():
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert 'const invalidateCache = requestOptions.invalidateCache !== false;' in source
     assert 'method !== "GET" && invalidateCache' in source
-    assert '/ensure`,{method:"POST",invalidateCache:false}' in source
+    assert 'force?"/market-dashboard/refresh":"/market-dashboard/ensure"' in source
+    assert 'const needsEnsure=requiredGroups.some' in source
+    assert '["unavailable","stale","failed"].includes(envelope.updates?.[key]?.status)' in source
+    assert "/market-dashboard/groups/${encodeURIComponent(group)}/ensure" in source
+    assert "Date.now()-state.analysisEnsureSentAt>300000" in source
+    assert 'const endpoint=force?"/market-dashboard/refresh":"/market-dashboard/ensure"' in source
+    assert 'api(endpoint, {method:"POST",invalidateCache:false}' in source
     assert '/insights/news/refresh-daily",{method:"POST",invalidateCache:false}' in source
-    assert source.index("await loadAnalysisResults();") < source.index("state.analysisEnsureSentAt>300000")
+    assert "await loadAnalysisResults();" in source
 
 
 def test_simultaneous_cached_gets_are_coalesced():

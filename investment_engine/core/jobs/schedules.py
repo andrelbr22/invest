@@ -256,11 +256,8 @@ def enqueue_due_refreshes(session: Session, now: datetime | None = None) -> list
     return created
 
 
-def refresh_status(session: Session, key: str, now: datetime | None = None) -> dict:
+def _refresh_status_payload(*, key: str, current: datetime, snapshot, job) -> dict:
     spec = REFRESH_SCHEDULES[key]
-    current = _aware(now or datetime.now(timezone.utc))
-    snapshot = SharedSnapshotRepository(session).get(spec.snapshot_key)
-    job = BackgroundJobRepository(session).latest_for_deduplication(f"refresh:{key}")
     as_of = _aware(snapshot.as_of) if snapshot is not None else None
     stale = as_of is None or as_of < current - spec.stale_after
     status = "unavailable" if snapshot is None else ("stale" if stale else "updated")
@@ -311,5 +308,49 @@ def refresh_status(session: Session, key: str, now: datetime | None = None) -> d
     }
 
 
-def all_refresh_statuses(session: Session, now: datetime | None = None) -> dict[str, dict]:
-    return {key: refresh_status(session, key, now) for key in REFRESH_SCHEDULES}
+def refresh_status(session: Session, key: str, now: datetime | None = None) -> dict:
+    """Return one refresh status while preserving the original public API."""
+    spec = REFRESH_SCHEDULES[key]
+    current = _aware(now or datetime.now(timezone.utc))
+    snapshot = SharedSnapshotRepository(session).get(spec.snapshot_key)
+    job = BackgroundJobRepository(session).latest_for_deduplication(f"refresh:{key}")
+    return _refresh_status_payload(
+        key=key,
+        current=current,
+        snapshot=snapshot,
+        job=job,
+    )
+
+
+def all_refresh_statuses(
+    session: Session,
+    now: datetime | None = None,
+    *,
+    snapshots_by_key: dict[str, object] | None = None,
+    jobs_by_deduplication: dict[str, object] | None = None,
+) -> dict[str, dict]:
+    """Return every refresh status with two queries instead of two per group.
+
+    Callers that already loaded snapshots may pass their map so the rows can be
+    reused without another database round-trip.
+    """
+    current = _aware(now or datetime.now(timezone.utc))
+    snapshots = snapshots_by_key
+    if snapshots is None:
+        snapshots = SharedSnapshotRepository(session).get_many(
+            spec.snapshot_key for spec in REFRESH_SCHEDULES.values()
+        )
+    jobs = jobs_by_deduplication
+    if jobs is None:
+        jobs = BackgroundJobRepository(session).latest_for_deduplications(
+            f"refresh:{key}" for key in REFRESH_SCHEDULES
+        )
+    return {
+        key: _refresh_status_payload(
+            key=key,
+            current=current,
+            snapshot=snapshots.get(spec.snapshot_key),
+            job=jobs.get(f"refresh:{key}"),
+        )
+        for key, spec in REFRESH_SCHEDULES.items()
+    }

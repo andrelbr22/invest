@@ -1,6 +1,23 @@
-# Formação do Investidor • V1.23.0
+# Formação do Investidor • V1.23.1
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
+
+## Desempenho e publicação segura V1.23.1 R1
+
+A V1.23.1 R1 parte exatamente da R8 homologada e preserva suas rotas,
+permissões, dados, filtros, carteiras, eventos e backtests. A revisão reduz
+consultas repetidas de situação das atualizações, reaproveita recursos
+estáticos no navegador e evita pedidos de atualização redundantes durante a
+navegação. O fallback de recuperação por acesso continua ativo quando um
+dado estiver ausente, vencido ou com falha.
+
+A publicação também passa a bloquear logs, diagnósticos e caches locais,
+atualiza a branch de segurança antes de substituir a `main` e interrompe a
+operação se detectar uma alteração concorrente. A pilha legada continua
+preservada e pausada; o procedimento deixa de repetir chamadas ao Docker
+quando os contêineres já estão parados.
+Antes de qualquer alteração em produção, a promoção repete automaticamente
+as medições p50/p95 no staging e interrompe o processo se alguma meta falhar.
 
 ## Eventos oficiais, qualidade e portal editável V1.23.0
 
@@ -130,7 +147,7 @@ manualmente para:
 A plataforma autenticada fica em `/plataforma/` nos dois ambientes.
 
 As credenciais, o banco e os backups permanecem somente no servidor. Consulte
-`INSTRUCOES_ORACLE_V1230.md` para a homologação desta versão.
+`INSTRUCOES_ORACLE_V1231_R1.md` para a homologação desta versão.
 
 ## Segurança e escopo
 
