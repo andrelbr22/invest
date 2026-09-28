@@ -41,6 +41,7 @@ from ..core.screening.filters import stock_passes, fii_passes
 from ..core.screening.advanced import (
     FUNDAMENTAL_FIELDS,
     SCORE_FIELDS,
+    _materialized_technical_features,
     advanced_screen,
     row_from_orm,
     technical_features,
@@ -117,10 +118,6 @@ from ..core.instruments import is_alertable_b3_asset, is_supported_ticker
 from ..core.models.strategy import StockFilterSet, FiiFilterSet
 from ..infrastructure.db.session import get_session_factory
 from ..core.services_v14 import calculate_asset_intelligence
-from ..data.ingestion.prices import PriceIngestionService
-from ..data.ingestion.pipeline import MarketIngestionPipeline
-from ..data.providers.b3_indices import B3IndexProvider
-from ..data.providers.news import MarketNewsService
 from ..infrastructure.config import settings
 from .. import __version__
 
@@ -225,9 +222,8 @@ if settings.google_client_id and settings.google_client_secret:
         client_kwargs={"scope": "openid email profile"},
     )
 
-_INDEX_PORTFOLIO_CACHE: dict[str, tuple[float, dict]] = {}
-_INDEX_PORTFOLIO_TTL_SECONDS = 6 * 60 * 60
-_MARKET_NEWS = MarketNewsService()
+_INDEX_PORTFOLIO_SNAPSHOT_KEY = "market:index:ibov"
+_INDEX_PORTFOLIO_STALE_AFTER = timedelta(hours=30)
 _NEWS_QUEUE_LOCK = threading.Lock()
 _MARKET_DASHBOARD_OWNER = "market-dashboard@system.local"
 _MARKET_DASHBOARD_CACHE_KEY = "main-v6"
@@ -456,21 +452,47 @@ def _company_size_fields(asset) -> dict:
 
 
 def _index_portfolio(index_code: str) -> dict:
+    """Return the persisted B3 portfolio without calling the provider in-request.
+
+    A missing or stale snapshot is refreshed by the background worker.  This
+    deliberately keeps B3 latency and outages outside dashboard and screener
+    requests while still allowing the last valid composition to be used.
+    """
     code = index_code.upper()
-    now = monotonic()
-    cached = _INDEX_PORTFOLIO_CACHE.get(code)
-    if cached and now - cached[0] < _INDEX_PORTFOLIO_TTL_SECONDS:
-        return cached[1]
+    if code != "IBOV":
+        raise ValueError("unsupported_b3_index")
+    db = get_session_factory()()
     try:
-        result = B3IndexProvider().fetch(code)
-        result["stale"] = False
-        _INDEX_PORTFOLIO_CACHE[code] = (now, result)
-        return result
-    except Exception:
-        if cached:
-            stale = {**cached[1], "stale": True}
-            return stale
-        raise
+        snapshot = SharedSnapshotRepository(db).get(_INDEX_PORTFOLIO_SNAPSHOT_KEY)
+        now = datetime.now(timezone.utc)
+        snapshot_as_of = snapshot.as_of if snapshot is not None else None
+        if snapshot_as_of is not None and snapshot_as_of.tzinfo is None:
+            snapshot_as_of = snapshot_as_of.replace(tzinfo=timezone.utc)
+        stale = snapshot is None or snapshot_as_of is None or (
+            snapshot_as_of < now - _INDEX_PORTFOLIO_STALE_AFTER
+        )
+        job = None
+        scheduled = False
+        if stale:
+            job, scheduled = enqueue_refresh(
+                db, "ibov_portfolio", trigger="access", requested_by="system:navigation",
+            )
+            db.commit()
+        payload = dict(snapshot.payload_json or {}) if snapshot is not None else {
+            "index": code,
+            "name": "Ibovespa",
+            "source": "B3",
+            "members": [],
+        }
+        payload.update({
+            "stale": stale,
+            "unavailable": snapshot is None,
+            "refreshing": bool(scheduled or (job is not None and job.status in {"queued", "running"})),
+            "snapshot_as_of": snapshot_as_of,
+        })
+        return payload
+    finally:
+        db.close()
 
 
 def _fundamental_dict(row):
@@ -2381,108 +2403,36 @@ def delete_saved_filter(
     return {"status": "deleted", "id": str(filter_id)}
 
 
-def _refresh_intelligence_scores(db: Session, asset_type: str) -> int:
-    """Recalculate the cards shown by the UI after a market synchronization."""
-    repo = AssetRepository(db)
-    processed = 0
-    for asset in repo.list_assets(asset_type=asset_type, limit=5000):
-        fundamental = repo.latest_fundamentals(asset.id)
-        if fundamental is None:
-            continue
-        technical = repo.latest_technical(asset.id, source="internal") or repo.latest_technical(asset.id)
-        result = calculate_asset_intelligence(asset, fundamental, technical)
-        scores = {
-            "quality_score": result["quality"].score,
-            "value_score": result["value"].score,
-            "growth_score": result["growth"].score if result["growth"] else None,
-            "technical_score": result["technical"].score,
-            "risk_score": result["risk"].score,
-            "liquidity_score": result["liquidity"].score,
-            "alb_score": result["alb_score"],
-        }
-        details = {
-            "profile": {
-                "key": result["profile"].key,
-                "label": result["profile"].label,
-                "notes": result["profile"].notes,
-                "weights": result["profile"].alb_weights,
-            },
-            "quality": result["quality"].as_dict(),
-            "value": result["value"].as_dict(),
-            "growth": result["growth"].as_dict() if result["growth"] else None,
-            "technical": result["technical"].as_dict(),
-            "risk": result["risk"].as_dict(),
-            "liquidity": result["liquidity"].as_dict(),
-            "explanation": result["explanation"],
-        }
-        repo.upsert_scores(
-            asset,
-            as_of=fundamental.reference_date,
-            model_version=result["model_version"],
-            scores=scores,
-            coverage_pct=result["coverage"],
-            data_quality_score=result["data_quality"].score,
-            details=details,
-        )
-        processed += 1
-    return processed
-
-
-@app.post("/data/sync-market")
-def sync_market(req: MarketSyncRequest, _access=Depends(require_permission("can_sync_market")), db: Session = Depends(get_db)):
-    """Populate a new cloud database without requiring shell access."""
-    pipeline = MarketIngestionPipeline(db)
-    steps: dict[str, dict] = {}
-    deactivated = pipeline.repo.deactivate_unsupported_assets()
-    if deactivated:
-        db.commit()
-    steps["catalog_cleanup"] = {"status": "ok", "deactivated": len(deactivated)}
-
-    def run_step(name, operation):
-        try:
-            result = operation()
-            db.commit()
-            steps[name] = {
-                "status": "ok",
-                "received": result.rows_received,
-                "saved": result.rows_valid,
-                "rejected": result.rows_rejected,
-                "filtered": max(0, result.rows_received - result.rows_valid - result.rows_rejected),
-                "warnings": result.warnings,
-            }
-        except Exception as exc:
-            db.rollback()
-            steps[name] = {"status": "error", "message": str(exc)}
-
-    if req.asset_type == "stock":
-        run_step("fundamentals", pipeline.ingest_stocks)
-        if req.include_technicals:
-            run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals("stock"))
-    elif req.asset_type == "fii":
-        run_step("fundamentals", pipeline.ingest_fiis)
-        if req.include_technicals:
-            run_step("catalog_and_technicals", lambda: pipeline.ingest_technicals("fii"))
-    else:
-        run_step("catalog_and_technicals", pipeline.ingest_other_b3)
-
-    if req.asset_type in {"stock", "fii"}:
-        try:
-            score_count = _refresh_intelligence_scores(db, req.asset_type)
-            db.commit()
-            steps["scores"] = {"status": "ok", "saved": score_count}
-        except Exception as exc:
-            db.rollback()
-            steps["scores"] = {"status": "error", "message": str(exc)}
-    else:
-        steps["scores"] = {"status": "ok", "saved": 0, "note": "not_applicable_to_other_b3"}
-
-    if req.asset_type == "other_b3":
-        catalog_count = sum(len(AssetRepository(db).list_assets(asset_type=value, limit=5000)) for value in ("etf", "bdr", "future"))
-    else:
-        catalog_count = len(AssetRepository(db).list_assets(asset_type=req.asset_type, limit=5000))
-    if catalog_count == 0:
-        raise HTTPException(502, detail={"market_sync_failed": steps})
-    return {"asset_type": req.asset_type, "catalog_count": catalog_count, "steps": steps}
+@app.post("/data/sync-market", status_code=202)
+def sync_market(
+    req: MarketSyncRequest,
+    access=Depends(require_permission("can_sync_market")),
+    db: Session = Depends(get_db),
+):
+    """Queue the former synchronous import so navigation workers stay free."""
+    now = datetime.now(timezone.utc)
+    job, scheduled = BackgroundJobRepository(db).enqueue(
+        "market_full_sync",
+        {
+            "asset_type": req.asset_type,
+            "include_technicals": req.include_technicals,
+            "trigger": "manual",
+        },
+        requested_by=access.get("email"),
+        priority=105,
+        max_attempts=3,
+        deduplication_key=f"market-full-sync:{req.asset_type}",
+        idempotency_key=(
+            f"market-full-sync:{req.asset_type}:{int(now.timestamp()) // 60}"
+        ),
+    )
+    db.commit()
+    return {
+        "accepted": True,
+        "scheduled": scheduled,
+        "message": "Atualização enviada para o processamento em segundo plano.",
+        "job": background_job_dict(job, include_payload=True),
+    }
 
 
 @app.get("/data/catalog-summary")
@@ -2588,9 +2538,13 @@ def asset_detail(ticker: str, access=Depends(require_permission("can_view_market
     asset = repo.get_by_ticker(ticker.upper())
     if asset is None:
         raise HTTPException(404, "asset_not_found")
-    fundamentals = repo.latest_fundamentals(asset.id)
-    technical = repo.latest_technical(asset.id)
-    score = repo.latest_scores(asset.id)
+    current = repo.current_snapshot(asset.id)
+    if current is not None:
+        fundamentals, technical, score = current
+    else:
+        fundamentals = repo.latest_fundamentals(asset.id)
+        technical = repo.latest_technical(asset.id)
+        score = repo.latest_scores(asset.id)
     derived = row_from_orm(asset, fundamentals, technical, score)
     derived_fundamentals = dict(derived.get("fundamentals") or {})
     # The one-asset page uses the same full peer universe and the same
@@ -2623,8 +2577,13 @@ def asset_detail(ticker: str, access=Depends(require_permission("can_view_market
         # The base row already carries explicit N/D statuses.
         pass
     derived_fundamentals = _authorized_valuation_row(derived_fundamentals, access)
-    history = repo.price_history(asset.id, limit=760)
-    features = technical_features(history, trend_period=21, pivot_timeframe="daily")
+    materialized = repo.current_technical_features([asset.id]).get(asset.id)
+    features = _materialized_technical_features(
+        materialized, trend_period=21, pivot_timeframe="daily",
+    )
+    if not features:
+        history = repo.price_history(asset.id, limit=760)
+        features = technical_features(history, trend_period=21, pivot_timeframe="daily")
     leaders = []
     if access.get("can_view_backtests"):
         leaders = [run_summary(run, leader_asset) for run, leader_asset in BacktestRepository(db).leaderboard(
@@ -2680,6 +2639,21 @@ def valuation_methods(_access=Depends(require_permission("can_view_market"))):
             for asset_type in ("stock", "fii", "etf", "bdr", "future")
         },
     }
+
+
+@app.get("/data/jobs/{job_id}")
+def market_data_job(
+    job_id: UUID,
+    access=Depends(require_permission("can_sync_market")),
+    db: Session = Depends(get_db),
+):
+    """Expose only market-ingestion jobs to the administrator who requested them."""
+    row = BackgroundJobRepository(db).get(job_id)
+    if row is None or row.job_type not in {"market_full_sync", "asset_price_ingest"}:
+        raise HTTPException(404, "background_job_not_found")
+    if not access.get("is_owner") and row.requested_by != access.get("email"):
+        raise HTTPException(404, "background_job_not_found")
+    return background_job_dict(row, include_payload=True)
 
 
 @app.post("/valuation/graham")
@@ -2743,13 +2717,34 @@ def asset_intelligence(ticker: str, access=Depends(require_permission("can_view_
     # the same Graham grant enforced by the screener and asset detail.
     return _authorized_valuation_row(payload, access)
 
-@app.post("/assets/{ticker}/prices/ingest")
-def ingest_prices(ticker: str, _access=Depends(require_permission("can_sync_market")), db: Session = Depends(get_db)):
-    repo=AssetRepository(db); a=repo.get_by_ticker(ticker); asset_type=a.asset_type if a else "stock"
-    try:
-        result=PriceIngestionService(db).ingest_asset(ticker,asset_type=asset_type); db.commit(); return result
-    except Exception as exc:
-        db.rollback(); raise HTTPException(502,detail={"price_ingestion_failed":str(exc)})
+@app.post("/assets/{ticker}/prices/ingest", status_code=202)
+def ingest_prices(
+    ticker: str,
+    access=Depends(require_permission("can_sync_market")),
+    db: Session = Depends(get_db),
+):
+    clean_ticker = str(ticker or "").strip().upper()
+    asset = AssetRepository(db).get_by_ticker(clean_ticker)
+    asset_type = asset.asset_type if asset is not None else "stock"
+    if not is_supported_ticker(clean_ticker, asset_type):
+        raise HTTPException(422, "invalid_ticker")
+    now = datetime.now(timezone.utc)
+    job, scheduled = BackgroundJobRepository(db).enqueue(
+        "asset_price_ingest",
+        {"ticker": clean_ticker, "asset_type": asset_type, "trigger": "manual"},
+        requested_by=access.get("email"),
+        priority=80,
+        max_attempts=3,
+        deduplication_key=f"asset-price-ingest:{clean_ticker}",
+        idempotency_key=f"asset-price-ingest:{clean_ticker}:{int(now.timestamp()) // 60}",
+    )
+    db.commit()
+    return {
+        "accepted": True,
+        "scheduled": scheduled,
+        "message": "Histórico enviado para processamento em segundo plano.",
+        "job": background_job_dict(job, include_payload=True),
+    }
 
 
 def _screen_identity(asset):
@@ -3934,7 +3929,10 @@ def refresh_market_dashboard_group(
         raise HTTPException(404, "market_refresh_group_not_found")
     if group_key == "operations_retention" and not access.get("is_owner"):
         raise HTTPException(403, "owner_access_required")
-    if group_key in {"catalog", "fundamentals", "technical_daily", "technical_intraday"} and not access.get("can_sync_market"):
+    if group_key in {
+        "catalog", "fundamentals", "technical_daily", "technical_intraday",
+        "ibov_portfolio", "current_metrics",
+    } and not access.get("can_sync_market"):
         raise HTTPException(403, detail={"permission_required": "can_sync_market"})
     row, created = enqueue_refresh(
         db, group_key, trigger="manual", requested_by=access.get("email"), force=True,
@@ -3959,6 +3957,11 @@ def ensure_market_dashboard_group(
         raise HTTPException(404, "market_refresh_group_not_found")
     if group_key == "operations_retention" and not access.get("is_owner"):
         raise HTTPException(403, "owner_access_required")
+    if group_key in {
+        "catalog", "fundamentals", "technical_daily", "technical_intraday",
+        "ibov_portfolio", "current_metrics",
+    } and not access.get("can_sync_market"):
+        raise HTTPException(403, detail={"permission_required": "can_sync_market"})
     row, created = enqueue_refresh(
         db, group_key, trigger="access", requested_by=access.get("email"), force=False,
     )
@@ -4062,6 +4065,40 @@ def _enqueue_user_news_job(db: Session, row: UserNewsCacheORM, *, requested_by: 
         idempotency_key=f"user-news:{row.id}:{int(requested_at.timestamp())}",
     )
     return created
+
+
+def _navigation_news_cache(
+    db: Session,
+    *,
+    owner_email: str,
+    cache_kind: str,
+    cache_key: str,
+) -> tuple[UserNewsCacheORM | None, UserNewsCacheORM | None, bool]:
+    """Read news from PostgreSQL and queue a refresh without waiting on providers."""
+    repository = NewsCacheRepository(db)
+    current = repository.get(
+        owner_email=owner_email, cache_kind=cache_kind, cache_key=cache_key,
+    )
+    display = current if current is not None and current.status == "completed" else None
+    if display is None:
+        display = repository.latest_completed(
+            owner_email=owner_email, cache_kind=cache_kind, cache_key=cache_key,
+        )
+    scheduled = False
+    if current is None:
+        with _NEWS_QUEUE_LOCK:
+            current, should_run = repository.request_refresh(
+                owner_email=owner_email,
+                cache_kind=cache_kind,
+                cache_key=cache_key,
+                trigger="automatic",
+                force=False,
+            )
+            scheduled = should_run and _enqueue_user_news_job(
+                db, current, requested_by=owner_email,
+            )
+            db.commit()
+    return display, current, scheduled
 
 @app.post("/insights/news/refresh-daily")
 def refresh_daily_user_news(
@@ -4206,7 +4243,30 @@ def portfolio_asset_news(
     ), None)
     if asset is None:
         raise HTTPException(404, "stock_not_found_in_user_portfolio")
-    return _MARKET_NEWS.asset_news(asset.ticker, asset.name, limit=3)
+    display, current, scheduled = _navigation_news_cache(
+        db,
+        owner_email=access["email"],
+        cache_kind="portfolio",
+        cache_key=str(portfolio.id),
+    )
+    cached = dict(display.result_json or {}) if display is not None else {}
+    result = next((
+        dict(item) for item in (cached.get("assets") or [])
+        if str(item.get("ticker") or "").upper() == clean_ticker
+    ), {
+        "ticker": clean_ticker,
+        "company_name": asset.name,
+        "items": [],
+        "providers": [],
+        "provider": "Atualização em segundo plano",
+    })
+    result.update({
+        "cached": True,
+        "scheduled": scheduled,
+        "cache_status": current.status if current is not None else "not_requested",
+        "cache_market_date": display.market_date if display is not None else news_market_date(),
+    })
+    return result
 
 
 @app.get("/insights/news/portfolios/{portfolio_id}")
@@ -4221,12 +4281,26 @@ def portfolio_all_asset_news(
     if portfolio is None:
         raise HTTPException(404, "portfolio_not_found")
     assets = _portfolio_news_assets(db, portfolio.id)
-    result = _MARKET_NEWS.portfolio_news(assets[:limit_assets], limit_per_asset=3)
+    display, current, scheduled = _navigation_news_cache(
+        db,
+        owner_email=access["email"],
+        cache_kind="portfolio",
+        cache_key=str(portfolio.id),
+    )
+    result = dict(display.result_json or {}) if display is not None else {
+        "assets": [], "asset_count": 0, "providers": [],
+    }
+    result["assets"] = list(result.get("assets") or [])[:limit_assets]
+    result["asset_count"] = len(result["assets"])
     result.update({
         "portfolio_id": str(portfolio.id),
         "portfolio_name": portfolio.name,
         "total_stocks": len(assets),
         "truncated": len(assets) > limit_assets,
+        "cached": True,
+        "scheduled": scheduled,
+        "cache_status": current.status if current is not None else "not_requested",
+        "cache_market_date": display.market_date if display is not None else news_market_date(),
     })
     return result
 
@@ -4235,12 +4309,40 @@ def portfolio_all_asset_news(
 def bank_recommendation_news(
     category: str = Query(default="all", pattern="^(all|brazil|global)$"),
     limit: int = Query(default=20, ge=1, le=50),
-    _access=Depends(require_permission("can_view_news_insights")),
+    access=Depends(require_permission("can_view_news_insights")),
     db: Session = Depends(get_db),
 ):
-    assets = AssetRepository(db).list_assets("stock", limit=1200)
-    asset_names = {asset.ticker: asset.name or "" for asset in assets}
-    return _MARKET_NEWS.recommendations(category=category, limit=limit, asset_names=asset_names)
+    display, current, scheduled = _navigation_news_cache(
+        db,
+        owner_email=access["email"],
+        cache_kind="recommendations",
+        cache_key=category,
+    )
+    derived_from = None
+    if display is None and category != "all":
+        display = NewsCacheRepository(db).latest_completed(
+            owner_email=access["email"], cache_kind="recommendations", cache_key="all",
+        )
+        derived_from = "all" if display is not None else None
+    result = dict(display.result_json or {}) if display is not None else {
+        "category": category, "items": [], "providers": [],
+        "provider": "Atualização em segundo plano",
+    }
+    if category != "all":
+        result["items"] = [
+            item for item in (result.get("items") or [])
+            if item.get("bank_group") == category
+        ]
+    result["items"] = list(result.get("items") or [])[:limit]
+    result.update({
+        "category": category,
+        "cached": True,
+        "scheduled": scheduled,
+        "derived_from": derived_from,
+        "cache_status": current.status if current is not None else "not_requested",
+        "cache_market_date": display.market_date if display is not None else news_market_date(),
+    })
+    return result
 
 
 # -----------------------------

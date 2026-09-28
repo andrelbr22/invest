@@ -1,0 +1,11 @@
+[Unit]
+Description=Verifica a localização do worker remoto a cada dois minutos
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=2min
+AccuracySec=20s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

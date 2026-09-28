@@ -54,15 +54,33 @@ if ! COMPOSE_PARALLEL_LIMIT=1 nice -n 10 docker compose -f "${COMPOSE_FILE}" bui
   exit 1
 fi
 "${PROJECT_DIR}/deployment/refresh-staging-db.sh"
+echo "Aplicando as migrações do candidato no banco isolado de teste..."
+if ! docker compose --profile operations -f "${COMPOSE_FILE}" \
+  run --rm --no-deps staging-migration; then
+  echo "${TARGET_COMMIT}" > "${FAILED_FILE}"
+  echo "A migração isolada do staging falhou; a produção não foi alterada."
+  exit 1
+fi
 FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate staging
 
 CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q staging)"
 for _ in $(seq 1 120); do
   STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${CONTAINER_ID}" 2>/dev/null || echo missing)"
   if [[ "${STATUS}" == "healthy" ]]; then
-    # A recriação troca o IP interno do staging. Recarregar o Caddy evita
-    # que /testefdi continue apontando para o contêiner anterior.
-    docker compose -f "${COMPOSE_FILE}" restart proxy
+    # O site já está saudável; a carga pesada segue no worker interno e não
+    # bloqueia a troca. O job é idempotente para o commit homologado.
+    if ! FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}" \
+      exec -T staging python -m scripts.enqueue_current_metrics_refresh \
+        --requested-by system:staging-release --commit "${TARGET_COMMIT}"; then
+      echo "Não foi possível enfileirar as métricas atuais do staging." >&2
+      break
+    fi
+    # Compatibilidade histórica: o fallback interno pode executar
+    # `docker compose ... restart proxy`, mas a via normal é validação seguida
+    # de caddy reload. Os upstreams A dinâmicos acompanham a troca de IP.
+    if ! bash "${PROJECT_DIR}/deployment/reload-proxy.sh"; then
+      break
+    fi
     for _ in $(seq 1 36); do
       PAYLOAD="$(curl --fail --silent --show-error --max-time 15 "${PUBLIC_READY_URL}" 2>/dev/null || true)"
       if [[ "${PAYLOAD}" == *'"status":"ready"'* && "${PAYLOAD}" == *'"environment":"staging"'* ]]; then

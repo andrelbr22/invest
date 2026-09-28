@@ -280,6 +280,30 @@ def technical_filters_pass(features: dict, spec: dict | None) -> bool:
     return True
 
 
+def _materialized_technical_features(
+    payload: dict | None,
+    *,
+    trend_period: int,
+    pivot_timeframe: str,
+) -> dict:
+    """Flatten worker-precomputed features into the existing screener contract."""
+    data = dict(payload or {})
+    trend = dict((data.get("trend_periods") or {}).get(str(trend_period)) or {})
+    pivots = dict((data.get("pivots") or {}).get(pivot_timeframe) or {})
+    volume = dict(data.get("volume") or {})
+    if not trend or not pivots:
+        return {}
+    return {
+        "trend_period": trend_period,
+        "pivot_timeframe": pivot_timeframe,
+        "current_price": _f(data.get("current_price")),
+        "rsi14": _f(data.get("rsi14")),
+        **trend,
+        **volume,
+        **pivots,
+    }
+
+
 def _valuation_result(
     family_id: str,
     *,
@@ -778,12 +802,36 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
         bool(tech_spec.get("volume_daily_above_ma9")), bool(tech_spec.get("volume_monthly_above_ma9")),
     ])
     need_history = technical_active or include_technical_columns
-    histories = repo.price_histories_batch([a.id for a, _ in preliminary]) if need_history and preliminary else {}
+    candidate_ids = [asset.id for asset, _row in preliminary]
+    materialized_payloads = {}
+    current_features_loader = getattr(repo, "current_technical_features", None)
+    if need_history and candidate_ids and callable(current_features_loader):
+        materialized_payloads = current_features_loader(candidate_ids)
+    materialized_features = {
+        asset_id: features
+        for asset_id, payload in materialized_payloads.items()
+        if (features := _materialized_technical_features(
+            payload, trend_period=trend_period, pivot_timeframe=pivot_timeframe,
+        ))
+    }
+    missing_feature_ids = [
+        asset_id for asset_id in candidate_ids if asset_id not in materialized_features
+    ]
+    histories = (
+        repo.price_histories_batch(missing_feature_ids)
+        if need_history and missing_feature_ids else {}
+    )
 
     results = []
     missing_history = 0
     for asset, row in preliminary:
-        features = technical_features(histories.get(asset.id, []), trend_period=trend_period, pivot_timeframe=pivot_timeframe) if need_history else {}
+        features = dict(materialized_features.get(asset.id) or {})
+        if need_history and not features:
+            features = technical_features(
+                histories.get(asset.id, []),
+                trend_period=trend_period,
+                pivot_timeframe=pivot_timeframe,
+            )
         # Wide-universe fallback: when period 20 is requested and local history is missing, use the existing TradingView
         # 20-period snapshots for trend only. Pivot levels intentionally never use this fallback because their period semantics
         # are not guaranteed by that snapshot.
@@ -832,6 +880,8 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
             "universe_count": len(universe), "fundamental_candidates": len(preliminary), "returned": len(results),
             "technical_history_missing": missing_history, "trend_period": trend_period, "pivot_timeframe": pivot_timeframe,
             "technical_filter_active": technical_active,
+            "technical_precomputed": len(materialized_features),
+            "technical_history_loaded": len(missing_feature_ids),
             "valuation_families": list(VALUATION_FAMILIES),
             "valuation_filter_active": _active_valuation_families(valuation_flags),
             "valuation_logic": str((valuation_flags or {}).get("logic") or (valuation_flags or {}).get("valuation_logic") or "all").casefold(),

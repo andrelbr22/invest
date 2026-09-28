@@ -76,6 +76,11 @@ REFRESH_SCHEDULES: dict[str, RefreshSchedule] = {
         "comparison", "Comparador histórico", "historical_comparison_refresh", "market-comparison:main",
         "BCB e Yahoo Finance", timedelta(hours=24), fixed_times=(time(5),), priority=90,
     ),
+    "ibov_portfolio": RefreshSchedule(
+        "ibov_portfolio", "Composição do Ibovespa", "b3_index_portfolio_refresh",
+        "market:index:ibov", "B3 • carteira teórica", timedelta(hours=30),
+        fixed_times=(time(8, 15),), weekdays_only=True, priority=88,
+    ),
     "catalog": RefreshSchedule(
         "catalog", "Catálogo de ativos", "market_catalog_refresh", "market-catalog:main",
         "Fundamentus e TradingView", timedelta(hours=6), fixed_times=(time(8, 30),),
@@ -126,6 +131,11 @@ REFRESH_SCHEDULES: dict[str, RefreshSchedule] = {
         "data_quality", "Qualidade e frescor dos dados", "data_quality_refresh",
         "quality:data-sources", "Metadados internos das fontes", timedelta(hours=30),
         fixed_times=(time(20, 10),), priority=140,
+    ),
+    "current_metrics": RefreshSchedule(
+        "current_metrics", "Métricas atuais pré-calculadas", "current_metrics_refresh",
+        "market:current-metrics", "Históricos locais preservados", timedelta(hours=30),
+        fixed_times=(time(20, 40),), priority=145,
     ),
     "operations_retention": RefreshSchedule(
         "operations_retention", "Retenção segura da fila e dados operacionais",

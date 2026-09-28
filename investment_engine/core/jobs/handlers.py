@@ -26,6 +26,7 @@ from ...core.repositories.news_cache import NewsCacheRepository
 from ...core.repositories.investor_events import InvestorEventsRepository
 from ...core.investor_events.service import AlbUniverseMonitor, DataQualityService
 from ...core.services_v14 import calculate_asset_intelligence
+from ...core.current_metrics import AssetCurrentMetricsService
 from ...core.instruments import is_supported_ticker
 from ...infrastructure.db.models import (
     AssetORM, BacktestRequestUsageORM, PortfolioPositionORM, PriceAlertORM,
@@ -41,6 +42,11 @@ from ..repositories.economic_series import (
 )
 from ..repositories.background_jobs import BackgroundJobRepository
 from .retention import OperationalRetentionService
+from .market_ingestion import (
+    refresh_b3_index_portfolio,
+    run_asset_price_ingest,
+    run_market_full_sync,
+)
 from ..backtesting.service import BacktestService
 
 
@@ -894,6 +900,56 @@ def handle_operational_retention(payload: dict) -> dict:
         session.close()
 
 
+def handle_current_metrics_refresh(payload: dict) -> dict:
+    """Materialize current values from local history in bounded, resumable batches."""
+    snapshot_key = str(payload.get("snapshot_key") or "market:current-metrics")
+    after_ticker = str(payload.get("after_ticker") or "").strip().upper()
+    batch_size = max(1, min(
+        1000,
+        int(payload.get("batch_size") or settings.current_metrics_backfill_batch_size),
+    ))
+    cycle = str(payload.get("cycle") or payload.get("scheduled_for") or _market_today().isoformat())
+    session = get_session_factory()()
+    try:
+        result = AssetCurrentMetricsService(session).sync_batch(
+            after_ticker=after_ticker, limit=batch_size,
+        )
+        result["cycle"] = cycle
+        result["status"] = "partial" if result["errors"] or result["remaining"] else "complete"
+        SharedSnapshotRepository(session).save_valid(
+            snapshot_key=snapshot_key,
+            snapshot_kind="asset_current_metrics",
+            payload=_json_safe(result),
+            source="local-snapshot-history-and-price-bars",
+            as_of=utcnow(),
+            valid_until=utcnow() + timedelta(hours=30),
+        )
+        if result["next_cursor"]:
+            token = f"{cycle}:{result['next_cursor']}"
+            BackgroundJobRepository(session).enqueue(
+                "current_metrics_refresh",
+                {
+                    "snapshot_key": snapshot_key,
+                    "after_ticker": result["next_cursor"],
+                    "batch_size": batch_size,
+                    "cycle": cycle,
+                    "trigger": "continuation",
+                },
+                priority=146,
+                max_attempts=3,
+                deduplication_key=f"current-metrics:{token}",
+                idempotency_key=f"current-metrics:{token}",
+            )
+        session.commit()
+        return result
+    except Exception as exc:
+        session.rollback()
+        _record_refresh_failure(snapshot_key, exc)
+        raise
+    finally:
+        session.close()
+
+
 def _payload_datetime(value):
     if not value:
         return None
@@ -1018,4 +1074,8 @@ DEFAULT_JOB_HANDLERS = {
     "alb_universe_monitor": handle_alb_universe_monitor,
     "data_quality_refresh": handle_data_quality_refresh,
     "operational_retention": handle_operational_retention,
+    "current_metrics_refresh": handle_current_metrics_refresh,
+    "market_full_sync": run_market_full_sync,
+    "asset_price_ingest": run_asset_price_ingest,
+    "b3_index_portfolio_refresh": refresh_b3_index_portfolio,
 }

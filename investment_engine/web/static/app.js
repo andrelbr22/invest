@@ -1950,8 +1950,8 @@ const accessLimitDefinitions=[
 const adminRefreshGroups=[
   {key:"selic_current",section:"Juros e macro",frequency:"06h e 13h"},{key:"selic_focus",section:"Juros e macro",frequency:"Diária, 04h"},{key:"macro",section:"Juros e macro",frequency:"Diária, 04h"},{key:"rates_calendar",section:"Juros e macro",frequency:"06h e 13h"},
   {key:"global_markets",section:"Mercados",frequency:"06h e 13h"},{key:"crypto",section:"Mercados",frequency:"A cada 30 min"},{key:"fx",section:"Mercados",frequency:"A cada 2 horas"},
-  {key:"headlines",section:"Notícias e históricos",frequency:"A cada hora"},{key:"comparison",section:"Notícias e históricos",frequency:"Diária, 05h"},
-  {key:"catalog",section:"Catálogo e análises",frequency:"Dias úteis, 08h30"},{key:"fundamentals",section:"Catálogo e análises",frequency:"Dias úteis, 19h"},{key:"technical_daily",section:"Catálogo e análises",frequency:"Dias úteis, 18h15"},{key:"technical_intraday",section:"Catálogo e análises",frequency:"Pregão, a cada 15 min"},
+  {key:"headlines",section:"Notícias e históricos",frequency:"A cada hora"},{key:"comparison",section:"Notícias e históricos",frequency:"Diária, 05h"},{key:"ibov_portfolio",section:"Notícias e históricos",frequency:"Dias úteis, 08h15"},
+  {key:"catalog",section:"Catálogo e análises",frequency:"Dias úteis, 08h30"},{key:"fundamentals",section:"Catálogo e análises",frequency:"Dias úteis, 19h"},{key:"technical_daily",section:"Catálogo e análises",frequency:"Dias úteis, 18h15"},{key:"technical_intraday",section:"Catálogo e análises",frequency:"Pregão, a cada 15 min"},{key:"current_metrics",section:"Catálogo e análises",frequency:"Diária, 20h40"},
   {key:"portfolio_dividends",section:"Eventos oficiais",frequency:"Dias úteis, 07h20 e 19h20"},{key:"cvm_relevant_facts",section:"Eventos oficiais",frequency:"Diária, 07h40"},{key:"official_calendar",section:"Eventos oficiais",frequency:"Diária, 03h20"},{key:"ima_history",section:"Eventos oficiais",frequency:"Dias úteis, 21h30"},
   {key:"alb_monitor",section:"Qualidade",frequency:"Dias úteis, 19h40"},{key:"data_quality",section:"Qualidade",frequency:"Diária, 20h10"},
   {key:"operations_retention",section:"Operação",frequency:"Diária, 02h50"},
@@ -2007,15 +2007,15 @@ async function loadAdminUpdates(root){
   const grouped=[
     ["Juros, inflação e agenda",["selic_current","selic_focus","macro","rates_calendar"]],
     ["Mercados, criptos e câmbio",["global_markets","crypto","fx"]],
-    ["Notícias e comparador histórico",["headlines","comparison"]],
-    ["Catálogo, fundamentos e técnica",["catalog","fundamentals","technical_daily","technical_intraday"]],
+    ["Notícias, comparador e composição do Ibovespa",["headlines","comparison","ibov_portfolio"]],
+    ["Catálogo, fundamentos, técnica e métricas atuais",["catalog","fundamentals","technical_daily","technical_intraday","current_metrics"]],
     ["Proventos, CVM, agenda e índices ANBIMA",["portfolio_dividends","cvm_relevant_facts","official_calendar","ima_history"]],
     ["Qualidade e filtro ALB",["alb_monitor","data_quality"]],
   ];
   root.innerHTML=`<div class="metric-grid">${metricCard("Ações",number(groups.stock||0,0),"Ativos ativos")}${metricCard("FIIs",number(groups.fii||0,0),"Fundos imobiliários")}${metricCard("ETFs",number(counts.etf||0,0),"Fundos de índice")}${metricCard("BDRs",number(counts.bdr||0,0),"Recibos negociados na B3")}</div><div class="admin-update-actions"><button class="button secondary" data-refresh-groups="catalog">Atualizar catálogo</button><button class="button secondary" data-refresh-groups="fundamentals">Atualizar fundamentos e notas</button>${grouped.map(([label,keys])=>`<button class="button secondary" data-refresh-groups="${keys.join(",")}">${esc(label)}</button>`).join("")}<button class="button primary" data-refresh-groups="${allKeys.join(",")}" data-confirm-all-updates>Atualizar todas as ${allKeys.length} rotinas</button></div>${sectionCard("Todas as atualizações automáticas",adminUpdateTable(updates),"As solicitações entram na fila e não bloqueiam o site")}${sectionCard("Monitor de alertas",`<div class="admin-monitor-row"><span><strong>B3: 5 minutos no pregão</strong><small>Demais mercados: 30 minutos, continuamente</small></span><button class="button secondary" data-run-alert-monitor>Executar verificação agora</button></div><div id="alert-monitor-result" class="notice info hidden"></div>`,`A execução manual respeita as mesmas regras e não envia alertas duplicados`)}`;
 }
 
-const jobTypeLabels={market_group_refresh:"Mercado e economia",economy_headlines_refresh:"Manchetes",historical_comparison_refresh:"Comparador histórico",market_catalog_refresh:"Catálogo",market_fundamentals_refresh:"Fundamentos",market_technicals_refresh:"Indicadores técnicos",market_intraday_refresh:"Cotações intradiárias",portfolio_prices_refresh:"Preços de carteira",user_news_refresh:"Notícias do usuário",personal_backtest_matrix:"Backtest pessoal",investor_dividends_refresh:"Proventos oficiais",cvm_relevant_facts_refresh:"Fatos relevantes CVM",official_calendar_refresh:"Agenda oficial",anbima_ima_history_refresh:"Histórico IMA-B/IRF-M",alb_universe_monitor:"Monitor do filtro ALB",data_quality_refresh:"Qualidade dos dados",operational_retention:"Retenção operacional",noop:"Verificação interna"};
+const jobTypeLabels={market_group_refresh:"Mercado e economia",economy_headlines_refresh:"Manchetes",historical_comparison_refresh:"Comparador histórico",market_catalog_refresh:"Catálogo",market_fundamentals_refresh:"Fundamentos",market_technicals_refresh:"Indicadores técnicos",market_intraday_refresh:"Cotações intradiárias",market_full_sync:"Sincronização completa de mercado",current_metrics_refresh:"Métricas atuais pré-calculadas",asset_price_ingest:"Histórico de preços do ativo",b3_index_portfolio_refresh:"Composição do Ibovespa",portfolio_prices_refresh:"Preços de carteira",user_news_refresh:"Notícias do usuário",personal_backtest_matrix:"Backtest pessoal",investor_dividends_refresh:"Proventos oficiais",cvm_relevant_facts_refresh:"Fatos relevantes CVM",official_calendar_refresh:"Agenda oficial",anbima_ima_history_refresh:"Histórico IMA-B/IRF-M",alb_universe_monitor:"Monitor do filtro ALB",data_quality_refresh:"Qualidade dos dados",operational_retention:"Retenção operacional",noop:"Verificação interna"};
 function jobStatusLabel(status){return ({queued:"Na fila",running:"Executando",succeeded:"Concluído",failed:"Falhou",cancelled:"Cancelado"})[status]||status;}
 async function loadAdminJobs(root){
   const jobs=await api("/admin/jobs?limit=100",{bypassCache:true});
@@ -2226,7 +2226,7 @@ function portalPageEditor(payload){
   </form>`;
 }
 
-function portalCoverUrl(book){return book.cover_media_id?`${BASE_PATH}/portal-media/${encodeURIComponent(book.cover_media_id)}`:`${BASE_PATH}${book.fallback_cover_path||"/portal-assets/books/formacao-investidor-fundamentos.webp"}?v=1.23.1-r2`;}
+function portalCoverUrl(book){return book.cover_media_id?`${BASE_PATH}/portal-media/${encodeURIComponent(book.cover_media_id)}`:`${BASE_PATH}${book.fallback_cover_path||"/portal-assets/books/formacao-investidor-fundamentos.webp"}?v=1.23.2-r1`;}
 function portalBookForm(book,index,total){
   const links=[...(book.sales_links||[])];while(links.length<3)links.push({label:"",url:""});
   const isNew=!book.id;
@@ -2375,12 +2375,31 @@ async function syncMarketCatalog(assetType, includeTechnicals) {
   const status=$("#market-sync-status");
   const buttons=$$("[data-market-sync]");
   buttons.forEach(button=>button.disabled=true);
-  if(status){status.classList.remove("hidden");status.textContent="Atualizando o catálogo…";}
+  if(status){status.classList.remove("hidden");status.textContent="Enviando a atualização para a fila…";}
   try {
     const result=await api("/data/sync-market",{method:"POST",body:JSON.stringify({asset_type:assetType,include_technicals:includeTechnicals})});
-    state.analysisResultCache.clear();
-    toast(`Catálogo atualizado: ${number(result.catalog_count||0,0)} ativo(s).`,"success");
-    await loadAdmin();
+    const jobId=result.job?.id;
+    if(!jobId)throw new Error("A fila não confirmou a solicitação.");
+    toast(result.scheduled?"Atualização iniciada em segundo plano.":"Esta atualização já estava na fila.","success");
+    for(let attempt=0;attempt<300;attempt++){
+      const job=await api(`/data/jobs/${encodeURIComponent(jobId)}`,{bypassCache:true});
+      if(status){
+        const progress=job.progress_total?` ${number(job.progress_current||0,0)} de ${number(job.progress_total,0)}.`:"";
+        status.textContent=`${jobStatusLabel(job.status)}.${progress} ${job.message||""}`.trim();
+      }
+      if(job.status==="succeeded"){
+        const count=job.result?.catalog_count;
+        state.analysisResultCache.clear();
+        toast(nullable(count)?"Catálogo atualizado.":`Catálogo atualizado: ${number(count,0)} ativo(s).`,"success");
+        await loadAdmin();
+        return;
+      }
+      if(["failed","cancelled"].includes(job.status))throw new Error(job.last_error_message||job.last_error_code||"A atualização não foi concluída.");
+      await new Promise(resolve=>setTimeout(resolve,3000));
+    }
+    if(status)status.textContent="A atualização continua em segundo plano. Acompanhe pela aba Trabalhos.";
+    toast("A atualização continua em segundo plano.","success");
+    buttons.forEach(button=>button.disabled=false);
   } catch(error) {
     if(status){status.textContent=error.message;status.classList.remove("hidden");}
     toast(error.message,"error");

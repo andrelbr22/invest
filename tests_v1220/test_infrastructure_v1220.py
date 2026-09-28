@@ -91,31 +91,39 @@ def test_worker_lifecycle_scripts_prepare_activate_stop_and_validate_safely():
     activate = _read("deployment/second-instance/activate-worker.sh")
     stop = _read("deployment/second-instance/stop-worker.sh")
     validate = _read("deployment/second-instance/validate-worker.sh")
+    preflight = _read("deployment/second-instance/preflight-worker-node.sh")
+    sync_commit = _read("deployment/second-instance/sync-approved-commit.sh")
 
     for script in (prepare, activate, stop, validate):
         assert script.startswith("#!/usr/bin/env bash\nset -Eeuo pipefail")
-        assert "docker compose" in script
+    assert "docker compose" in preflight
 
-    assert "git fetch --quiet origin main" in prepare
-    assert prepare.count("FDI_COORDINATOR_ENABLED=false") >= 2
-    assert "build worker" in prepare and "run --rm --no-deps worker" in prepare
+    assert "sync-approved-commit.sh" in prepare
+    assert "preflight-worker-node.sh" in prepare
+    assert "git fetch --quiet --prune origin main" in sync_commit
+    assert 'git switch --detach --quiet "${COMMIT}"' in sync_commit
+    assert preflight.count("FDI_COORDINATOR_ENABLED=false") >= 3
+    assert "build worker" in preflight and "run --rm --no-deps worker" in preflight
     assert "up -d --force-recreate worker" not in prepare
     assert "nenhum consumidor adicional foi iniciado" in prepare
 
     exact_commit_check = '[[ "$(git rev-parse HEAD)" == "${COMMIT}" ]]'
     assert exact_commit_check in activate
-    assert activate.index(exact_commit_check) < activate.index("build worker")
-    assert activate.count("FDI_COORDINATOR_ENABLED=true") >= 2
+    # V1.23.2 centralizes the build and all host/database checks in the
+    # preflight, which is called only after the exact commit was confirmed.
+    assert activate.index(exact_commit_check) < activate.index("preflight-worker-node.sh")
+    assert activate.count("FDI_COORDINATOR_ENABLED=true") >= 1
+    assert "verify-worker-coordination.py" in activate
     assert '[[ "${STATUS}" == "healthy" ]]' in activate
 
     assert "stop -t 600 worker" in stop
-    assert 'SECRETS_FILE="${PROJECT_DIR}/deployment/second-instance/worker_secrets.toml"' in validate
-    assert "10#${MODE} % 10 != 0" in validate
-    assert "address.is_private" in validate
-    assert "address.is_loopback" in validate
-    assert "parsed.port != 5432" in validate
-    assert 'revision != "0028_v1_23_operational_retention"' in validate
-    assert "SELECT 1" in validate
+    assert "preflight-worker-node.sh" in validate
+    assert 'SECRETS_FILE="${PROJECT_DIR}/deployment/second-instance/worker_secrets.toml"' in preflight
+    assert "address.is_private" in preflight
+    assert "address.is_loopback" in preflight
+    assert "parsed.port != 5432" in preflight
+    assert "ScriptDirectory" in preflight and "revision != head" in preflight
+    assert "current_user" in preflight
 
 
 def test_private_database_templates_never_bind_postgres_publicly():
@@ -151,7 +159,9 @@ def test_promotion_has_remote_cutover_local_fallback_and_no_unsafe_automatic_dow
     promote = _read("deployment/promote-staging-to-production.sh")
 
     assert 'FDI_WORKER_LOCATION="local"' in promote
-    assert 'source "${WORKER_LOCATION_FILE}"' in promote
+    assert 'source "${WORKER_LOCATION_LIB}"' in promote
+    assert 'load_worker_location_config "${WORKER_LOCATION_FILE}" true' in promote
+    assert 'source "${WORKER_LOCATION_FILE}"' not in promote
     assert '[[ "${FDI_WORKER_LOCATION}" == "remote" ]]' in promote
     remote_branch = promote.index('if [[ "${FDI_WORKER_LOCATION}" == "remote" ]]')
     stop_local = promote.index('stop worker', remote_branch)
@@ -203,10 +213,12 @@ def test_private_database_scripts_require_private_binding_and_keep_a_reversal_pa
     assert 'ROLE_NAME="investment_worker"' in create_role
     assert "${#ROLE_PASSWORD} < 32" in create_role
     assert "GRANT CONNECT ON DATABASE investment_engine" in create_role
-    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES" in create_role
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE" in create_role
+    assert "email_login_codes" in create_role
+    assert "REVOKE ALL PRIVILEGES ON TABLE" in create_role
     assert "CREATE DATABASE" not in create_role
-    assert "CREATEDB" not in create_role
-    assert "SUPERUSER" not in create_role
+    assert "NOCREATEDB" in create_role
+    assert "NOSUPERUSER" in create_role
 
     assert "address.is_private" in enable
     assert "address.is_loopback" in enable
@@ -238,5 +250,5 @@ def test_watchdog_is_independent_from_the_worker_and_installed_as_a_timer():
 def test_ci_includes_current_suites_and_postgres_migration_head():
     workflow = _read(".github/workflows/tests.yml")
 
-    assert workflow.count("tests_v1210 tests_v1220 tests_v1230 tests_v1231") == 2
-    assert 'assert revision == "0028_v1_23_operational_retention"' in workflow
+    assert workflow.count("tests_v1210 tests_v1220 tests_v1230 tests_v1231 tests_v1232") == 2
+    assert 'assert revision == "0029_v1_23_current_metrics"' in workflow

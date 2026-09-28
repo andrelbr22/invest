@@ -1,6 +1,29 @@
-# Formação do Investidor • V1.23.1
+# Formação do Investidor • V1.23.2
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
+
+## Otimização estrutural V1.23.2
+
+A V1.23.2 preserva todos os históricos e acrescenta uma tabela materializada
+com os valores atuais por ativo. O worker atualiza essa tabela de forma
+idempotente e pré-calcula tendências, RSI, volume e pivôs; screeners e detalhe
+do ativo usam o caminho rápido somente depois de confirmar cobertura integral.
+Até lá, o caminho histórico anterior continua ativo automaticamente.
+
+As sincronizações completas, ingestões de preços, composição do Ibovespa e
+notícias legadas deixam de consultar fontes externas durante a navegação. Elas
+entram na fila e a interface acompanha o trabalho sem manter a requisição web
+aberta. A composição e as notícias exibidas vêm de snapshots locais.
+
+Migrações agora são executadas por um serviço isolado antes da troca da
+aplicação; API e worker apenas verificam a revisão. O proxy valida e recarrega
+a configuração sem interrupção, com reinício somente como contingência. A
+segunda VM recebe validação estrita de commit, SSH, liderança única e retorno
+seguro para a VM principal; sua criação física na Oracle continua sendo uma
+etapa operacional explicitamente aprovada.
+
+Consulte `V1_23_2.md`, `PATCH_V1232.md`, `INSTRUCOES_ORACLE_V1232.md` e
+`RELATORIO_VALIDACAO_V1232.md` antes de publicar ou promover.
 
 ## Conclusão da revisão conservadora V1.23.1 R2
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=Guardião opcional de retorno seguro do worker para a VM principal
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/invest
+ExecStart=/home/ubuntu/invest/deployment/second-instance/automatic-failback.sh
+TimeoutStartSec=900

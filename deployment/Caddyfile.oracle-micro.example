@@ -13,16 +13,37 @@ formacaodoinvestidor.com.br, www.formacaodoinvestidor.com.br {
     redir /testefdi/plataforma /testefdi/plataforma/ 308
     handle_path /testefdi/* {
         header X-Robots-Tag "noindex, nofollow"
-        reverse_proxy staging:8000
+        reverse_proxy staging:8000 {
+            dynamic a staging 8000 {
+                refresh 2s
+                versions ipv4
+            }
+            lb_try_duration 10s
+            lb_try_interval 250ms
+        }
     }
     @backtestCallbacks {
         path /automation/backtests/*
     }
     handle @backtestCallbacks {
-        reverse_proxy app:8000
+        reverse_proxy app:8000 {
+            dynamic a app 8000 {
+                refresh 2s
+                versions ipv4
+            }
+            lb_try_duration 10s
+            lb_try_interval 250ms
+        }
     }
     handle {
-        reverse_proxy app:8000
+        reverse_proxy app:8000 {
+            dynamic a app 8000 {
+                refresh 2s
+                versions ipv4
+            }
+            lb_try_duration 10s
+            lb_try_interval 250ms
+        }
     }
 
     header {

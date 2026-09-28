@@ -2,16 +2,94 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from sqlalchemy import select, and_, or_, false, func, desc
 from sqlalchemy.orm import Session, aliased
-from ...infrastructure.db.models import AssetORM, FundamentalSnapshotORM, TechnicalSnapshotORM, PriceBarORM, ValuationSnapshotORM, ScoreSnapshotORM
+from ...infrastructure.db.models import (
+    AssetCurrentMetricsORM, AssetORM, FundamentalSnapshotORM, TechnicalSnapshotORM,
+    PriceBarORM, ValuationSnapshotORM, ScoreSnapshotORM,
+)
 from ...core.instruments import B3_CATALOG_TYPES, is_supported_ticker, require_supported_ticker, ticker_exclusion_reason
+from .current_metrics import AssetCurrentMetricsRepository
 
 
 def _decimal_or_none(value):
     if value is None:
         return None
     return Decimal(str(value))
+
+
+def _current_component(row: AssetCurrentMetricsORM, component: str):
+    """Expose a current-metrics component through the historical snapshot shape."""
+    if component == "fundamental":
+        if row.fundamental_snapshot_id is None:
+            return None
+        values = dict(row.fundamental_json or {})
+        for field in (
+            "price", "pe", "pbv", "dividend_yield_pct", "ev_ebitda",
+            "ebit_margin_pct", "net_margin_pct", "current_ratio", "roe_pct", "roic_pct",
+            "gross_debt_to_equity", "net_debt_to_ebitda", "revenue_cagr_5y_pct",
+            "earnings_cagr_5y_pct", "ffo_yield_pct", "cap_rate_pct", "vacancy_pct",
+            "financial_vacancy_pct", "ltv_pct", "wale_years", "daily_liquidity",
+        ):
+            if field == "price":
+                values[field] = (row.fundamental_json or {}).get("price")
+            elif field == "daily_liquidity":
+                values[field] = row.fundamental_daily_liquidity
+            else:
+                values[field] = getattr(row, field)
+        values.update({
+            "id": row.fundamental_snapshot_id,
+            "asset_id": row.asset_id,
+            "reference_date": row.fundamental_as_of,
+            "retrieved_at": row.fundamental_retrieved_at,
+            "source": ((row.source_refs_json or {}).get("fundamental") or {}).get("source"),
+            "raw_payload": dict((row.fundamental_json or {}).get("raw_payload") or {}),
+        })
+        return SimpleNamespace(**values)
+    if component == "technical":
+        if row.technical_snapshot_id is None and row.price_bar_id is None:
+            return None
+        values = dict(row.technical_json or {})
+        for field in (
+            "score_tv", "signal_tv", "market_cap", "daily_liquidity", "sma20", "sma50",
+            "sma200", "sma20_1w", "sma50_1w", "sma20_1m", "sma50_1m", "rsi14",
+            "macd", "atr14", "volatility_annual_pct", "max_drawdown_1y_pct",
+            "return_1m_pct", "return_3m_pct", "return_12m_pct",
+        ):
+            values[field] = getattr(row, field)
+        if row.technical_snapshot_id is None and row.price is not None:
+            values["close"] = row.price
+        values.update({
+            "id": row.technical_snapshot_id or row.price_bar_id,
+            "asset_id": row.asset_id,
+            "timeframe": "1D",
+            "as_of": row.technical_as_of or row.price_as_of,
+            "retrieved_at": row.technical_retrieved_at or row.price_retrieved_at,
+            "source": ((row.source_refs_json or {}).get("technical") or {}).get("source")
+            or ((row.source_refs_json or {}).get("price") or {}).get("source"),
+            "raw_payload": dict((row.technical_json or {}).get("raw_payload") or {}),
+        })
+        return SimpleNamespace(**values)
+    if component == "score":
+        if row.score_snapshot_id is None:
+            return None
+        values = dict(row.score_json or {})
+        for field in (
+            "quality_score", "value_score", "growth_score", "technical_score", "risk_score",
+            "liquidity_score", "alb_score", "coverage_pct", "data_quality_score",
+        ):
+            values[field] = getattr(row, field)
+        values.update({
+            "id": row.score_snapshot_id,
+            "asset_id": row.asset_id,
+            "as_of": row.score_as_of,
+            "calculated_at": row.score_calculated_at,
+            "model_version": ((row.source_refs_json or {}).get("score") or {}).get("source"),
+            "details_json": dict((row.score_json or {}).get("details") or {}),
+        })
+        return SimpleNamespace(**values)
+    raise ValueError("invalid_current_metrics_component")
 
 
 class AssetRepository:
@@ -70,6 +148,7 @@ class AssetRepository:
             asset.metadata_json = {**(asset.metadata_json or {}), **fields["metadata_json"]}
         asset.updated_at = datetime.now(timezone.utc)
         self.session.flush()
+        AssetCurrentMetricsRepository(self.session).ensure(asset.id)
         return asset
 
     @staticmethod
@@ -148,6 +227,8 @@ class AssetRepository:
                 setattr(row, key, _decimal_or_none(data.get(key)))
         row.raw_payload = raw_payload or {}
         self.session.flush()
+        AssetCurrentMetricsRepository(self.session).sync_fundamental(row)
+        self.session.flush()
         return row
 
     def upsert_technical(
@@ -187,13 +268,19 @@ class AssetRepository:
         row.signal_tv = data.get("signal_tv")
         row.raw_payload = raw_payload or {}
         self.session.flush()
+        AssetCurrentMetricsRepository(self.session).sync_technical(row)
+        self.session.flush()
         return row
 
     def latest_fundamentals(self, asset_id) -> FundamentalSnapshotORM | None:
         stmt = (
             select(FundamentalSnapshotORM)
             .where(FundamentalSnapshotORM.asset_id == asset_id)
-            .order_by(FundamentalSnapshotORM.reference_date.desc(), FundamentalSnapshotORM.retrieved_at.desc())
+            .order_by(
+                FundamentalSnapshotORM.reference_date.desc(),
+                FundamentalSnapshotORM.retrieved_at.desc(),
+                FundamentalSnapshotORM.id.desc(),
+            )
             .limit(1)
         )
         return self.session.scalar(stmt)
@@ -210,7 +297,11 @@ class AssetRepository:
         stmt = select(TechnicalSnapshotORM).where(TechnicalSnapshotORM.asset_id == asset_id, TechnicalSnapshotORM.timeframe == timeframe)
         if source is not None:
             stmt = stmt.where(TechnicalSnapshotORM.source == source)
-        stmt = stmt.order_by(TechnicalSnapshotORM.as_of.desc(), TechnicalSnapshotORM.retrieved_at.desc()).limit(1)
+        stmt = stmt.order_by(
+            TechnicalSnapshotORM.as_of.desc(),
+            TechnicalSnapshotORM.retrieved_at.desc(),
+            TechnicalSnapshotORM.id.desc(),
+        ).limit(1)
         return self.session.scalar(stmt)
 
 
@@ -222,7 +313,11 @@ class AssetRepository:
         for k in ("open","high","low","close","volume","adjusted_close"):
             if k in data:setattr(row,k,_decimal_or_none(data.get(k)))
         if retrieved_at is not None: row.retrieved_at=retrieved_at
-        row.status=status; self.session.flush(); return row
+        row.status=status
+        self.session.flush()
+        AssetCurrentMetricsRepository(self.session).sync_price(row)
+        self.session.flush()
+        return row
 
     def bulk_upsert_price_bars(self, asset, rows, *, retrieved_at=None, status="valid"):
         if not rows:
@@ -251,6 +346,9 @@ class AssetRepository:
                 row.retrieved_at = retrieved_at
             row.status = status
         self.session.flush()
+        latest = max(existing.values(), key=lambda item: (item.timestamp, item.retrieved_at, str(item.id)))
+        AssetCurrentMetricsRepository(self.session).sync_price(latest)
+        self.session.flush()
         return len(rows)
 
     def price_history(self, asset_id, timeframe="1D", limit=600):
@@ -271,7 +369,9 @@ class AssetRepository:
     def latest_price_bar(self, asset_id, timeframe="1D"):
         return self.session.scalar(
             select(PriceBarORM).where(PriceBarORM.asset_id == asset_id, PriceBarORM.timeframe == timeframe)
-            .order_by(PriceBarORM.timestamp.desc()).limit(1)
+            .order_by(
+                PriceBarORM.timestamp.desc(), PriceBarORM.retrieved_at.desc(), PriceBarORM.id.desc(),
+            ).limit(1)
         )
 
     def upsert_valuation(self, asset, *, method, as_of, method_version="1.0", value=None, upside_pct=None, status="valid", inputs=None):
@@ -287,10 +387,14 @@ class AssetRepository:
         scores=scores or {}
         for k in ("quality_score","value_score","growth_score","technical_score","risk_score","liquidity_score","alb_score"):
             setattr(row,k,_decimal_or_none(scores.get(k)))
-        row.coverage_pct=_decimal_or_none(coverage_pct); row.data_quality_score=_decimal_or_none(data_quality_score); row.details_json=details or {}; self.session.flush(); return row
+        row.coverage_pct=_decimal_or_none(coverage_pct); row.data_quality_score=_decimal_or_none(data_quality_score); row.details_json=details or {}
+        self.session.flush()
+        AssetCurrentMetricsRepository(self.session).sync_score(row)
+        self.session.flush()
+        return row
 
     def latest_scores(self, asset_id):
-        return self.session.scalar(select(ScoreSnapshotORM).where(ScoreSnapshotORM.asset_id==asset_id).order_by(ScoreSnapshotORM.as_of.desc(), ScoreSnapshotORM.calculated_at.desc()).limit(1))
+        return self.session.scalar(select(ScoreSnapshotORM).where(ScoreSnapshotORM.asset_id==asset_id).order_by(ScoreSnapshotORM.as_of.desc(), ScoreSnapshotORM.calculated_at.desc(), ScoreSnapshotORM.id.desc()).limit(1))
 
     def _latest_fundamental_alias(self):
         latest_id = (
@@ -352,8 +456,151 @@ class AssetRepository:
             stmt = stmt.where(col.is_not(None), col <= threshold)
         return stmt
 
+    def _current_coverage_complete(self, asset_types, *, component: str) -> bool:
+        accepted = set(asset_types or ())
+        if not accepted:
+            return True
+        if component not in {"fundamental", "technical"}:
+            raise ValueError("invalid_current_metrics_component")
+        # Coverage means that every active catalog asset has been visited by
+        # the resumable materializer.  An asset is allowed to have no source
+        # snapshot: the historical queries also return/skip that asset with a
+        # null component.  Requiring a non-null fundamental or technical id
+        # here would keep the fast path disabled forever whenever the catalog
+        # legitimately contains one asset without data.
+        total, covered = self.session.execute(
+            select(
+                func.count(AssetORM.id),
+                func.count(AssetCurrentMetricsORM.asset_id),
+            )
+            .select_from(AssetORM)
+            .outerjoin(
+                AssetCurrentMetricsORM,
+                AssetCurrentMetricsORM.asset_id == AssetORM.id,
+            )
+            .where(
+                AssetORM.asset_type.in_(accepted),
+                AssetORM.is_active.is_(True),
+                self._supported_catalog_clause(accepted),
+            )
+        ).one()
+        return int(total or 0) == int(covered or 0)
+
+    @staticmethod
+    def _current_universe_tuple(asset, metrics):
+        return (
+            asset,
+            _current_component(metrics, "fundamental"),
+            _current_component(metrics, "technical"),
+            _current_component(metrics, "score"),
+        )
+
+    def current_technical_features(self, asset_ids) -> dict:
+        ids = list(dict.fromkeys(asset_ids or []))
+        if not ids:
+            return {}
+        rows = self.session.execute(
+            select(
+                AssetCurrentMetricsORM.asset_id,
+                AssetCurrentMetricsORM.technical_features_json,
+            ).where(AssetCurrentMetricsORM.asset_id.in_(ids))
+        )
+        return {
+            asset_id: dict(payload or {})
+            for asset_id, payload in rows
+            if isinstance(payload, dict) and payload
+        }
+
+    def current_snapshot(self, asset_id):
+        metrics = self.session.get(AssetCurrentMetricsORM, asset_id)
+        if metrics is None:
+            return None
+        return (
+            _current_component(metrics, "fundamental"),
+            _current_component(metrics, "technical"),
+            _current_component(metrics, "score"),
+        )
+
+    def _screen_current_stocks(self, filters, *, limit: int, offset: int):
+        m = AssetCurrentMetricsORM
+        stmt = (
+            select(AssetORM, m)
+            .select_from(AssetORM)
+            .join(m, m.asset_id == AssetORM.id)
+            .where(
+                AssetORM.asset_type == "stock",
+                AssetORM.is_active.is_(True),
+                m.fundamental_snapshot_id.is_not(None),
+                self._supported_catalog_clause({"stock"}),
+            )
+        )
+        stmt = self._apply_min(stmt, m.roe_pct, filters.roe_min)
+        stmt = self._apply_min(stmt, m.net_margin_pct, filters.net_margin_min)
+        stmt = self._apply_min(stmt, m.ebit_margin_pct, filters.ebit_margin_min)
+        stmt = self._apply_min(stmt, m.revenue_cagr_5y_pct, filters.revenue_cagr_5y_min)
+        stmt = self._apply_min(stmt, m.pe, filters.pe_min)
+        stmt = self._apply_max(stmt, m.pe, filters.pe_max)
+        stmt = self._apply_max(stmt, m.pbv, filters.pbv_max)
+        stmt = self._apply_min(stmt, m.dividend_yield_pct, filters.dividend_yield_min)
+        stmt = self._apply_max(stmt, m.ev_ebitda, filters.ev_ebitda_max)
+        stmt = self._apply_max(stmt, m.gross_debt_to_equity, filters.gross_debt_to_equity_max)
+        stmt = self._apply_min(stmt, m.current_ratio, filters.current_ratio_min)
+        stmt = self._apply_min(stmt, m.daily_liquidity, filters.daily_liquidity_min)
+        if filters.require_below_graham:
+            stmt = stmt.where(
+                m.price.is_not(None), m.price > 0,
+                m.pe.is_not(None), m.pe > 0,
+                m.pbv.is_not(None), m.pbv > 0,
+                (m.pe * m.pbv) < 22.5,
+            )
+        rows = self.session.execute(
+            stmt.order_by(m.alb_score.desc().nullslast(), AssetORM.ticker)
+            .offset(offset).limit(limit)
+        )
+        return [
+            (asset, _current_component(metrics, "fundamental"), _current_component(metrics, "score"))
+            for asset, metrics in rows
+        ]
+
+    def _screen_current_fiis(self, filters, *, limit: int, offset: int):
+        m = AssetCurrentMetricsORM
+        stmt = (
+            select(AssetORM, m)
+            .select_from(AssetORM)
+            .join(m, m.asset_id == AssetORM.id)
+            .where(
+                AssetORM.asset_type == "fii",
+                AssetORM.is_active.is_(True),
+                m.fundamental_snapshot_id.is_not(None),
+                self._supported_catalog_clause({"fii"}),
+            )
+        )
+        stmt = self._apply_max(stmt, m.pbv, filters.pbv_max)
+        stmt = self._apply_min(stmt, m.dividend_yield_pct, filters.dividend_yield_min)
+        stmt = self._apply_min(stmt, m.ffo_yield_pct, filters.ffo_yield_min)
+        stmt = self._apply_min(stmt, m.cap_rate_pct, filters.cap_rate_min)
+        stmt = self._apply_max(stmt, m.vacancy_pct, filters.vacancy_max)
+        stmt = self._apply_min(
+            stmt, m.fundamental_daily_liquidity, filters.daily_liquidity_min,
+        )
+        if filters.require_below_dividend_target:
+            stmt = stmt.where(
+                m.price.is_not(None), m.price > 0,
+                m.dividend_yield_pct.is_not(None), m.dividend_yield_pct > 6.0,
+            )
+        rows = self.session.execute(
+            stmt.order_by(m.alb_score.desc().nullslast(), AssetORM.ticker)
+            .offset(offset).limit(limit)
+        )
+        return [
+            (asset, _current_component(metrics, "fundamental"), _current_component(metrics, "score"))
+            for asset, metrics in rows
+        ]
+
     def screen_latest_stocks(self, filters, limit=100, offset=0):
         """PostgreSQL-first screener: latest snapshots + filters are executed in SQL."""
+        if self._current_coverage_complete({"stock"}, component="fundamental"):
+            return self._screen_current_stocks(filters, limit=limit, offset=offset)
         f, latest_fundamental_id = self._latest_fundamental_alias()
         t, latest_technical_id = self._latest_technical_alias("1D")
         sc, latest_score_id = self._latest_score_alias()
@@ -397,6 +644,8 @@ class AssetRepository:
 
     def screen_latest_fiis(self, filters, limit=100, offset=0):
         """PostgreSQL-first FII screener."""
+        if self._current_coverage_complete({"fii"}, component="fundamental"):
+            return self._screen_current_fiis(filters, limit=limit, offset=offset)
         f, latest_fundamental_id = self._latest_fundamental_alias()
         sc, latest_score_id = self._latest_score_alias()
 
@@ -424,10 +673,25 @@ class AssetRepository:
 
     def latest_universe(self, asset_type: str, limit: int = 1200):
         """Latest fundamentals/technical/scores for a whole asset class in one SQL query."""
+        accepted_types = {"etf", "bdr", "future"} if asset_type == "other_b3" else {asset_type}
+        required_component = "fundamental" if accepted_types <= {"stock", "fii"} else "technical"
+        if self._current_coverage_complete(accepted_types, component=required_component):
+            rows = self.session.execute(
+                select(AssetORM, AssetCurrentMetricsORM)
+                .select_from(AssetORM)
+                .join(AssetCurrentMetricsORM, AssetCurrentMetricsORM.asset_id == AssetORM.id)
+                .where(
+                    AssetORM.asset_type.in_(accepted_types),
+                    AssetORM.is_active.is_(True),
+                    self._supported_catalog_clause(accepted_types),
+                )
+                .order_by(AssetORM.ticker)
+                .limit(limit)
+            )
+            return [self._current_universe_tuple(asset, metrics) for asset, metrics in rows]
         f, latest_fundamental_id = self._latest_fundamental_alias()
         t, latest_technical_id = self._latest_technical_alias("1D")
         sc, latest_score_id = self._latest_score_alias()
-        accepted_types = {"etf", "bdr", "future"} if asset_type == "other_b3" else {asset_type}
         stmt = (
             select(AssetORM, f, t, sc)
             .select_from(AssetORM)

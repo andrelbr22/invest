@@ -110,6 +110,7 @@ class Settings(BaseSettings):
     operational_retention_days: int = 180
     operational_retention_batch_size: int = 200
     operational_retention_apply_enabled: bool = True
+    current_metrics_backfill_batch_size: int = 250
     background_scheduler_enabled: bool = False
     background_scheduler_tick_seconds: int = 60
     in_process_background_worker_enabled: bool = False

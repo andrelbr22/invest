@@ -8,6 +8,7 @@ PRODUCTION_IMAGE="formacao-do-investidor-production:current"
 ROLLBACK_IMAGE="formacao-do-investidor-production:rollback"
 LOCK_FILE="/tmp/investment-production-promotion.lock"
 WORKER_LOCATION_FILE="${PROJECT_DIR}/deployment/runtime/worker-location.env"
+WORKER_LOCATION_LIB="${PROJECT_DIR}/deployment/second-instance/worker-location-lib.sh"
 PRODUCTION_COMMIT_FILE="${PROJECT_DIR}/.git/investment-production-commit"
 PRODUCTION_WORKER_COMMIT_FILE="${PROJECT_DIR}/.git/investment-production-worker-commit"
 PUBLIC_READY_URL="https://formacaodoinvestidor.com.br/ready"
@@ -99,8 +100,19 @@ fi
 
 FDI_WORKER_LOCATION="local"
 if [[ -f "${WORKER_LOCATION_FILE}" ]]; then
-  # Arquivo local, fora do Git, preenchido somente pelo administrador da VM1.
-  source "${WORKER_LOCATION_FILE}"
+  # Para o modo local basta ler a chave sem executar o arquivo. O modo remoto
+  # somente é carregado depois de validar owner, modo 0600, IP, chave e
+  # known_hosts pelo helper compartilhado.
+  CONFIGURED_LOCATION="$(sed -n 's/^FDI_WORKER_LOCATION=//p' "${WORKER_LOCATION_FILE}" | tail -n 1)"
+  if [[ "${CONFIGURED_LOCATION}" == "remote" ]]; then
+    # shellcheck disable=SC1090
+    source "${WORKER_LOCATION_LIB}"
+    load_worker_location_config "${WORKER_LOCATION_FILE}" true
+    build_worker_ssh_command
+  elif [[ -n "${CONFIGURED_LOCATION}" && "${CONFIGURED_LOCATION}" != "local" ]]; then
+    echo "FDI_WORKER_LOCATION deve ser local ou remote."
+    exit 1
+  fi
 fi
 if [[ "${FDI_WORKER_LOCATION}" != "local" && "${FDI_WORKER_LOCATION}" != "remote" ]]; then
   echo "FDI_WORKER_LOCATION deve ser local ou remote."
@@ -132,6 +144,12 @@ if docker image inspect "${PRODUCTION_IMAGE}" >/dev/null 2>&1; then
   docker tag "${PRODUCTION_IMAGE}" "${ROLLBACK_IMAGE}"
 fi
 
+echo "Aplicando as migrações aprovadas como etapa isolada..."
+if ! docker compose --profile operations -f "${COMPOSE_FILE}" \
+  run --rm --no-deps production-migration; then
+  promotion_failed "A migração isolada da produção falhou; a aplicação anterior continuou ativa."
+fi
+
 docker tag "${STAGING_IMAGE}" "${PRODUCTION_IMAGE}"
 if ! FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}" \
   up -d --no-deps --force-recreate app; then
@@ -142,10 +160,10 @@ if ! wait_container_healthy "${APP_CONTAINER_ID}" 120; then
   promotion_failed "A nova aplicação não confirmou saúde dentro do prazo."
 fi
 
-# O Caddy resolve o nome do contêiner para um IP. Depois da recriação do
-# app, reiniciá-lo evita que continue encaminhando ao endereço antigo.
-if ! docker compose -f "${COMPOSE_FILE}" restart proxy; then
-  promotion_failed "O proxy não reiniciou após a troca da aplicação."
+# A via normal usa upstream DNS dinâmico e `caddy reload`; apenas o helper,
+# depois de validar a configuração, pode recorrer a `restart proxy`.
+if ! bash "${PROJECT_DIR}/deployment/reload-proxy.sh"; then
+  promotion_failed "O proxy não aceitou a configuração validada após a troca da aplicação."
 fi
 if ! wait_public_ready; then
   promotion_failed "A produção não respondeu em /ready depois da troca."
@@ -153,21 +171,19 @@ fi
 mark_app_promotion_complete
 
 if [[ "${FDI_WORKER_LOCATION}" == "remote" ]]; then
-  : "${FDI_WORKER_SSH_HOST:?Informe FDI_WORKER_SSH_HOST no arquivo runtime}"
-  : "${FDI_WORKER_SSH_USER:?Informe FDI_WORKER_SSH_USER no arquivo runtime}"
-  : "${FDI_WORKER_SSH_KEY:?Informe FDI_WORKER_SSH_KEY no arquivo runtime}"
-  : "${FDI_WORKER_PROJECT_DIR:?Informe FDI_WORKER_PROJECT_DIR no arquivo runtime}"
   docker compose -f "${COMPOSE_FILE}" stop worker >/dev/null 2>&1 || true
-  if ssh -o BatchMode=yes -o ConnectTimeout=15 -i "${FDI_WORKER_SSH_KEY}" \
-    "${FDI_WORKER_SSH_USER}@${FDI_WORKER_SSH_HOST}" \
+  if "${WORKER_SSH[@]}" \
     "cd '${FDI_WORKER_PROJECT_DIR}' && ./deployment/second-instance/activate-worker.sh '${TARGET_COMMIT}'"; then
+    FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}" exec -T app \
+      python -m scripts.enqueue_current_metrics_refresh \
+        --requested-by system:production-release --commit "${TARGET_COMMIT}" \
+      || promotion_failed "O preenchimento das métricas atuais não pôde ser enfileirado."
     mark_worker_promotion_complete
     echo "Produção atualizada e worker remoto confirmado no commit aprovado."
     exit 0
   fi
   echo "O worker remoto não confirmou a ativação; iniciando o retorno local."
-  ssh -o BatchMode=yes -o ConnectTimeout=15 -i "${FDI_WORKER_SSH_KEY}" \
-    "${FDI_WORKER_SSH_USER}@${FDI_WORKER_SSH_HOST}" \
+  "${WORKER_SSH[@]}" \
     "cd '${FDI_WORKER_PROJECT_DIR}' && ./deployment/second-instance/stop-worker.sh" >/dev/null 2>&1 || true
   sed -i 's/^FDI_WORKER_LOCATION=.*/FDI_WORKER_LOCATION=local/' "${WORKER_LOCATION_FILE}"
   FDI_WORKER_LOCATION="local"
@@ -182,6 +198,11 @@ WORKER_CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q worker)"
 if ! wait_local_worker_ready "${WORKER_CONTAINER_ID}"; then
   promotion_failed "O worker local não publicou um heartbeat fresco no commit aprovado. A aplicação web permanece online."
 fi
+
+FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}" exec -T app \
+  python -m scripts.enqueue_current_metrics_refresh \
+    --requested-by system:production-release --commit "${TARGET_COMMIT}" \
+  || promotion_failed "O preenchimento das métricas atuais não pôde ser enfileirado."
 
 mark_worker_promotion_complete
 echo "Produção, proxy e rotinas automáticas atualizados após aprovação manual."

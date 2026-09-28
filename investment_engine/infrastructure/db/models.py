@@ -36,6 +36,9 @@ class AssetORM(Base):
     prices: Mapped[list["PriceBarORM"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
     valuations: Mapped[list["ValuationSnapshotORM"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
     scores: Mapped[list["ScoreSnapshotORM"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
+    current_metrics: Mapped["AssetCurrentMetricsORM | None"] = relationship(
+        back_populates="asset", cascade="all, delete-orphan", uselist=False,
+    )
 
 
 class FundamentalSnapshotORM(Base):
@@ -201,6 +204,117 @@ class ScoreSnapshotORM(Base):
     data_quality_score: Mapped[Decimal|None]=mapped_column(Numeric(5,2))
     details_json: Mapped[dict]=mapped_column(JSON,default=dict,nullable=False)
     asset: Mapped[AssetORM]=relationship(back_populates="scores")
+
+
+class AssetCurrentMetricsORM(Base):
+    """Materialized current view for one asset without replacing any history.
+
+    Snapshot identifiers make every copied value auditable.  JSON mirrors keep
+    fields that are not yet promoted to typed columns available during the
+    gradual read migration, while the typed hot fields support fast screeners.
+    """
+
+    __tablename__ = "asset_current_metrics"
+    __table_args__ = (
+        Index("ix_asset_current_metrics_updated", "updated_at"),
+        Index("ix_asset_current_metrics_fundamental_asof", "fundamental_as_of"),
+        Index("ix_asset_current_metrics_technical_asof", "technical_as_of"),
+        Index("ix_asset_current_metrics_alb_score", "alb_score"),
+    )
+
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), primary_key=True,
+    )
+    fundamental_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("fundamental_snapshots.id", ondelete="SET NULL"), nullable=True,
+    )
+    technical_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("technical_snapshots.id", ondelete="SET NULL"), nullable=True,
+    )
+    score_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("score_snapshots.id", ondelete="SET NULL"), nullable=True,
+    )
+    price_bar_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("price_bars.id", ondelete="SET NULL"), nullable=True,
+    )
+
+    fundamental_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fundamental_retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    technical_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    technical_retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    score_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    score_calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    price_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    price_retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    pe: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    pbv: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    dividend_yield_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    ev_ebitda: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    ebit_margin_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    net_margin_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    current_ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    roe_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    roic_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    gross_debt_to_equity: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    net_debt_to_ebitda: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    revenue_cagr_5y_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    earnings_cagr_5y_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    ffo_yield_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    cap_rate_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    vacancy_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    financial_vacancy_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    ltv_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    wale_years: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    fundamental_daily_liquidity: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+
+    score_tv: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    signal_tv: Mapped[str | None] = mapped_column(String(24))
+    market_cap: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    technical_daily_liquidity: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    daily_liquidity: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    sma20: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    sma50: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    sma200: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    sma20_1w: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    sma50_1w: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    sma20_1m: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    sma50_1m: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    rsi14: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    macd: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    atr14: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    volatility_annual_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    max_drawdown_1y_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    return_1m_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    return_3m_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    return_12m_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+
+    quality_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    value_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    growth_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    technical_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    risk_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    liquidity_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    alb_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    coverage_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    data_quality_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+
+    fundamental_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    technical_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    score_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    technical_features_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    source_refs_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    fallback_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    parity_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False, default="1")
+    calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False,
+    )
+
+    asset: Mapped[AssetORM] = relationship(back_populates="current_metrics")
 
 
 class AccessLevelORM(Base):

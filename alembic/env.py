@@ -7,9 +7,12 @@ from investment_engine.infrastructure.db.base import Base
 from investment_engine.infrastructure.db import models  # noqa: F401
 
 config = context.config
+database_url = os.getenv("DATABASE_ADMIN_URL", "").strip() or settings.database_url
+# Alembic Config uses ConfigParser interpolation; URL-encoded credentials may
+# legitimately contain percent signs and therefore need escaping here.
 config.set_main_option(
     "sqlalchemy.url",
-    os.getenv("DATABASE_ADMIN_URL", "").strip() or settings.database_url,
+    str(database_url).replace("%", "%%"),
 )
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
