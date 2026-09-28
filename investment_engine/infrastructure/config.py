@@ -100,8 +100,16 @@ class Settings(BaseSettings):
     canonical_url: str = "https://formacaodoinvestidor.com.br"
     secure_cookies: bool = True
     economy_headlines_ttl_seconds: int = 3600
+    access_policy_cache_ttl_seconds: float = 5.0
+    analysis_preset_cache_ttl_seconds: float = 15.0
+    shared_response_cache_ttl_seconds: float = 3.0
+    application_cache_max_entries: int = 2048
     background_worker_poll_seconds: float = 2.0
     background_job_lease_timeout_seconds: int = 300
+    background_job_retention_days: int = 45
+    operational_retention_days: int = 180
+    operational_retention_batch_size: int = 200
+    operational_retention_apply_enabled: bool = True
     background_scheduler_enabled: bool = False
     background_scheduler_tick_seconds: int = 60
     in_process_background_worker_enabled: bool = False

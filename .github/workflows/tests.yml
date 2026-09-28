@@ -65,6 +65,6 @@ jobs:
 
           with create_engine(settings.database_url).connect() as connection:
               revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-          assert revision == "0027_v1_23_analysis_settings", revision
+          assert revision == "0028_v1_23_operational_retention", revision
           print("Migrações validadas até", revision)
           PY

@@ -52,13 +52,13 @@ def test_publisher_only_configures_credential_helper_when_missing_and_updates_ba
     assert "$localMainSha -ne $remoteMainSha" in publisher
 
 
-def test_release_identity_is_v1231_r1():
+def test_release_identity_is_v1231_r2():
     version = (ROOT / "investment_engine" / "__init__.py").read_text(encoding="utf-8")
     project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     publisher = (ROOT / "PUBLICAR_GITHUB.ps1").read_text(encoding="utf-8")
     assert '__version__ = "1.23.1"' in version
     assert 'version = "1.23.1"' in project
-    assert "V1.23.1 R1" in publisher
+    assert "V1.23.1 R2" in publisher
 
 
 def test_promotion_runs_performance_gate_before_any_production_mutation():

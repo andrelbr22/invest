@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import re
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ...infrastructure.db.models import AccessLevelORM, UserAccessPolicyORM
 
@@ -438,7 +438,11 @@ class AccessPolicyRepository:
         clean = normalized_email(email)
         if not clean:
             return None
-        return self.session.scalar(select(UserAccessPolicyORM).where(UserAccessPolicyORM.email == clean))
+        return self.session.scalar(
+            select(UserAccessPolicyORM)
+            .options(joinedload(UserAccessPolicyORM.access_level))
+            .where(UserAccessPolicyORM.email == clean)
+        )
 
     def register(self, email: str, display_name: str | None = None, *, is_owner: bool = False) -> UserAccessPolicyORM:
         clean = normalized_email(email)

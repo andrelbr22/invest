@@ -73,6 +73,7 @@ from ..core.repositories.investor_events import (
 )
 from ..core.repositories.portal import PortalRepository, portal_book_dict, portal_media_dict, portal_page_dict
 from ..core.analysis_settings import AnalysisSettingsService
+from ..core.cache import BoundedTTLCache
 from ..core.investor_events.service import DataQualityService
 from ..core.portal import decode_portal_image
 from ..core.jobs.schedules import (
@@ -131,6 +132,18 @@ _IN_PROCESS_WORKER_STOP = threading.Event()
 _IN_PROCESS_WORKER_THREAD: threading.Thread | None = None
 _QUIET_SUCCESS_PATHS = frozenset({"/health", "/ready"})
 _STATIC_ASSET_PATH_PREFIXES = ("/ui-assets/", "/portal-assets/", "/portal-media/")
+_ACCESS_POLICY_CACHE = BoundedTTLCache(
+    settings.access_policy_cache_ttl_seconds,
+    max_entries=settings.application_cache_max_entries,
+)
+_ANALYSIS_SETTINGS_CACHE = BoundedTTLCache(
+    settings.analysis_preset_cache_ttl_seconds,
+    max_entries=settings.application_cache_max_entries,
+)
+_SHARED_RESPONSE_CACHE = BoundedTTLCache(
+    settings.shared_response_cache_ttl_seconds,
+    max_entries=max(32, settings.application_cache_max_entries // 8),
+)
 
 
 def _is_quiet_successful_request(path: str, status_code: int) -> bool:
@@ -278,7 +291,8 @@ async def security_headers(request, call_next):
     private_path = request.url.path.startswith((
         "/session", "/search", "/alerts", "/portfolios", "/backtests",
         "/access", "/auth", "/insights", "/automation", "/market-dashboard", "/admin",
-        "/investor-events",
+        "/investor-events", "/finances", "/screen", "/assets", "/data", "/debug",
+        "/news", "/strategies", "/prices", "/operations",
     ))
     immutable_asset = (
         request.url.path.startswith(("/portal-assets/books/", "/portal-media/"))
@@ -309,6 +323,32 @@ def get_db():
         db.close()
 
 
+def _cache_namespace(db: Session):
+    """Separate cache entries by the engine object, without reusable numeric ids."""
+    return db.get_bind()
+
+
+def _invalidate_access_policy_cache(db: Session, email: str | None = None) -> None:
+    namespace = _cache_namespace(db)
+    clean = str(email or "").strip().lower()
+    _ACCESS_POLICY_CACHE.invalidate(
+        lambda key: key[0] == namespace and (not clean or key[1] == clean)
+    )
+
+
+def _invalidate_analysis_settings_cache(db: Session, asset_type: str | None = None) -> None:
+    namespace = _cache_namespace(db)
+    clean = str(asset_type or "").strip().lower()
+    _ANALYSIS_SETTINGS_CACHE.invalidate(
+        lambda key: key[0] == namespace and (not clean or key[1] == clean)
+    )
+
+
+def _invalidate_shared_response_cache(db: Session) -> None:
+    namespace = _cache_namespace(db)
+    _SHARED_RESPONSE_CACHE.invalidate(lambda key: key[0] == namespace)
+
+
 def _request_email(request: Request, x_app_user_email: str = Header(default="")) -> str:
     session_user = request.session.get("user") if hasattr(request, "session") else None
     if isinstance(session_user, dict):
@@ -321,12 +361,19 @@ def _request_email(request: Request, x_app_user_email: str = Header(default=""))
 
 
 def _access_policy(db: Session, email: str) -> dict:
+    email = str(email or "").strip().lower()
     is_owner = email in settings.owner_emails or (email == "local-owner@localhost" and not settings.app_auth_required)
+    cache_key = (_cache_namespace(db), email, bool(is_owner))
+    found, cached, generation = _ACCESS_POLICY_CACHE.get_with_generation(cache_key)
+    if found:
+        return cached
     row = AccessPolicyRepository(db).get(email)
     if is_owner:
-        return full_owner_policy(email, row.display_name if row else None)
+        result = full_owner_policy(email, row.display_name if row else None)
+        _ACCESS_POLICY_CACHE.set_if_generation(cache_key, result, generation)
+        return result
     if row is None:
-        return {
+        result = {
             "email": email,
             "display_name": None,
             "role": "guest",
@@ -345,7 +392,10 @@ def _access_policy(db: Session, email: str) -> dict:
             "access_overrides": {},
             "is_owner": False,
         }
-    return policy_dict(row)
+    else:
+        result = policy_dict(row)
+    _ACCESS_POLICY_CACHE.set_if_generation(cache_key, result, generation)
+    return result
 
 
 def require_permission(permission: str):
@@ -1248,6 +1298,7 @@ def verify_email_login_code(req: EmailLoginVerifyRequest, request: Request, db: 
         is_owner=email in settings.owner_emails,
     )
     db.commit()
+    _invalidate_access_policy_cache(db, email)
     request.session.clear()
     request.session["user"] = {
         "email": email,
@@ -1287,6 +1338,7 @@ async def oauth2callback(request: Request):
     try:
         AccessPolicyRepository(db).register(email, display_name, is_owner=email in settings.owner_emails)
         db.commit()
+        _invalidate_access_policy_cache(db, email)
     finally:
         db.close()
     return RedirectResponse(destination, status_code=303)
@@ -1576,7 +1628,7 @@ def retry_background_job(
 
 @app.get("/debug/db-counts")
 def debug_db_counts(_access=Depends(require_owner), db: Session = Depends(get_db)):
-    names = ["assets", "fundamental_snapshots", "technical_snapshots", "score_snapshots", "valuation_snapshots", "price_bars", "portfolios", "portfolio_positions", "portfolio_custom_investments", "finance_transactions", "finance_monthly_budgets", "interest_curve_snapshots", "backtest_runs", "backtest_trades", "backtest_batch_jobs", "access_levels", "user_access_policies", "user_news_cache", "price_alerts", "price_alert_events", "background_jobs", "runtime_leases", "service_heartbeats", "operational_incidents"]
+    names = ["assets", "fundamental_snapshots", "technical_snapshots", "score_snapshots", "valuation_snapshots", "price_bars", "portfolios", "portfolio_positions", "portfolio_custom_investments", "finance_transactions", "finance_monthly_budgets", "interest_curve_snapshots", "backtest_runs", "backtest_trades", "backtest_batch_jobs", "access_levels", "user_access_policies", "user_news_cache", "price_alerts", "price_alert_events", "background_jobs", "operational_archive", "runtime_leases", "service_heartbeats", "operational_incidents"]
     counts = {}
     for name in names:
         counts[name] = db.execute(text(f"SELECT COUNT(*) FROM {name}")).scalar_one()
@@ -1592,6 +1644,7 @@ def register_access(
     is_owner = email in settings.owner_emails or (email == "local-owner@localhost" and not settings.app_auth_required)
     row = AccessPolicyRepository(db).register(email, req.display_name, is_owner=is_owner)
     db.commit()
+    _invalidate_access_policy_cache(db, email)
     return policy_dict(row, is_owner=is_owner)
 
 
@@ -1719,6 +1772,7 @@ def update_access_user(
         permissions=_alert_rule_permissions(updated_policy),
     )
     db.commit()
+    _invalidate_access_policy_cache(db, clean)
     return updated_policy
 
 
@@ -1790,6 +1844,7 @@ def update_access_level(
         for member in members:
             _enforce_user_alert_access(db, member)
         db.commit()
+        _invalidate_access_policy_cache(db)
     except HTTPException:
         db.rollback()
         raise
@@ -1821,6 +1876,7 @@ def assign_user_access_level(
             raise HTTPException(404, "user_not_found")
         _enforce_user_alert_access(db, row)
         db.commit()
+        _invalidate_access_policy_cache(db, clean)
     except HTTPException:
         db.rollback()
         raise
@@ -1854,6 +1910,8 @@ def assign_access_level_in_bulk(
             _enforce_user_alert_access(db, row)
             updated.append(policy_dict(row))
         db.commit()
+        for item in updated:
+            _invalidate_access_policy_cache(db, item["email"])
     except HTTPException:
         db.rollback()
         raise
@@ -1881,6 +1939,7 @@ def update_user_access_overrides(
             raise HTTPException(404, "user_not_found")
         _enforce_user_alert_access(db, row)
         db.commit()
+        _invalidate_access_policy_cache(db, clean)
     except HTTPException:
         db.rollback()
         raise
@@ -1905,6 +1964,7 @@ def clear_user_access_overrides(
             raise HTTPException(404, "user_not_found")
         _enforce_user_alert_access(db, row)
         db.commit()
+        _invalidate_access_policy_cache(db, clean)
     except HTTPException:
         db.rollback()
         raise
@@ -2067,6 +2127,26 @@ def _analysis_settings_service(db: Session) -> AnalysisSettingsService:
     return AnalysisSettingsService(db, _factory_preset_configuration)
 
 
+def _cached_analysis_preset_payload(db: Session, asset_type: str, preset_id: str) -> dict:
+    key = (_cache_namespace(db), asset_type, "preset", preset_id)
+    found, cached, generation = _ANALYSIS_SETTINGS_CACHE.get_with_generation(key)
+    if found:
+        return cached
+    payload = _analysis_settings_service(db).preset_payload(asset_type, preset_id)
+    _ANALYSIS_SETTINGS_CACHE.set_if_generation(key, payload, generation)
+    return payload
+
+
+def _cached_analysis_columns_payload(db: Session, asset_type: str) -> dict:
+    key = (_cache_namespace(db), asset_type, "columns")
+    found, cached, generation = _ANALYSIS_SETTINGS_CACHE.get_with_generation(key)
+    if found:
+        return cached
+    payload = _analysis_settings_service(db).columns_payload(asset_type)
+    _ANALYSIS_SETTINGS_CACHE.set_if_generation(key, payload, generation)
+    return payload
+
+
 def _validated_admin_preset_configuration(asset_type: str, payload: dict) -> dict:
     raw = dict(payload or {})
     supplied_type = raw.get("asset_type")
@@ -2113,9 +2193,8 @@ def screening_presets(
     # They retain the exact historical payload; HTTP requests receive the
     # additive owner/factory metadata from the persistent settings table.
     if isinstance(db, Session):
-        service = _analysis_settings_service(db)
         for item in items:
-            setting = service.preset_payload(asset_type, item["id"])
+            setting = _cached_analysis_preset_payload(db, asset_type, item["id"])
             item.update({
                 "configuration": setting["configuration"],
                 "factory_configuration": setting["factory_configuration"],
@@ -2124,7 +2203,7 @@ def screening_presets(
                 "active_variant": setting["active_variant"],
                 "revision": setting["revision"],
             })
-        payload["columns"] = service.columns_payload(asset_type)
+        payload["columns"] = _cached_analysis_columns_payload(db, asset_type)
     return payload
 
 
@@ -2158,6 +2237,7 @@ def update_admin_analysis_preset(
             actor=access["email"],
         )
         db.commit()
+        _invalidate_analysis_settings_cache(db, asset_type)
         return payload
     except ValueError as exc:
         db.rollback()
@@ -2180,6 +2260,7 @@ def reset_admin_analysis_preset(
             actor=access["email"],
         )
         db.commit()
+        _invalidate_analysis_settings_cache(db, asset_type)
         return payload
     except ValueError as exc:
         db.rollback()
@@ -2202,6 +2283,7 @@ def update_admin_analysis_columns(
             actor=access["email"],
         )
         db.commit()
+        _invalidate_analysis_settings_cache(db, asset_type)
         return payload
     except ValueError as exc:
         db.rollback()
@@ -2222,6 +2304,7 @@ def reset_admin_analysis_columns(
             actor=access["email"],
         )
         db.commit()
+        _invalidate_analysis_settings_cache(db, asset_type)
         return payload
     except ValueError as exc:
         db.rollback()
@@ -2891,7 +2974,7 @@ def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, access=Depend
     strategy=STOCK_STRATEGIES.get(strategy_id)
     if not strategy: raise HTTPException(404,"strategy_not_found")
     _require_system_analysis_access(strategy_id, access)
-    setting = _analysis_settings_service(db).preset_payload("stock", strategy_id)
+    setting = _cached_analysis_preset_payload(db, "stock", strategy_id)
     if setting["active_variant"] == "owner":
         return _owner_preset_rows(
             setting["configuration"], asset_type="stock", limit=limit, offset=offset, access=access, db=db,
@@ -2906,7 +2989,7 @@ def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, access=De
     if not strategy:
         raise HTTPException(404, "strategy_not_found")
     _require_system_analysis_access(strategy_id, access)
-    setting = _analysis_settings_service(db).preset_payload("fii", strategy_id)
+    setting = _cached_analysis_preset_payload(db, "fii", strategy_id)
     if setting["active_variant"] == "owner":
         return _owner_preset_rows(
             setting["configuration"], asset_type="fii", limit=limit, offset=offset, access=access, db=db,
@@ -3692,7 +3775,7 @@ def refresh_portfolio_prices(portfolio_id: UUID, access=Depends(require_permissi
 # V1.13 Shared market dashboard
 # -----------------------------
 
-def _market_dashboard_payload(db: Session) -> dict:
+def _build_market_dashboard_payload(db: Session) -> dict:
     snapshots = SharedSnapshotRepository(db)
     snapshot_rows = snapshots.get_many(
         spec.snapshot_key for spec in REFRESH_SCHEDULES.values()
@@ -3752,6 +3835,26 @@ def _market_dashboard_payload(db: Session) -> dict:
     return payload
 
 
+def _market_dashboard_payload(db: Session) -> dict:
+    key = (_cache_namespace(db), "market-dashboard")
+    found, cached, generation = _SHARED_RESPONSE_CACHE.get_with_generation(key)
+    if found:
+        return cached
+    payload = _build_market_dashboard_payload(db)
+    _SHARED_RESPONSE_CACHE.set_if_generation(key, payload, generation)
+    return payload
+
+
+def _cached_refresh_statuses(db: Session) -> dict[str, dict]:
+    key = (_cache_namespace(db), "refresh-statuses")
+    found, cached, generation = _SHARED_RESPONSE_CACHE.get_with_generation(key)
+    if found:
+        return cached
+    payload = all_refresh_statuses(db)
+    _SHARED_RESPONSE_CACHE.set_if_generation(key, payload, generation)
+    return payload
+
+
 @app.get("/market-dashboard")
 def market_dashboard(
     _access=Depends(require_permission("can_view_market")),
@@ -3771,6 +3874,7 @@ def ensure_market_dashboard(
         if created:
             scheduled.append(key)
     db.commit()
+    _invalidate_shared_response_cache(db)
     payload = _market_dashboard_payload(db)
     payload["scheduled"] = bool(scheduled)
     payload["scheduled_groups"] = scheduled
@@ -3788,6 +3892,7 @@ def refresh_market_dashboard(
         if created:
             scheduled.append(key)
     db.commit()
+    _invalidate_shared_response_cache(db)
     payload = _market_dashboard_payload(db)
     payload["scheduled"] = bool(scheduled)
     payload["scheduled_groups"] = scheduled
@@ -3799,7 +3904,7 @@ def market_dashboard_updates(
     _access=Depends(require_permission("can_view_market")),
     db: Session = Depends(get_db),
 ):
-    return {"updates": all_refresh_statuses(db), "timezone": "America/Sao_Paulo"}
+    return {"updates": _cached_refresh_statuses(db), "timezone": "America/Sao_Paulo"}
 
 
 @app.get("/market-dashboard/interest-curve/history")
@@ -3827,17 +3932,20 @@ def refresh_market_dashboard_group(
 ):
     if group_key not in REFRESH_SCHEDULES:
         raise HTTPException(404, "market_refresh_group_not_found")
+    if group_key == "operations_retention" and not access.get("is_owner"):
+        raise HTTPException(403, "owner_access_required")
     if group_key in {"catalog", "fundamentals", "technical_daily", "technical_intraday"} and not access.get("can_sync_market"):
         raise HTTPException(403, detail={"permission_required": "can_sync_market"})
     row, created = enqueue_refresh(
         db, group_key, trigger="manual", requested_by=access.get("email"), force=True,
     )
     db.commit()
+    _invalidate_shared_response_cache(db)
     return {
         "scheduled": created,
         "cooldown": not created,
         "job": background_job_dict(row) if row is not None else None,
-        "update": all_refresh_statuses(db).get(group_key),
+        "update": _cached_refresh_statuses(db).get(group_key),
     }
 
 
@@ -3849,14 +3957,17 @@ def ensure_market_dashboard_group(
 ):
     if group_key not in REFRESH_SCHEDULES:
         raise HTTPException(404, "market_refresh_group_not_found")
+    if group_key == "operations_retention" and not access.get("is_owner"):
+        raise HTTPException(403, "owner_access_required")
     row, created = enqueue_refresh(
         db, group_key, trigger="access", requested_by=access.get("email"), force=False,
     )
     db.commit()
+    _invalidate_shared_response_cache(db)
     return {
         "scheduled": created,
         "job": background_job_dict(row) if row is not None else None,
-        "update": all_refresh_statuses(db).get(group_key),
+        "update": _cached_refresh_statuses(db).get(group_key),
     }
 
 
@@ -3868,7 +3979,8 @@ def market_dashboard_headlines(
     row = SharedSnapshotRepository(db).get(REFRESH_SCHEDULES["headlines"].snapshot_key)
     _job, scheduled = enqueue_refresh(db, "headlines", trigger="access", requested_by=_access.get("email"))
     db.commit()
-    update = all_refresh_statuses(db)["headlines"]
+    _invalidate_shared_response_cache(db)
+    update = _cached_refresh_statuses(db)["headlines"]
     return {
         "data": dict(row.payload_json or {}) if row is not None else {},
         "refreshing": update["status"] in {"queued", "running"},
@@ -3884,6 +3996,7 @@ def refresh_market_dashboard_headlines(
 ):
     row, scheduled = enqueue_refresh(db, "headlines", trigger="manual", requested_by=access.get("email"), force=True)
     db.commit()
+    _invalidate_shared_response_cache(db)
     return {"scheduled": scheduled, "refreshing": scheduled, "job": background_job_dict(row)}
 
 
@@ -3895,7 +4008,8 @@ def market_dashboard_comparison(
     row = SharedSnapshotRepository(db).get(REFRESH_SCHEDULES["comparison"].snapshot_key)
     _job, scheduled = enqueue_refresh(db, "comparison", trigger="access", requested_by=_access.get("email"))
     db.commit()
-    update = all_refresh_statuses(db)["comparison"]
+    _invalidate_shared_response_cache(db)
+    update = _cached_refresh_statuses(db)["comparison"]
     return {
         "data": dict(row.payload_json or {}) if row is not None else {},
         "refreshing": update["status"] in {"queued", "running"},
@@ -3914,11 +4028,12 @@ def refresh_market_dashboard_comparison(
         requested_by=access.get("email"), force=True,
     )
     db.commit()
+    _invalidate_shared_response_cache(db)
     # A manual request can legitimately reuse a job that is already inside the
     # cooldown window.  Always return the last valid snapshot and the real job
     # status so the browser keeps useful data visible while the refresh runs.
     snapshot = SharedSnapshotRepository(db).get(REFRESH_SCHEDULES["comparison"].snapshot_key)
-    update = all_refresh_statuses(db)["comparison"]
+    update = _cached_refresh_statuses(db)["comparison"]
     return {
         "data": dict(snapshot.payload_json or {}) if snapshot is not None else {},
         "scheduled": scheduled,

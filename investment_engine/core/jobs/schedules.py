@@ -127,6 +127,12 @@ REFRESH_SCHEDULES: dict[str, RefreshSchedule] = {
         "quality:data-sources", "Metadados internos das fontes", timedelta(hours=30),
         fixed_times=(time(20, 10),), priority=140,
     ),
+    "operations_retention": RefreshSchedule(
+        "operations_retention", "Retenção segura da fila e dados operacionais",
+        "operational_retention", "operations:retention",
+        "Arquivo operacional interno com checksum", timedelta(hours=36),
+        fixed_times=(time(2, 50),), priority=200,
+    ),
 }
 
 

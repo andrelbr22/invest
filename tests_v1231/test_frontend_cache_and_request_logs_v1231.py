@@ -36,25 +36,25 @@ def test_static_references_are_versioned_and_receive_immutable_cache_headers():
     portal_script = (WEB_ROOT / "portal-assets" / "portal.js").read_text(encoding="utf-8")
     app_script = (WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
-    assert "../ui-assets/app.css?v=1.23.1-r1" in platform
-    assert "../ui-assets/app.js?v=1.23.1-r1" in platform
-    assert "./portal-assets/portal.css?v=1.23.1-r1" in portal
-    assert "./portal-assets/portal.js?v=1.23.1-r1" in portal
+    assert "../ui-assets/app.css?v=1.23.1-r2" in platform
+    assert "../ui-assets/app.js?v=1.23.1-r2" in platform
+    assert "./portal-assets/portal.css?v=1.23.1-r2" in portal
+    assert "./portal-assets/portal.js?v=1.23.1-r2" in portal
     portal_asset_references = [
         value for value in re.findall(r'(?:src|href)="([^"]+)"', portal)
         if "/portal-assets/" in value
     ]
     assert portal_asset_references
-    assert all("?v=1.23.1-r1" in value for value in portal_asset_references)
-    assert "?v=1.23.1-r1" in portal_script
-    assert "?v=1.23.1-r1" in app_script
+    assert all("?v=1.23.1-r2" in value for value in portal_asset_references)
+    assert "?v=1.23.1-r2" in portal_script
+    assert "?v=1.23.1-r2" in app_script
 
     client = TestClient(app, base_url="http://localhost")
     for path in (
-        "/ui-assets/app.css?v=1.23.1-r1",
-        "/ui-assets/app.js?v=1.23.1-r1",
-        "/portal-assets/portal.css?v=1.23.1-r1",
-        "/portal-assets/books/formacao-investidor-fundamentos.webp?v=1.23.1-r1",
+        "/ui-assets/app.css?v=1.23.1-r2",
+        "/ui-assets/app.js?v=1.23.1-r2",
+        "/portal-assets/portal.css?v=1.23.1-r2",
+        "/portal-assets/books/formacao-investidor-fundamentos.webp?v=1.23.1-r2",
     ):
         response = client.get(path)
         assert response.status_code == 200, path
@@ -72,6 +72,18 @@ def test_only_successful_health_and_static_requests_are_quiet():
     assert not _is_quiet_successful_request("/health", 500)
     assert not _is_quiet_successful_request("/ui-assets/missing.js", 404)
     assert not _is_quiet_successful_request("/market-dashboard", 200)
+
+
+def test_sensitive_api_prefixes_are_never_stored_by_browsers():
+    client = TestClient(app, base_url="http://localhost", raise_server_exceptions=False)
+    for path in (
+        "/finances/not-real",
+        "/screen/not-real",
+        "/data/not-real",
+        "/debug/not-real",
+    ):
+        response = client.get(path)
+        assert response.headers["cache-control"] == "no-store", path
 
 
 def test_uvicorn_access_log_is_disabled_because_structured_middleware_logs_requests():

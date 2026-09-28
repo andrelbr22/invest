@@ -2,6 +2,28 @@
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
 
+## Conclusão da revisão conservadora V1.23.1 R2
+
+A R2 conclui os dois itens conservadores que permaneceram pendentes após a
+primeira homologação da V1.23.1: cache curto para permissões, presets e
+respostas compartilhadas; e retenção segura da fila e dos registros
+operacionais. O cache é limitado, devolve cópias independentes e usa geração
+de invalidação, impedindo uma leitura simultânea antiga de recolocar uma
+permissão revogada. Toda alteração administrativa invalida a entrada depois
+da confirmação no banco.
+
+A retenção opera diariamente em lotes pequenos e somente sobre trabalhos
+automáticos, concluídos, antigos e reproduzíveis. Pedidos de usuários,
+backtests, falhas, trabalhos ativos e o registro mais recente de cada rotina
+são preservados. Antes da remoção da tabela quente, cada linha recebe uma
+cópia integral com checksum no arquivo operacional, na mesma transação. A
+execução manual é apenas uma simulação, salvo quando `--apply` é informado.
+Ao reverter a migração, a tabela é mantida se contiver registros, evitando
+apagar a única cópia preservada.
+
+Consulte `PATCH_V1231_R2.md`, `INSTRUCOES_ORACLE_V1231_R2.md` e
+`RELATORIO_VALIDACAO_V1231_R2.md` antes de promover.
+
 ## Desempenho e publicação segura V1.23.1 R1
 
 A V1.23.1 R1 parte exatamente da R8 homologada e preserva suas rotas,

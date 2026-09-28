@@ -1954,6 +1954,7 @@ const adminRefreshGroups=[
   {key:"catalog",section:"Catálogo e análises",frequency:"Dias úteis, 08h30"},{key:"fundamentals",section:"Catálogo e análises",frequency:"Dias úteis, 19h"},{key:"technical_daily",section:"Catálogo e análises",frequency:"Dias úteis, 18h15"},{key:"technical_intraday",section:"Catálogo e análises",frequency:"Pregão, a cada 15 min"},
   {key:"portfolio_dividends",section:"Eventos oficiais",frequency:"Dias úteis, 07h20 e 19h20"},{key:"cvm_relevant_facts",section:"Eventos oficiais",frequency:"Diária, 07h40"},{key:"official_calendar",section:"Eventos oficiais",frequency:"Diária, 03h20"},{key:"ima_history",section:"Eventos oficiais",frequency:"Dias úteis, 21h30"},
   {key:"alb_monitor",section:"Qualidade",frequency:"Dias úteis, 19h40"},{key:"data_quality",section:"Qualidade",frequency:"Diária, 20h10"},
+  {key:"operations_retention",section:"Operação",frequency:"Diária, 02h50"},
 ];
 
 function accessRuleEditor(level,disabled=false){
@@ -2014,7 +2015,7 @@ async function loadAdminUpdates(root){
   root.innerHTML=`<div class="metric-grid">${metricCard("Ações",number(groups.stock||0,0),"Ativos ativos")}${metricCard("FIIs",number(groups.fii||0,0),"Fundos imobiliários")}${metricCard("ETFs",number(counts.etf||0,0),"Fundos de índice")}${metricCard("BDRs",number(counts.bdr||0,0),"Recibos negociados na B3")}</div><div class="admin-update-actions"><button class="button secondary" data-refresh-groups="catalog">Atualizar catálogo</button><button class="button secondary" data-refresh-groups="fundamentals">Atualizar fundamentos e notas</button>${grouped.map(([label,keys])=>`<button class="button secondary" data-refresh-groups="${keys.join(",")}">${esc(label)}</button>`).join("")}<button class="button primary" data-refresh-groups="${allKeys.join(",")}" data-confirm-all-updates>Atualizar todas as ${allKeys.length} rotinas</button></div>${sectionCard("Todas as atualizações automáticas",adminUpdateTable(updates),"As solicitações entram na fila e não bloqueiam o site")}${sectionCard("Monitor de alertas",`<div class="admin-monitor-row"><span><strong>B3: 5 minutos no pregão</strong><small>Demais mercados: 30 minutos, continuamente</small></span><button class="button secondary" data-run-alert-monitor>Executar verificação agora</button></div><div id="alert-monitor-result" class="notice info hidden"></div>`,`A execução manual respeita as mesmas regras e não envia alertas duplicados`)}`;
 }
 
-const jobTypeLabels={market_group_refresh:"Mercado e economia",economy_headlines_refresh:"Manchetes",historical_comparison_refresh:"Comparador histórico",market_catalog_refresh:"Catálogo",market_fundamentals_refresh:"Fundamentos",market_technicals_refresh:"Indicadores técnicos",market_intraday_refresh:"Cotações intradiárias",portfolio_prices_refresh:"Preços de carteira",user_news_refresh:"Notícias do usuário",personal_backtest_matrix:"Backtest pessoal",investor_dividends_refresh:"Proventos oficiais",cvm_relevant_facts_refresh:"Fatos relevantes CVM",official_calendar_refresh:"Agenda oficial",anbima_ima_history_refresh:"Histórico IMA-B/IRF-M",alb_universe_monitor:"Monitor do filtro ALB",data_quality_refresh:"Qualidade dos dados",noop:"Verificação interna"};
+const jobTypeLabels={market_group_refresh:"Mercado e economia",economy_headlines_refresh:"Manchetes",historical_comparison_refresh:"Comparador histórico",market_catalog_refresh:"Catálogo",market_fundamentals_refresh:"Fundamentos",market_technicals_refresh:"Indicadores técnicos",market_intraday_refresh:"Cotações intradiárias",portfolio_prices_refresh:"Preços de carteira",user_news_refresh:"Notícias do usuário",personal_backtest_matrix:"Backtest pessoal",investor_dividends_refresh:"Proventos oficiais",cvm_relevant_facts_refresh:"Fatos relevantes CVM",official_calendar_refresh:"Agenda oficial",anbima_ima_history_refresh:"Histórico IMA-B/IRF-M",alb_universe_monitor:"Monitor do filtro ALB",data_quality_refresh:"Qualidade dos dados",operational_retention:"Retenção operacional",noop:"Verificação interna"};
 function jobStatusLabel(status){return ({queued:"Na fila",running:"Executando",succeeded:"Concluído",failed:"Falhou",cancelled:"Cancelado"})[status]||status;}
 async function loadAdminJobs(root){
   const jobs=await api("/admin/jobs?limit=100",{bypassCache:true});
@@ -2225,7 +2226,7 @@ function portalPageEditor(payload){
   </form>`;
 }
 
-function portalCoverUrl(book){return book.cover_media_id?`${BASE_PATH}/portal-media/${encodeURIComponent(book.cover_media_id)}`:`${BASE_PATH}${book.fallback_cover_path||"/portal-assets/books/formacao-investidor-fundamentos.webp"}?v=1.23.1-r1`;}
+function portalCoverUrl(book){return book.cover_media_id?`${BASE_PATH}/portal-media/${encodeURIComponent(book.cover_media_id)}`:`${BASE_PATH}${book.fallback_cover_path||"/portal-assets/books/formacao-investidor-fundamentos.webp"}?v=1.23.1-r2`;}
 function portalBookForm(book,index,total){
   const links=[...(book.sales_links||[])];while(links.length<3)links.push({label:"",url:""});
   const isNew=!book.id;

@@ -751,6 +751,15 @@ class BackgroundJobORM(Base):
         Index("ix_background_jobs_ready", "status", "run_after", "priority", "created_at"),
         Index("ix_background_jobs_lease", "status", "heartbeat_at"),
         Index(
+            "ix_background_jobs_retention_scan", "finished_at", "id",
+            postgresql_where=text(
+                "status = 'succeeded' AND requested_by IS NULL AND finished_at IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "status = 'succeeded' AND requested_by IS NULL AND finished_at IS NOT NULL"
+            ),
+        ),
+        Index(
             "uq_background_jobs_active_deduplication",
             "deduplication_key",
             unique=True,
@@ -815,6 +824,29 @@ class SharedSnapshotORM(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
     )
+
+
+class OperationalArchiveORM(Base):
+    """Immutable copy of safely retired queue and operational records."""
+
+    __tablename__ = "operational_archive"
+    __table_args__ = (
+        UniqueConstraint("entity_type", "source_id", name="uq_operational_archive_source"),
+        Index("ix_operational_archive_type_archived", "entity_type", "archived_at"),
+        Index("ix_operational_archive_source_updated", "source_updated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Incident codes and service identifiers are reusable.  The archive key
+    # therefore also contains the cycle timestamp and needs extra room.
+    source_id: Mapped[str] = mapped_column(String(320), nullable=False)
+    source_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False, default="1")
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    record_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
 class EmailLoginCodeORM(Base):

@@ -40,6 +40,7 @@ from ..repositories.economic_series import (
     utcnow,
 )
 from ..repositories.background_jobs import BackgroundJobRepository
+from .retention import OperationalRetentionService
 from ..backtesting.service import BacktestService
 
 
@@ -865,6 +866,34 @@ def handle_data_quality_refresh(payload: dict) -> dict:
         session.close()
 
 
+def handle_operational_retention(payload: dict) -> dict:
+    """Archive conservative, reproducible operational rows in one transaction."""
+    snapshot_key = str(payload.get("snapshot_key") or "operations:retention")
+    session = get_session_factory()()
+    try:
+        result = OperationalRetentionService(session).run(
+            apply=settings.operational_retention_apply_enabled,
+            job_retention_days=settings.background_job_retention_days,
+            operational_retention_days=settings.operational_retention_days,
+            limit=settings.operational_retention_batch_size,
+        )
+        SharedSnapshotRepository(session).save_valid(
+            snapshot_key=snapshot_key,
+            snapshot_kind="operational_retention",
+            payload=_json_safe(result),
+            source="internal-operational-archive",
+            as_of=utcnow(),
+            valid_until=utcnow() + timedelta(days=2),
+        )
+        session.commit()
+        return result
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 def _payload_datetime(value):
     if not value:
         return None
@@ -988,4 +1017,5 @@ DEFAULT_JOB_HANDLERS = {
     "anbima_ima_history_refresh": handle_anbima_ima_history_refresh,
     "alb_universe_monitor": handle_alb_universe_monitor,
     "data_quality_refresh": handle_data_quality_refresh,
+    "operational_retention": handle_operational_retention,
 }

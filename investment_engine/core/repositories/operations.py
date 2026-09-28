@@ -137,7 +137,11 @@ class OperationsRepository:
     ) -> ServiceHeartbeatORM:
         now = utcnow()
         clean_id = str(service_id or "").strip()[:160]
-        row = self.session.get(ServiceHeartbeatORM, clean_id)
+        row = self.session.scalar(
+            select(ServiceHeartbeatORM)
+            .where(ServiceHeartbeatORM.service_id == clean_id)
+            .with_for_update()
+        )
         if row is None:
             row = ServiceHeartbeatORM(
                 service_id=clean_id,
@@ -173,7 +177,11 @@ class OperationsRepository:
         return row
 
     def mark_service_stopped(self, service_id: str) -> None:
-        row = self.session.get(ServiceHeartbeatORM, str(service_id or "").strip())
+        row = self.session.scalar(
+            select(ServiceHeartbeatORM)
+            .where(ServiceHeartbeatORM.service_id == str(service_id or "").strip())
+            .with_for_update()
+        )
         if row is not None:
             row.status = "stopped"
             row.scheduler_leader = False
@@ -208,13 +216,24 @@ class OperationsRepository:
         category was absent from its own observation cycle.
         """
         current = now or utcnow()
-        active_codes: set[str] = set()
-        for alert in alerts:
-            code = str(alert.get("code") or "").strip()[:160]
-            if not code:
-                continue
-            active_codes.add(code)
-            row = self.session.get(OperationalIncidentORM, code)
+        normalized_alerts = {
+            str(alert.get("code") or "").strip()[:160]: alert
+            for alert in alerts
+            if str(alert.get("code") or "").strip()[:160]
+        }
+        active_codes = set(normalized_alerts)
+        existing_rows = {
+            row.code: row
+            for row in self.session.scalars(
+                select(OperationalIncidentORM)
+                .where(OperationalIncidentORM.code.in_(sorted(active_codes)))
+                .order_by(OperationalIncidentORM.code)
+                .with_for_update()
+            )
+        } if active_codes else {}
+        for code in sorted(active_codes):
+            alert = normalized_alerts[code]
+            row = existing_rows.get(code)
             if row is None:
                 row = OperationalIncidentORM(
                     code=code,
@@ -242,7 +261,10 @@ class OperationsRepository:
         prefix_scope = set(managed_prefixes or ())
         manage_everything = managed_codes is None and managed_prefixes is None
         open_rows = list(self.session.scalars(
-            select(OperationalIncidentORM).where(OperationalIncidentORM.status == "open")
+            select(OperationalIncidentORM)
+            .where(OperationalIncidentORM.status == "open")
+            .order_by(OperationalIncidentORM.code)
+            .with_for_update()
         ))
         for row in open_rows:
             caller_manages = (
