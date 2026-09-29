@@ -16,6 +16,7 @@ from investment_engine.core.analysis_settings import (
     FACTORY_COLUMN_ORDERS,
     SYSTEM_PRESET_KEYS,
     AnalysisSettingsService,
+    _expand_legacy_backtest_column,
 )
 from investment_engine.core.investor_events import service as investor_service_module
 from investment_engine.core.investor_events.service import AlbUniverseMonitor
@@ -163,7 +164,9 @@ def test_column_order_is_validated_exposed_and_reset_without_hiding_catalog(monk
             json={"expected_revision": changed.json()["revision"]},
         )
         assert reset.status_code == 200, reset.text
-        assert reset.json()["columns"] == list(FACTORY_COLUMN_ORDERS["stock"])
+        assert reset.json()["columns"] == _expand_legacy_backtest_column(
+            FACTORY_COLUMN_ORDERS["stock"]
+        )
         assert reset.json()["owner_columns"] == order
     finally:
         app.dependency_overrides.clear()

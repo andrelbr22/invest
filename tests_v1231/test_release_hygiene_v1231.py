@@ -9,6 +9,7 @@ def test_default_suite_includes_current_release_tests():
     assert '"tests_v1231"' in project
     assert '"tests_v1232"' in project
     assert '"tests_v1233"' in project
+    assert '"tests_v1234"' in project
 
 
 def test_diagnostic_logs_cannot_enter_package_or_image():
@@ -54,13 +55,13 @@ def test_publisher_only_configures_credential_helper_when_missing_and_updates_ba
     assert "$localMainSha -ne $remoteMainSha" in publisher
 
 
-def test_release_identity_is_v1233():
+def test_release_identity_is_v1234():
     version = (ROOT / "investment_engine" / "__init__.py").read_text(encoding="utf-8")
     project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     publisher = (ROOT / "PUBLICAR_GITHUB.ps1").read_text(encoding="utf-8")
-    assert '__version__ = "1.23.3"' in version
-    assert 'version = "1.23.3"' in project
-    assert "V1.23.3" in publisher
+    assert '__version__ = "1.23.4"' in version
+    assert 'version = "1.23.4"' in project
+    assert "V1.23.4" in publisher
 
 
 def test_promotion_runs_performance_gate_before_any_production_mutation():

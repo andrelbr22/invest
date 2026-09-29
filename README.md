@@ -1,6 +1,32 @@
-# Formação do Investidor • V1.23.3
+# Formação do Investidor • V1.23.4
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
+
+## Valorações e pódio oficial V1.23.4
+
+A V1.23.4 corrige a apresentação de Mercado e Análises sem remover filtros,
+históricos, permissões ou configurações existentes. O preço-teto por
+dividend yield-alvo passa a usar os campos canônicos esperados pela tabela, e
+o valor relativo é calculado com os pares locais elegíveis antes da resposta.
+Quando não existem pelo menos cinco pares válidos, o estado permanece `N/D`
+em vez de produzir uma estimativa artificial.
+
+As três melhores estratégias agora ocupam três colunas independentes. A
+classificação retém somente a execução mais recente de cada configuração,
+seleciona a melhor configuração de cada estratégia e impede que a mesma
+estratégia ocupe mais de uma posição. Configurações de coluna já salvas com a
+antiga coluna combinada são convertidas automaticamente, sem migração ou
+perda das preferências do proprietário.
+
+O proprietário também pode iniciar uma rodada oficial completa em
+`Administração > Atualizações` ou em `Backtests > Oficiais`. A API rejeita uma
+nova solicitação enquanto houver rodada ativa ou antes de completar 12 horas
+desde a rodada oficial anterior; a restrição não depende apenas do botão.
+
+Não há nova migração de banco nesta versão. A revisão esperada continua sendo
+`0029_v1_23_current_metrics`. Consulte `V1_23_4.md`, `PATCH_V1234.md`,
+`INSTRUCOES_ORACLE_V1234.md` e `RELATORIO_VALIDACAO_V1234.md` antes de
+publicar ou promover.
 
 ## Desempenho sob carga V1.23.3
 
@@ -213,7 +239,7 @@ manualmente para:
 A plataforma autenticada fica em `/plataforma/` nos dois ambientes.
 
 As credenciais, o banco e os backups permanecem somente no servidor. Consulte
-`INSTRUCOES_ORACLE_V1231_R1.md` para a homologação desta versão.
+`INSTRUCOES_ORACLE_V1234.md` para a homologação desta versão.
 
 ## Segurança e escopo
 

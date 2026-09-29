@@ -20,22 +20,22 @@ ANALYSIS_COLUMN_CATALOG = {
         "graham", "graham_upside", "barsi", "barsi_upside", "relative", "relative_upside",
         "economic", "economic_upside", "alb", "trend_daily", "rsi",
         "s3", "s2", "s1", "pp", "r1", "r2", "r3", "volume_daily", "volume_monthly",
-        "best_signal",
+        "best_signal", "backtest_1", "backtest_2", "backtest_3",
     ),
     "fii": (
         "ticker", "segment", "price", "pbv", "dy", "ffo", "vacancy", "barsi",
-        "barsi_upside", "relative", "relative_upside", "rsi", "best_signal",
+        "barsi_upside", "relative", "relative_upside", "rsi", "best_signal", "backtest_1", "backtest_2", "backtest_3",
     ),
     "etf": (
         "ticker", "price", "nav", "nav_upside", "premium", "expense", "relative",
-        "relative_upside", "rsi", "best_signal",
+        "relative_upside", "rsi", "best_signal", "backtest_1", "backtest_2", "backtest_3",
     ),
     "bdr": (
         "ticker", "sector", "price", "pbv", "relative", "relative_upside", "parity",
-        "parity_upside", "rsi", "best_signal",
+        "parity_upside", "rsi", "best_signal", "backtest_1", "backtest_2", "backtest_3",
     ),
     "future": (
-        "ticker", "price", "front", "expiry", "spot", "carry", "basis", "rsi", "best_signal",
+        "ticker", "price", "front", "expiry", "spot", "carry", "basis", "rsi", "best_signal", "backtest_1", "backtest_2", "backtest_3",
     ),
 }
 
@@ -49,7 +49,9 @@ ANALYSIS_COLUMN_LABELS = {
     "alb": "Nota ALB", "trend_daily": "Tendência alta", "rsi": "RSI 14",
     "s3": "S3", "s2": "S2", "s1": "S1", "pp": "Pivô", "r1": "R1", "r2": "R2", "r3": "R3",
     "volume_daily": "Volume/Média 9 diário", "volume_monthly": "Volume/Média 9 mensal",
-    "best_signal": "3 melhores backtests", "ffo": "FFO yield", "vacancy": "Vacância",
+    "best_signal": "3 melhores backtests", "backtest_1": "1º backtest",
+    "backtest_2": "2º backtest", "backtest_3": "3º backtest",
+    "ffo": "FFO yield", "vacancy": "Vacância",
     "nav": "NAV por cota", "nav_upside": "Desconto/potencial ao NAV",
     "premium": "Prêmio/desconto informado", "expense": "Taxa de administração",
     "parity": "Paridade com o lastro", "parity_upside": "Potencial pela paridade",
@@ -58,12 +60,26 @@ ANALYSIS_COLUMN_LABELS = {
 }
 
 FACTORY_COLUMN_ORDERS = {
+    # Keep the persisted factory definition compatible with migration 0027.
+    # API payloads expand the former combined column into the three podium
+    # positions, so existing owner settings require no data migration.
     "stock": ("ticker", "sector", "price", "pe", "pbv", "dy", "roe", "graham_upside", "barsi", "relative", "best_signal"),
     "fii": ("ticker", "segment", "price", "pbv", "dy", "ffo", "vacancy", "barsi", "relative", "best_signal"),
     "etf": ("ticker", "price", "nav", "nav_upside", "premium", "relative", "best_signal"),
     "bdr": ("ticker", "sector", "price", "pbv", "relative", "relative_upside", "best_signal"),
     "future": ("ticker", "price", "front", "expiry", "spot", "carry", "basis", "best_signal"),
 }
+
+
+def _expand_legacy_backtest_column(values: list[str] | tuple[str, ...]) -> list[str]:
+    """Translate the former combined podium column without losing owner settings."""
+    expanded: list[str] = []
+    for value in values:
+        replacements = ("backtest_1", "backtest_2", "backtest_3") if value == "best_signal" else (value,)
+        for replacement in replacements:
+            if replacement not in expanded:
+                expanded.append(replacement)
+    return expanded
 
 
 def validate_analysis_context(asset_type: str, preset_key: str | None = None) -> None:
@@ -193,14 +209,17 @@ class AnalysisSettingsService:
         row = self.repository.get_columns(asset_type)
         if row is None and ensure:
             row = self.repository.ensure_columns(asset_type=asset_type, factory_columns=factory)
-        stored_factory = list(row.factory_columns_json) if row is not None else factory
-        owner = list(row.owner_columns_json) if row is not None and row.owner_columns_json else None
+        stored_factory = _expand_legacy_backtest_column(
+            list(row.factory_columns_json) if row is not None else factory
+        )
+        owner = _expand_legacy_backtest_column(list(row.owner_columns_json)) if row is not None and row.owner_columns_json else None
         owner_enabled = bool(row is not None and row.owner_enabled and owner is not None)
         return {
             "asset_type": asset_type,
             "available_columns": [
                 {"id": column_id, "label": ANALYSIS_COLUMN_LABELS[column_id], "always": column_id == "ticker"}
                 for column_id in ANALYSIS_COLUMN_CATALOG[asset_type]
+                if column_id != "best_signal"
             ],
             "factory_columns": stored_factory,
             "owner_columns": owner,

@@ -196,6 +196,10 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .backtest-leader-stack strong, .backtest-leader-stack small { display: block; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .backtest-leader-stack strong { color: var(--ink); font-size: .73rem; }
 .backtest-leader-stack small { margin-top: 2px; color: var(--muted); font-size: .65rem; }
+.backtest-leader-single { display: grid; gap: 4px; min-width: 150px; }
+.backtest-leader-single strong { color: var(--ink); font-size: .75rem; }
+.backtest-leader-single .pill { justify-self: start; }
+.backtest-leader-single small { color: var(--muted); font-size: .66rem; }
 .leader-rank { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; color: var(--brand); background: var(--brand-soft); font-size: .65rem; font-weight: 800; }
 .guide-intro { margin-bottom: 16px; }
 .guide-intro h2 { margin: 3px 0 8px; }
@@ -368,6 +372,10 @@ tr[data-ticker]:hover td { background: #f5faf7; }
 .admin-column-row > span { display: flex; gap: 4px; }
 .admin-column-row .icon-button { width: 32px; height: 32px; }
 .admin-column-row:focus-within { border-color: rgba(11,93,75,.35); background: var(--brand-soft); }
+.admin-launch-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.admin-launch-row > div { display: grid; gap: 5px; }
+.admin-launch-row p { margin: 0; }
+.admin-launch-row small { color: var(--muted); }
 .operations-resources { margin: 14px 0; }
 .operations-summary.warning { background: #fff7e4; }
 .operations-summary.critical { color: #7b2828; background: #fff0f0; border-color: #f2c9c9; }
@@ -503,8 +511,8 @@ body.staging-mode .login-view { padding-top: 60px; }
   .access-level-meta,.access-limit-grid,.admin-user-filters { grid-template-columns: 1fr; }
   .operations-leases { grid-template-columns: 1fr; }
   .permission-matrix { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .bulk-access-bar,.admin-monitor-row { align-items: stretch; flex-direction: column; }
-  .bulk-access-bar select,.bulk-access-bar .button,.admin-monitor-row .button { width: 100%; }
+  .bulk-access-bar,.admin-monitor-row,.admin-launch-row { align-items: stretch; flex-direction: column; }
+  .bulk-access-bar select,.bulk-access-bar .button,.admin-monitor-row .button,.admin-launch-row .button { width: 100%; }
   .login-card { padding: 36px 24px; }
   .email-login-row { grid-template-columns: 1fr; }
 }

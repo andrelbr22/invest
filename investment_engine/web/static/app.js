@@ -127,8 +127,10 @@ function readableApiError(detail,status){
     portal_image_signature_invalid:"O conteúdo da imagem não corresponde ao tipo PNG, JPG ou WebP informado.",
   };
   if(typeof detail==="object"&&detail?.permission_required)return messages.permission_required;
+  if(typeof detail==="object"&&detail?.code==="official_batch_cooldown")return `Aguarde até ${dateTime(detail.next_allowed_at)} para iniciar outra rodada oficial completa.`;
   if(typeof detail==="object"&&detail?.price_alert_limit_reached)return `O limite de ${detail.price_alert_limit_reached} ativo(s) com alerta foi atingido.`;
   if(typeof detail==="object"&&detail?.alert_conditions_not_granted)return "Uma das condições escolhidas não está liberada para sua conta.";
+  if(code.startsWith("batch_job_active:"))return "Já existe uma rodada oficial em andamento. Aguarde a conclusão.";
   if(messages[code])return messages[code];
   if(status>=500)return "O serviço está temporariamente indisponível. Seus dados foram preservados; tente novamente em instantes.";
   if(status===404)return "A informação solicitada não foi encontrada.";
@@ -1100,6 +1102,12 @@ function backtestLeadersCell(row) {
   return `<div class="backtest-leader-stack">${leaders.map((leader,index)=>`<div><span class="leader-rank">${index+1}</span><span><strong>${esc(leader.strategy_name||leader.strategy_id||"Estratégia")}</strong><small>${nullable(leader.ranking_score)?"":`Pontuação ${number(leader.ranking_score,1)}`}</small></span><span class="pill signal-${esc(leader.current_signal||"neutral")}">${signalLabel(leader.current_signal)}</span></div>`).join("")}</div>`;
 }
 
+function backtestLeaderCell(row,index) {
+  const leader=(row.backtest_leaders||[])[index];
+  if(!leader)return '<span class="muted">Sem dados</span>';
+  return `<div class="backtest-leader-single"><strong>${esc(leader.strategy_name||leader.strategy_id||"Estratégia")}</strong><span class="pill signal-${esc(leader.current_signal||"neutral")}">${signalLabel(leader.current_signal)}</span><small>${nullable(leader.ranking_score)?"Sem pontuação":`Pontuação ${number(leader.ranking_score,1)}`}</small></div>`;
+}
+
 function renderIndicatorGuide() {
   $("#analysis-count").textContent="";
   $("#analysis-list-workspace").classList.add("hidden");
@@ -1125,7 +1133,9 @@ function analysisColumns(type) {
   const common=[
     {id:"ticker",label:"Ativo",always:true,render:r=>`<span class="ticker-cell">${esc(r.ticker)}</span><br><small>${esc(r.name||"")}</small>`},
     {id:"price",label:"Preço",render:r=>money(r.price)},
-    {id:"best_signal",label:"3 melhores backtests",render:backtestLeadersCell},
+    {id:"backtest_1",label:"1º backtest",render:r=>backtestLeaderCell(r,0)},
+    {id:"backtest_2",label:"2º backtest",render:r=>backtestLeaderCell(r,1)},
+    {id:"backtest_3",label:"3º backtest",render:r=>backtestLeaderCell(r,2)},
   ];
   const access=state.session?.access||{},alb=Boolean(access.can_use_alb_analysis),canGraham=Boolean(access.can_use_graham_valuation||alb),canDividend=Boolean(access.can_use_dividend_ceiling||alb),canRelative=Boolean(access.can_use_relative_valuation||alb),canEconomic=Boolean(access.can_use_economic_valuation||alb);
   const valuationCell=(row,family,valueField)=>{const result=row.valuation_methods?.[family]||{};if(result.status&&result.status!=="valid")return `<span class="pill muted" title="${esc(result.reason||"Dados insuficientes")}">N/D</span>`;const scenarios=result.scenarios||{},scenarioItems=[["conservative","C"],["base","B"],["optimistic","O"]].filter(([key])=>!nullable(scenarios[key]?.value));return `<span class="valuation-base-value">${money(result.value??row[valueField])}</span>${scenarioItems.length?`<small class="valuation-mini-scenarios">${scenarioItems.map(([key,label])=>`${label}: ${money(scenarios[key].value)}`).join(" • ")}</small>`:""}`;};
@@ -1147,19 +1157,24 @@ function analysisColumns(type) {
     ...["s3","s2","s1","pp","r1","r2","r3"].map(id=>({id,label:id==="pp"?"Pivô":id.toUpperCase(),render:r=>money(r[id])})),
     {id:"volume_daily",label:"Volume/Média 9 diário",render:r=>nullable(r.volume_daily_ratio)?"—":`${number(Number(r.volume_daily_ratio)*100,0)}%`},
     {id:"volume_monthly",label:"Volume/Média 9 mensal",render:r=>nullable(r.volume_monthly_ratio)?"—":`${number(Number(r.volume_monthly_ratio)*100,0)}%`},
-    common[2],
+    ...common.slice(2),
     ].filter(column=>!(["graham","graham_upside"].includes(column.id)&&!canGraham)&&!(["barsi","barsi_upside"].includes(column.id)&&!canDividend)&&!(["relative","relative_upside"].includes(column.id)&&!canRelative)&&!(["economic","economic_upside"].includes(column.id)&&!canEconomic));
   }
-  if(type==="fii") return [common[0],{id:"segment",label:"Segmento",render:r=>esc(r.segment_label||r.classification||"—")},common[1],{id:"pbv",label:"P/VP",render:r=>number(r.pbv)},{id:"dy",label:"DY",render:r=>pct(r.dy??r.dividend_yield_pct)},{id:"ffo",label:"FFO yield",render:r=>pct(r.ffo_yield??r.ffo_yield_pct)},{id:"vacancy",label:"Vacância",render:r=>pct(r.vacancy??r.vacancy_pct)},{id:"barsi",label:"Preço-teto DY-alvo",render:r=>valuationCell(r,"dividend_yield_ceiling","dividend_yield_ceiling_value")},{id:"barsi_upside",label:"Potencial DY-alvo",render:r=>upsideCell(r,"dividend_yield_ceiling","dividend_yield_ceiling_upside_pct")},{id:"relative",label:"Valor relativo",render:r=>valuationCell(r,"relative_peers","relative_peers_value")},{id:"relative_upside",label:"Potencial relativo",render:r=>upsideCell(r,"relative_peers","relative_peers_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},common[2]].filter(column=>!(["barsi","barsi_upside"].includes(column.id)&&!canDividend)&&!(["relative","relative_upside"].includes(column.id)&&!canRelative));
-  if(type==="etf") return [common[0],common[1],{id:"nav",label:"NAV por cota",render:r=>valuationCell(r,"economic_value","economic_value")},{id:"nav_upside",label:"Desconto/potencial ao NAV",render:r=>upsideCell(r,"economic_value","economic_value_upside_pct")},{id:"premium",label:"Prêmio/desconto informado",render:r=>pct(r.nav_discount_premium_pct,true)},{id:"expense",label:"Taxa de administração",render:r=>pct(r.expense_ratio_pct)},{id:"relative",label:"Referência pelos pares",render:r=>valuationCell(r,"relative_peers","relative_peers_value")},{id:"relative_upside",label:"Potencial relativo",render:r=>upsideCell(r,"relative_peers","relative_peers_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},common[2]].filter(column=>!(["nav","nav_upside"].includes(column.id)&&!canEconomic)&&!(["relative","relative_upside"].includes(column.id)&&!canRelative));
-  if(type==="bdr") return [common[0],{id:"sector",label:"Setor",render:r=>esc(r.sector_label||r.sector||"—")},common[1],{id:"pbv",label:"P/VP informado",render:r=>number(r.pbv)},{id:"relative",label:"Referência P/VP dos pares",render:r=>valuationCell(r,"relative_peers","relative_peers_value")},{id:"relative_upside",label:"Potencial relativo",render:r=>upsideCell(r,"relative_peers","relative_peers_upside_pct")},{id:"parity",label:"Paridade com o lastro",render:r=>valuationCell(r,"economic_value","economic_value")},{id:"parity_upside",label:"Potencial pela paridade",render:r=>upsideCell(r,"economic_value","economic_value_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},common[2]].filter(column=>!(["relative","relative_upside"].includes(column.id)&&!canRelative)&&!(["parity","parity_upside"].includes(column.id)&&!canEconomic));
-  if(type==="future") return [common[0],common[1],{id:"front",label:"Contrato frontal",render:r=>esc(r.front_contract||"—")},{id:"expiry",label:"Vencimento",render:r=>esc(r.expiration_date||"—")},{id:"spot",label:"Ativo à vista",render:r=>r.underlying_ticker?`${esc(r.underlying_ticker)} • ${money(r.underlying_spot_price)}`:"—"},{id:"carry",label:"Preço teórico",render:r=>valuationCell(r,"economic_value","economic_value")},{id:"basis",label:"Potencial / basis",render:r=>upsideCell(r,"economic_value","economic_value_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},common[2]].filter(column=>!(["carry","basis"].includes(column.id)&&!canEconomic));
-  return [common[0],{id:"category",label:"Categoria",render:r=>esc(r.asset_type_label||r.classification||"—")},common[1],{id:"signal",label:"Sinal",render:r=>esc(r.signal_tv||"—")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},{id:"technical",label:"Nota técnica",render:r=>number(r.technical_score,1)},common[2]];
+  if(type==="fii") return [common[0],{id:"segment",label:"Segmento",render:r=>esc(r.segment_label||r.classification||"—")},common[1],{id:"pbv",label:"P/VP",render:r=>number(r.pbv)},{id:"dy",label:"DY",render:r=>pct(r.dy??r.dividend_yield_pct)},{id:"ffo",label:"FFO yield",render:r=>pct(r.ffo_yield??r.ffo_yield_pct)},{id:"vacancy",label:"Vacância",render:r=>pct(r.vacancy??r.vacancy_pct)},{id:"barsi",label:"Preço-teto DY-alvo",render:r=>valuationCell(r,"dividend_yield_ceiling","dividend_yield_ceiling_value")},{id:"barsi_upside",label:"Potencial DY-alvo",render:r=>upsideCell(r,"dividend_yield_ceiling","dividend_yield_ceiling_upside_pct")},{id:"relative",label:"Valor relativo",render:r=>valuationCell(r,"relative_peers","relative_peers_value")},{id:"relative_upside",label:"Potencial relativo",render:r=>upsideCell(r,"relative_peers","relative_peers_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},...common.slice(2)].filter(column=>!(["barsi","barsi_upside"].includes(column.id)&&!canDividend)&&!(["relative","relative_upside"].includes(column.id)&&!canRelative));
+  if(type==="etf") return [common[0],common[1],{id:"nav",label:"NAV por cota",render:r=>valuationCell(r,"economic_value","economic_value")},{id:"nav_upside",label:"Desconto/potencial ao NAV",render:r=>upsideCell(r,"economic_value","economic_value_upside_pct")},{id:"premium",label:"Prêmio/desconto informado",render:r=>pct(r.nav_discount_premium_pct,true)},{id:"expense",label:"Taxa de administração",render:r=>pct(r.expense_ratio_pct)},{id:"relative",label:"Referência pelos pares",render:r=>valuationCell(r,"relative_peers","relative_peers_value")},{id:"relative_upside",label:"Potencial relativo",render:r=>upsideCell(r,"relative_peers","relative_peers_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},...common.slice(2)].filter(column=>!(["nav","nav_upside"].includes(column.id)&&!canEconomic)&&!(["relative","relative_upside"].includes(column.id)&&!canRelative));
+  if(type==="bdr") return [common[0],{id:"sector",label:"Setor",render:r=>esc(r.sector_label||r.sector||"—")},common[1],{id:"pbv",label:"P/VP informado",render:r=>number(r.pbv)},{id:"relative",label:"Referência P/VP dos pares",render:r=>valuationCell(r,"relative_peers","relative_peers_value")},{id:"relative_upside",label:"Potencial relativo",render:r=>upsideCell(r,"relative_peers","relative_peers_upside_pct")},{id:"parity",label:"Paridade com o lastro",render:r=>valuationCell(r,"economic_value","economic_value")},{id:"parity_upside",label:"Potencial pela paridade",render:r=>upsideCell(r,"economic_value","economic_value_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},...common.slice(2)].filter(column=>!(["relative","relative_upside"].includes(column.id)&&!canRelative)&&!(["parity","parity_upside"].includes(column.id)&&!canEconomic));
+  if(type==="future") return [common[0],common[1],{id:"front",label:"Contrato frontal",render:r=>esc(r.front_contract||"—")},{id:"expiry",label:"Vencimento",render:r=>esc(r.expiration_date||"—")},{id:"spot",label:"Ativo à vista",render:r=>r.underlying_ticker?`${esc(r.underlying_ticker)} • ${money(r.underlying_spot_price)}`:"—"},{id:"carry",label:"Preço teórico",render:r=>valuationCell(r,"economic_value","economic_value")},{id:"basis",label:"Potencial / basis",render:r=>upsideCell(r,"economic_value","economic_value_upside_pct")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},...common.slice(2)].filter(column=>!(["carry","basis"].includes(column.id)&&!canEconomic));
+  return [common[0],{id:"category",label:"Categoria",render:r=>esc(r.asset_type_label||r.classification||"—")},common[1],{id:"signal",label:"Sinal",render:r=>esc(r.signal_tv||"—")},{id:"rsi",label:"RSI 14",render:r=>number(r.rsi14_screen)},{id:"technical",label:"Nota técnica",render:r=>number(r.technical_score,1)},...common.slice(2)];
+}
+
+function expandBacktestColumnIds(values){
+  return [...new Set((values||[]).flatMap(id=>id==="best_signal"?["backtest_1","backtest_2","backtest_3"]:[id]))];
 }
 
 function orderedAnalysisColumns(type,columns){
-  const fallback={stock:["ticker","sector","price","pe","pbv","dy","roe","graham_upside","barsi","relative","best_signal"],fii:["ticker","segment","price","pbv","dy","ffo","vacancy","barsi","relative","best_signal"],etf:["ticker","price","nav","nav_upside","premium","relative","best_signal"],bdr:["ticker","sector","price","pbv","relative","relative_upside","best_signal"],future:["ticker","price","front","expiry","spot","carry","basis","best_signal"]};
-  const preferred=state.analysisColumnCatalog[type]?.columns||state.analysisColumnCatalog[type]?.factory_columns||fallback[type]||[];
+  const podium=["backtest_1","backtest_2","backtest_3"];
+  const fallback={stock:["ticker","sector","price","pe","pbv","dy","roe","graham_upside","barsi","relative",...podium],fii:["ticker","segment","price","pbv","dy","ffo","vacancy","barsi","relative",...podium],etf:["ticker","price","nav","nav_upside","premium","relative",...podium],bdr:["ticker","sector","price","pbv","relative","relative_upside",...podium],future:["ticker","price","front","expiry","spot","carry","basis",...podium]};
+  const preferred=expandBacktestColumnIds(state.analysisColumnCatalog[type]?.columns||state.analysisColumnCatalog[type]?.factory_columns||fallback[type]||[]);
   const byId=new Map(columns.map(column=>[column.id,column])),ordered=[];
   preferred.forEach(id=>{const column=byId.get(id);if(column){ordered.push(column);byId.delete(id);}});
   columns.forEach(column=>{if(byId.has(column.id)){ordered.push(column);byId.delete(column.id);}});
@@ -1167,11 +1182,12 @@ function orderedAnalysisColumns(type,columns){
 }
 
 function visibleAnalysisColumns(type, columns) {
-  const defaults={stock:["ticker","sector","price","pe","pbv","dy","roe","graham_upside","barsi","relative","best_signal"],fii:["ticker","segment","price","pbv","dy","ffo","vacancy","barsi","relative","best_signal"],etf:["ticker","price","nav","nav_upside","premium","relative","best_signal"],bdr:["ticker","sector","price","pbv","relative","relative_upside","best_signal"],future:["ticker","price","front","expiry","spot","carry","basis","best_signal"]};
+  const podium=["backtest_1","backtest_2","backtest_3"];
+  const defaults={stock:["ticker","sector","price","pe","pbv","dy","roe","graham_upside","barsi","relative",...podium],fii:["ticker","segment","price","pbv","dy","ffo","vacancy","barsi","relative",...podium],etf:["ticker","price","nav","nav_upside","premium","relative",...podium],bdr:["ticker","sector","price","pbv","relative","relative_upside",...podium],future:["ticker","price","front","expiry","spot","carry","basis",...podium]};
   const ordered=orderedAnalysisColumns(type,columns);
-  const saved=state.visibleColumns[type];
-  const platformDefault=state.analysisColumnCatalog[type]?.columns||defaults[type]||ordered.map(column=>column.id);
-  const active=new Set(Array.isArray(saved)?saved:platformDefault);
+  const saved=expandBacktestColumnIds(state.visibleColumns[type]);
+  const platformDefault=expandBacktestColumnIds(state.analysisColumnCatalog[type]?.columns||defaults[type]||ordered.map(column=>column.id));
+  const active=new Set(saved.length?saved:platformDefault);
   return ordered.filter(column=>column.always||active.has(column.id));
 }
 
@@ -1723,6 +1739,32 @@ async function retryOfficialBacktestJob(jobId, button) {
   }
 }
 
+function officialRoundLaunchCard(status) {
+  const active=status?.active_job;
+  const remaining=Math.max(0,Number(status?.remaining_seconds||0));
+  const hours=Math.floor(remaining/3600),minutes=Math.ceil((remaining%3600)/60);
+  const waitLabel=hours?`${hours}h${minutes?` ${minutes}min`:""}`:`${minutes} min`;
+  const explanation=active
+    ?`A rodada ${String(active.id||"").slice(0,8)}… ainda está ${officialStatusLabels[active.status]||active.status}.`
+    :status?.allowed
+      ?"O intervalo mínimo foi cumprido. O botão iniciará a matriz completa no GitHub."
+      :`A próxima rodada completa poderá ser iniciada em aproximadamente ${waitLabel}.`;
+  return sectionCard("Iniciar rodada oficial completa",`<div class="admin-launch-row"><div><p>${esc(explanation)}</p><small>Disponível somente ao proprietário e nunca antes de 12 horas da rodada oficial anterior.</small></div><button type="button" class="button primary" data-launch-official-backtests ${status?.allowed?"":"disabled"}>Iniciar nova rodada oficial</button></div>`,status?.next_allowed_at?`Próxima liberação: ${dateTime(status.next_allowed_at)}`:"");
+}
+
+async function launchOfficialBacktestRound(button) {
+  if(!window.confirm("Iniciar uma rodada oficial completa de backtests? A operação usará o catálogo padrão e poderá levar bastante tempo."))return;
+  button.disabled=true;button.textContent="Solicitando rodada…";
+  try {
+    const result=await api("/backtests/batch/official-launch",{method:"POST",body:"{}"});
+    toast(`Rodada oficial ${String(result.id||"").slice(0,8)}… enviada ao GitHub.`,"success");
+    await loadBacktests();
+  } catch(error) {
+    toast(error.message,"error");
+    await loadBacktests();
+  }
+}
+
 const backtestParameterLabels={period:"Período",stddev:"Desvios-padrão",rsi_period:"Período do RSI",entry_rsi:"RSI de entrada",exit_rsi:"RSI de saída",trend_period:"Período da tendência",trend_filter_mode:"Filtro de tendência",trend_slope_lookback:"Janela da inclinação",band_trigger:"Gatilho da banda",fast_period:"Média rápida",slow_period:"Média lenta",fast_type:"Tipo da média rápida",slow_type:"Tipo da média lenta",atr_period:"Período do ATR",multiplier:"Multiplicador",lookback:"Janela de observação",skip_recent:"Pregões recentes ignorados",min_absolute_return_pct:"Retorno absoluto mínimo (%)",min_excess_return_pct:"Excesso sobre benchmark (%)",squeeze_lookback:"Janela do squeeze",squeeze_quantile:"Percentil do squeeze",volume_period:"Período do volume",volume_ratio_min:"Volume / média mínimo"};
 const backtestChoiceLabels={sma:"Média simples",ema:"Média exponencial",price_above:"Preço acima/abaixo",sma_rising:"Inclinação da média",price_above_and_sma_rising:"Preço e inclinação",price_above_or_sma_rising:"Preço ou inclinação",none:"Sem filtro",close:"Fechamento",low_touch:"Mínima toca a banda",close_reentry:"Retorno para dentro da banda"};
 
@@ -1766,10 +1808,13 @@ async function loadBacktests() {
       const data=await api("/backtests/study?limit=5",{cacheTtlMs:60000}); const rows=data.items||data.ranking||[];
       root.innerHTML=recordedUpdatePanel("Estudos oficiais",data.generated_at||data.updated_at,"Recalculado a partir das rodadas oficiais")+sectionCard("Estratégias mais consistentes",marketTable(rows,[{label:"Posição",render:(r)=>`<strong>${esc(r.position||r.rank||"—")}</strong>`},{label:"Estratégia",render:r=>`<button class="table-link" data-study-strategy="${esc(r.strategy_id)}">${esc(r.strategy_name||r.name||r.strategy_id)}</button><small class="block-hint">Abrir configurações</small>`},{label:"Pontuação",render:r=>number(r.study_score??r.score??r.points,1)},{label:"Presença no top 3",render:r=>number(r.top_three_count??r.top3_count,0)},{label:"1º lugares",render:r=>number(r.first_places,0)},{label:"Cobertura",render:r=>pct(r.coverage_pct)}]),"Ranking ponderado por recorrência no top 3, posição, qualidade e cobertura. Clique na estratégia para ver todas as variáveis.");
     } else if(tab==="official") {
-      const rows=await api("/backtests/batch/jobs?limit=30",{cacheTtlMs:10000});
+      const [rows,launchStatus]=await Promise.all([
+        api("/backtests/batch/jobs?limit=30",{cacheTtlMs:10000}),
+        api("/backtests/batch/official-launch",{cacheTtlMs:10000}),
+      ]);
       state.officialBacktestJobs=new Map(rows.map(row=>[String(row.id),row]));
       const officialUpdated=rows.map(row=>row.last_update_at||row.finished_at||row.created_at).filter(Boolean).sort().pop();
-      root.innerHTML=recordedUpdatePanel("Backtests oficiais",officialUpdated,"Rodada automática aos sábados às 00h01, horário de Brasília")+sectionCard("Rodadas oficiais",marketTable(rows,[{label:"Criado em",render:r=>dateTime(r.created_at)},{label:"Identificador",render:r=>`<button class="table-link" data-official-job="${esc(r.id)}">${esc(String(r.id).slice(0,8))}…</button>`},{label:"Ativos",render:r=>number((r.requested_tickers||r.tickers||[]).length,0)},{label:"Progresso",render:r=>`${number(r.processed_assets||0,0)} / ${number(r.total_assets||(r.requested_tickers||r.tickers||[]).length,0)}`},{label:"Partes",render:r=>number(r.received_chunks||0,0)},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":""}">${esc(officialStatusLabels[r.status]||r.status)}</span>`},{label:"",render:r=>`<button class="button ghost compact" data-official-job="${esc(r.id)}">Detalhes</button>`}]),"Em caso de falha, abra Detalhes e use Reprocessar ativos pendentes ou com falha. O sistema não recalcula entregas já concluídas.");
+      root.innerHTML=recordedUpdatePanel("Backtests oficiais",officialUpdated,"Rodada automática aos sábados às 00h01, horário de Brasília")+officialRoundLaunchCard(launchStatus)+sectionCard("Rodadas oficiais",marketTable(rows,[{label:"Criado em",render:r=>dateTime(r.created_at)},{label:"Identificador",render:r=>`<button class="table-link" data-official-job="${esc(r.id)}">${esc(String(r.id).slice(0,8))}…</button>`},{label:"Ativos",render:r=>number((r.requested_tickers||r.tickers||[]).length,0)},{label:"Progresso",render:r=>`${number(r.processed_assets||0,0)} / ${number(r.total_assets||(r.requested_tickers||r.tickers||[]).length,0)}`},{label:"Partes",render:r=>number(r.received_chunks||0,0)},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":""}">${esc(officialStatusLabels[r.status]||r.status)}</span>`},{label:"",render:r=>`<button class="button ghost compact" data-official-job="${esc(r.id)}">Detalhes</button>`}]),"Em caso de falha, abra Detalhes e use Reprocessar ativos pendentes ou com falha. O sistema não recalcula entregas já concluídas.");
     } else {
       const [catalog,recentJobs]=await Promise.all([api("/backtests/strategies",{cacheTtlMs:300000}),api("/backtests/jobs?limit=5",{cacheTtlMs:10000})]);
       const access=state.session.access;state.backtestCatalog=catalog;
@@ -2001,7 +2046,12 @@ function adminUpdateTable(updates){
 }
 
 async function loadAdminUpdates(root){
-  const [summary,updatePayload]=await Promise.all([api("/data/catalog-summary"),api("/market-dashboard/updates",{bypassCache:true})]);
+  const owner=Boolean(state.session?.access?.is_owner);
+  const [summary,updatePayload,officialLaunch]=await Promise.all([
+    api("/data/catalog-summary"),
+    api("/market-dashboard/updates",{bypassCache:true}),
+    owner?api("/backtests/batch/official-launch",{bypassCache:true}):Promise.resolve(null),
+  ]);
   const updates=updatePayload.updates||{};state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),...updates};
   const counts=summary.counts||{},groups=summary.groups||{},allKeys=adminRefreshGroups.map(item=>item.key);
   const grouped=[
@@ -2012,7 +2062,7 @@ async function loadAdminUpdates(root){
     ["Proventos, CVM, agenda e índices ANBIMA",["portfolio_dividends","cvm_relevant_facts","official_calendar","ima_history"]],
     ["Qualidade e filtro ALB",["alb_monitor","data_quality"]],
   ];
-  root.innerHTML=`<div class="metric-grid">${metricCard("Ações",number(groups.stock||0,0),"Ativos ativos")}${metricCard("FIIs",number(groups.fii||0,0),"Fundos imobiliários")}${metricCard("ETFs",number(counts.etf||0,0),"Fundos de índice")}${metricCard("BDRs",number(counts.bdr||0,0),"Recibos negociados na B3")}</div><div class="admin-update-actions"><button class="button secondary" data-refresh-groups="catalog">Atualizar catálogo</button><button class="button secondary" data-refresh-groups="fundamentals">Atualizar fundamentos e notas</button>${grouped.map(([label,keys])=>`<button class="button secondary" data-refresh-groups="${keys.join(",")}">${esc(label)}</button>`).join("")}<button class="button primary" data-refresh-groups="${allKeys.join(",")}" data-confirm-all-updates>Atualizar todas as ${allKeys.length} rotinas</button></div>${sectionCard("Todas as atualizações automáticas",adminUpdateTable(updates),"As solicitações entram na fila e não bloqueiam o site")}${sectionCard("Monitor de alertas",`<div class="admin-monitor-row"><span><strong>B3: 5 minutos no pregão</strong><small>Demais mercados: 30 minutos, continuamente</small></span><button class="button secondary" data-run-alert-monitor>Executar verificação agora</button></div><div id="alert-monitor-result" class="notice info hidden"></div>`,`A execução manual respeita as mesmas regras e não envia alertas duplicados`)}`;
+  root.innerHTML=`<div class="metric-grid">${metricCard("Ações",number(groups.stock||0,0),"Ativos ativos")}${metricCard("FIIs",number(groups.fii||0,0),"Fundos imobiliários")}${metricCard("ETFs",number(counts.etf||0,0),"Fundos de índice")}${metricCard("BDRs",number(counts.bdr||0,0),"Recibos negociados na B3")}</div><div class="admin-update-actions"><button class="button secondary" data-refresh-groups="catalog">Atualizar catálogo</button><button class="button secondary" data-refresh-groups="fundamentals">Atualizar fundamentos e notas</button>${grouped.map(([label,keys])=>`<button class="button secondary" data-refresh-groups="${keys.join(",")}">${esc(label)}</button>`).join("")}<button class="button primary" data-refresh-groups="${allKeys.join(",")}" data-confirm-all-updates>Atualizar todas as ${allKeys.length} rotinas</button></div>${officialLaunch?officialRoundLaunchCard(officialLaunch):""}${sectionCard("Todas as atualizações automáticas",adminUpdateTable(updates),"As solicitações entram na fila e não bloqueiam o site")}${sectionCard("Monitor de alertas",`<div class="admin-monitor-row"><span><strong>B3: 5 minutos no pregão</strong><small>Demais mercados: 30 minutos, continuamente</small></span><button class="button secondary" data-run-alert-monitor>Executar verificação agora</button></div><div id="alert-monitor-result" class="notice info hidden"></div>`,`A execução manual respeita as mesmas regras e não envia alertas duplicados`)}`;
 }
 
 const jobTypeLabels={market_group_refresh:"Mercado e economia",economy_headlines_refresh:"Manchetes",historical_comparison_refresh:"Comparador histórico",market_catalog_refresh:"Catálogo",market_fundamentals_refresh:"Fundamentos",market_technicals_refresh:"Indicadores técnicos",market_intraday_refresh:"Cotações intradiárias",market_full_sync:"Sincronização completa de mercado",current_metrics_refresh:"Métricas atuais pré-calculadas",asset_price_ingest:"Histórico de preços do ativo",b3_index_portfolio_refresh:"Composição do Ibovespa",portfolio_prices_refresh:"Preços de carteira",user_news_refresh:"Notícias do usuário",personal_backtest_matrix:"Backtest pessoal",investor_dividends_refresh:"Proventos oficiais",cvm_relevant_facts_refresh:"Fatos relevantes CVM",official_calendar_refresh:"Agenda oficial",anbima_ima_history_refresh:"Histórico IMA-B/IRF-M",alb_universe_monitor:"Monitor do filtro ALB",data_quality_refresh:"Qualidade dos dados",operational_retention:"Retenção operacional",noop:"Verificação interna"};
@@ -2523,6 +2573,7 @@ function bindEvents() {
     const preset=event.target.closest("[data-preset-id]");if(preset)selectSystemPreset(preset.dataset.presetId);
     const customPreset=event.target.closest("[data-custom-filter-id]");if(customPreset)selectCustomFilter(customPreset.dataset.customFilterId);
     const studyStrategy=event.target.closest("[data-study-strategy]");if(studyStrategy)openStudyStrategy(studyStrategy.dataset.studyStrategy);
+    const launchOfficial=event.target.closest("[data-launch-official-backtests]");if(launchOfficial){launchOfficialBacktestRound(launchOfficial);return;}
     const officialJob=event.target.closest("[data-official-job]");if(officialJob)openOfficialBacktestJob(officialJob.dataset.officialJob);
     const retryOfficial=event.target.closest("[data-retry-official-job]");if(retryOfficial)retryOfficialBacktestJob(retryOfficial.dataset.retryOfficialJob,retryOfficial);
     if(!event.target.closest(".global-search-wrap"))$("#search-results").classList.add("hidden");

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from .engine import run_backtest
 from .filters import filter_warmup_calendar_days
@@ -24,6 +24,8 @@ OFFICIAL_OWNER = "official-catalog@system.local"
 MAX_BATCH_ASSETS = 100
 DEFAULT_BATCH_ASSETS = 50
 TERMINAL_BATCH_STATUSES = {"completed", "completed_with_errors", "failed", "cancelled"}
+OWNER_OFFICIAL_COOLDOWN = timedelta(hours=12)
+OWNER_OFFICIAL_LAUNCH_LOCK = 6_123_400_012
 
 
 class BacktestBatchService:
@@ -435,6 +437,7 @@ class BacktestBatchService:
             self.service._needs_benchmark([row["strategy_id"]], row.get("filters"))
             for row in configurations
         )
+
         benchmark_bars = None
         benchmark_ticker = None
         benchmark_failure = None
@@ -517,6 +520,66 @@ class BacktestBatchService:
                 failed += 1
                 errors.append({"ticker": ticker, "strategy_id": sid, "error": str(exc)})
         return completed, failed, errors
+
+    def latest_job(self):
+        return self.session.scalar(
+            select(BacktestBatchJobORM)
+            .order_by(BacktestBatchJobORM.created_at.desc(), BacktestBatchJobORM.id.desc())
+            .limit(1)
+        )
+
+    @staticmethod
+    def _aware_utc(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def owner_official_round_status(self, *, now: datetime | None = None) -> dict:
+        current = self._aware_utc(now) or datetime.now(timezone.utc)
+        active = self.active_job()
+        latest = self.latest_job()
+        latest_created = self._aware_utc(getattr(latest, "created_at", None))
+        next_allowed_at = (
+            latest_created + OWNER_OFFICIAL_COOLDOWN
+            if latest_created is not None else current
+        )
+        remaining = max(0, int((next_allowed_at - current).total_seconds()))
+        return {
+            "allowed": active is None and remaining == 0,
+            "cooldown_hours": int(OWNER_OFFICIAL_COOLDOWN.total_seconds() // 3600),
+            "remaining_seconds": remaining,
+            "next_allowed_at": next_allowed_at,
+            "active_job": active,
+            "latest_job": latest,
+        }
+
+    def create_owner_official_job(
+        self, *, requested_by: str, max_combinations: int = DEFAULT_MAX_COMBINATIONS,
+        now: datetime | None = None,
+    ):
+        # Serialize owner launches in PostgreSQL so two clicks/requests cannot
+        # both pass the active-job and cooldown checks before either inserts.
+        if self.session.get_bind().dialect.name == "postgresql":
+            self.session.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_id)"),
+                {"lock_id": OWNER_OFFICIAL_LAUNCH_LOCK},
+            )
+        status = self.owner_official_round_status(now=now)
+        active = status["active_job"]
+        if active is not None:
+            raise ValueError(f"batch_job_active:{active.id}")
+        if status["remaining_seconds"] > 0:
+            raise ValueError(
+                f"official_batch_cooldown:{status['next_allowed_at'].isoformat()}"
+            )
+        return self.create_job(
+            requested_by=requested_by,
+            source="owner_manual",
+            tickers=self.default_tickers(),
+            max_combinations=max_combinations,
+        )
 
     def job_dict(self, job) -> dict:
         deliveries = self.deliveries(job.id)

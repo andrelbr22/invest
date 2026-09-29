@@ -2789,6 +2789,7 @@ def _stock_screen_row(asset, fundamental, score):
     )
     dy = _num(fundamental.dividend_yield_pct) if fundamental else None
     barsi = price * dy / 6.0 if price is not None and price > 0 and dy is not None and dy >= 0 else None
+    barsi_upside = ((barsi / price) - 1.0) * 100.0 if barsi is not None and price else None
     return {
         **_screen_identity(asset),
         "price": price,
@@ -2799,7 +2800,14 @@ def _stock_screen_row(asset, fundamental, score):
         "graham_number": graham.value,
         "graham_upside_pct": graham.upside_pct,
         "barsi_ceiling_price": barsi,
-        "barsi_upside_pct": ((barsi / price) - 1.0) * 100.0 if barsi is not None and price else None,
+        "barsi_upside_pct": barsi_upside,
+        # The table renderer consumes the canonical V1.21 field names.  Keep
+        # the older aliases above for compatibility, but never make a value
+        # calculated by the fast system-preset route appear as N/D merely
+        # because the advanced-screen name was absent.
+        "dividend_yield_ceiling_value": barsi,
+        "dividend_yield_ceiling_upside_pct": barsi_upside,
+        "dividend_yield_ceiling_status": "valid" if barsi is not None else "insufficient_data",
         **_screen_scores(score),
     }
 
@@ -2846,6 +2854,65 @@ def _stock_screen_result(rows, access: dict | None = None):
     return [_authorized_stock_row(_stock_screen_row(asset, fundamental, score), access) for asset, fundamental, score in rows]
 
 
+def _enrich_listing_valuations(
+    repo: AssetRepository,
+    rows: list[dict],
+    *,
+    asset_type: str,
+    access: dict | None,
+) -> list[dict]:
+    """Attach the same local valuation payload used by the advanced screen.
+
+    System presets deliberately use compact SQL queries so their fundamental
+    filters stay fast.  Historically that shortcut returned the dividend
+    ceiling under a legacy field and never built the peer cohort, leaving the
+    two visible columns blank.  Reusing :func:`advanced_screen` only for the
+    already selected tickers preserves the preset's membership and order while
+    calculating peers against the full local universe.  It performs no network
+    access and fails soft so a valuation problem cannot take down the list.
+    """
+    if not rows:
+        return rows
+    tickers = [str(row.get("ticker") or "").strip().upper() for row in rows]
+    tickers = [ticker for ticker in tickers if ticker]
+    if not tickers:
+        return rows
+    try:
+        payload = advanced_screen(
+            repo,
+            asset_type=asset_type,
+            allowed_tickers=tickers,
+            include_technical_columns=False,
+            limit=len(tickers),
+        )
+        valuations_by_ticker = {
+            str(item.get("ticker") or "").strip().upper(): item
+            for item in payload.get("rows", [])
+        }
+    except Exception:
+        # Fundamental screening remains available if one peer calculation is
+        # unexpectedly unavailable. The canonical DY aliases above still show
+        # every price ceiling that can be calculated from local fundamentals.
+        return rows
+
+    valuation_fields = {
+        "graham_number", "graham_upside_pct", "graham_reference_status",
+        "barsi_ceiling_price", "barsi_upside_pct",
+        "dividend_yield_ceiling_value", "dividend_yield_ceiling_upside_pct",
+        "dividend_yield_ceiling_status", "relative_peers_value",
+        "relative_peers_upside_pct", "relative_peers_status", "economic_value",
+        "economic_value_upside_pct", "economic_value_status", "valuation_methods",
+    }
+    enriched = []
+    for row in rows:
+        merged = dict(row)
+        valuation = valuations_by_ticker.get(str(row.get("ticker") or "").strip().upper())
+        if valuation:
+            merged.update({key: valuation.get(key) for key in valuation_fields if key in valuation})
+        enriched.append(_authorized_valuation_row(merged, access))
+    return enriched
+
+
 def _require_system_analysis_access(strategy_id: str, access: dict) -> None:
     permission = {"cnpi": "can_use_fdi_analysis", "alb": "can_use_alb_analysis"}.get(strategy_id)
     if permission and not access.get(permission):
@@ -2865,15 +2932,24 @@ def _require_valuation_access(flags: dict[str, bool], access: dict) -> None:
 
 
 def _fii_screen_row(asset, fundamental, score):
+    price = _num(fundamental.price) if fundamental else None
+    dy = _num(fundamental.dividend_yield_pct) if fundamental else None
+    ceiling = price * dy / 6.0 if price is not None and price > 0 and dy is not None and dy >= 0 else None
+    ceiling_upside = ((ceiling / price) - 1.0) * 100.0 if ceiling is not None and price else None
     return {
         **_screen_identity(asset),
-        "price": _num(fundamental.price) if fundamental else None,
+        "price": price,
         "pbv": _num(fundamental.pbv) if fundamental else None,
-        "dy": _num(fundamental.dividend_yield_pct) if fundamental else None,
+        "dy": dy,
         "ffo_yield": _num(fundamental.ffo_yield_pct) if fundamental else None,
         "cap_rate": _num(fundamental.cap_rate_pct) if fundamental else None,
         "vacancy": _num(fundamental.vacancy_pct) if fundamental else None,
         "daily_liquidity": _num(fundamental.daily_liquidity) if fundamental else None,
+        "barsi_ceiling_price": ceiling,
+        "barsi_upside_pct": ceiling_upside,
+        "dividend_yield_ceiling_value": ceiling,
+        "dividend_yield_ceiling_upside_pct": ceiling_upside,
+        "dividend_yield_ceiling_status": "valid" if ceiling is not None else "insufficient_data",
         **_screen_scores(score),
     }
 
@@ -2976,7 +3052,9 @@ def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, access=Depend
         )
     repo = AssetRepository(db)
     rows = _alb_stock_rows(repo, limit=limit, offset=offset) if strategy_id == "alb" else repo.screen_latest_stocks(strategy.filters,limit=limit,offset=offset)
-    return _stock_screen_result(rows, access)
+    return _enrich_listing_valuations(
+        repo, _stock_screen_result(rows, access), asset_type="stock", access=access,
+    )
 
 @app.get("/screen/db/fiis/{strategy_id}")
 def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
@@ -2989,8 +3067,11 @@ def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, access=De
         return _owner_preset_rows(
             setting["configuration"], asset_type="fii", limit=limit, offset=offset, access=access, db=db,
         )
-    rows = AssetRepository(db).screen_latest_fiis(strategy.filters, limit=limit, offset=offset)
-    return _fii_screen_result(rows)
+    repo = AssetRepository(db)
+    rows = repo.screen_latest_fiis(strategy.filters, limit=limit, offset=offset)
+    return _enrich_listing_valuations(
+        repo, _fii_screen_result(rows), asset_type="fii", access=access,
+    )
 
 
 @app.get("/screen/db/universe/{asset_type}")
@@ -3002,8 +3083,14 @@ def screen_db_universe(
 ):
     if asset_type not in {"stock", "fii", "etf", "bdr", "future", "other_b3"}:
         raise HTTPException(422, "invalid_asset_type")
-    rows = AssetRepository(db).latest_universe(asset_type=asset_type, limit=limit)
-    return _universe_screen_result(rows, asset_type, access)
+    repo = AssetRepository(db)
+    rows = repo.latest_universe(asset_type=asset_type, limit=limit)
+    result = _universe_screen_result(rows, asset_type, access)
+    if asset_type in {"stock", "fii", "etf", "bdr"}:
+        result = _enrich_listing_valuations(
+            repo, result, asset_type=asset_type, access=access,
+        )
+    return result
 
 
 @app.get("/screen/db/custom/{filter_id}")
@@ -3027,10 +3114,18 @@ def screen_db_custom(
             "below_graham": bool(stored.get("require_below_graham")),
             "below_barsi_6pct": bool(stored.get("require_below_dividend_target")),
         }, access)
-        return _stock_screen_result(repo.screen_latest_stocks(filters, limit=limit, offset=offset), access)
+        result = _stock_screen_result(
+            repo.screen_latest_stocks(filters, limit=limit, offset=offset), access,
+        )
+        return _enrich_listing_valuations(
+            repo, result, asset_type="stock", access=access,
+        )
     if row.asset_type == "fii":
         filters = FiiFilterSet(**stored)
-        return _fii_screen_result(repo.screen_latest_fiis(filters, limit=limit, offset=offset))
+        result = _fii_screen_result(repo.screen_latest_fiis(filters, limit=limit, offset=offset))
+        return _enrich_listing_valuations(
+            repo, result, asset_type="fii", access=access,
+        )
     # Defensive compatibility for a manually inserted legacy row. New filters
     # for these classes are always written with schema_version=2 above.
     return screen_advanced(
@@ -4803,6 +4898,83 @@ def backtest_batch_jobs(
 ):
     service = BacktestBatchService(db)
     return [service.job_dict(job) for job in service.list_jobs(limit)]
+
+
+def _official_round_launch_payload(service: BacktestBatchService) -> dict:
+    status = service.owner_official_round_status()
+    return {
+        "allowed": status["allowed"],
+        "cooldown_hours": status["cooldown_hours"],
+        "remaining_seconds": status["remaining_seconds"],
+        "next_allowed_at": status["next_allowed_at"],
+        "active_job": (
+            service.job_dict(status["active_job"])
+            if status["active_job"] is not None else None
+        ),
+        "latest_job": (
+            service.job_dict(status["latest_job"])
+            if status["latest_job"] is not None else None
+        ),
+    }
+
+
+@app.get("/backtests/batch/official-launch")
+def official_backtest_launch_status(
+    _access=Depends(require_owner), db: Session = Depends(get_db),
+):
+    """Tell the owner when another complete official round may be started."""
+    return _official_round_launch_payload(BacktestBatchService(db))
+
+
+@app.post("/backtests/batch/official-launch")
+def launch_official_backtest_round(
+    access=Depends(require_owner), db: Session = Depends(get_db),
+):
+    """Start one complete official round, with a server-enforced 12-hour gap."""
+    service = BacktestBatchService(db)
+    try:
+        job = service.create_owner_official_job(
+            requested_by=access["email"],
+            max_combinations=200,
+        )
+        db.commit()
+        try:
+            dispatch = dispatch_official_backtests(
+                token=settings.github_actions_token,
+                tickers=job.requested_tickers_json,
+                repository=settings.github_actions_repository,
+                workflow=settings.github_actions_workflow,
+                ref=settings.github_actions_ref,
+                max_combinations=job.max_combinations,
+                job_id=str(job.id),
+                environment=settings.app_environment,
+            )
+        except GitHubActionsError as exc:
+            service.mark_failed(
+                job,
+                code="github_dispatch_failed",
+                message=str(exc),
+                details={"requested_by": access["email"], "complete_round": True},
+            )
+            db.commit()
+            raise HTTPException(502, str(exc))
+        return {
+            **service.job_dict(job),
+            "dispatch": dispatch,
+            "launch_status": _official_round_launch_payload(service),
+        }
+    except ValueError as exc:
+        db.rollback()
+        detail = str(exc)
+        if detail.startswith("official_batch_cooldown:"):
+            raise HTTPException(409, detail={
+                "code": "official_batch_cooldown",
+                "next_allowed_at": detail.split(":", 1)[1],
+            })
+        raise HTTPException(
+            409 if detail.startswith("batch_job_active:") else 400,
+            detail,
+        )
 
 
 @app.post("/backtests/batch/jobs")

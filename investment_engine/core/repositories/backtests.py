@@ -388,27 +388,91 @@ class BacktestRepository:
         ))
 
     def leaderboard(self, *, tickers: list[str] | None = None, sector: str | None = None, per_asset: int = 3, limit: int = 5000):
-        stmt = (
-            select(BacktestRunORM, AssetORM).join(AssetORM, AssetORM.id == BacktestRunORM.asset_id)
-            .where(BacktestRunORM.scope == "official", BacktestRunORM.status == "valid")
-            .order_by(BacktestRunORM.created_at.desc()).limit(limit)
-        )
+        conditions = [
+            BacktestRunORM.scope == "official",
+            BacktestRunORM.status == "valid",
+        ]
         if tickers:
             clean = [ticker.strip().upper() for ticker in tickers if ticker.strip()]
             if not clean:
                 return {}
-            stmt = stmt.where(AssetORM.ticker.in_(clean))
+            conditions.append(AssetORM.ticker.in_(clean))
         if sector:
-            stmt = stmt.where(BacktestRunORM.sector_label.ilike(f"%{sector.strip()}%"))
-        newest_by_configuration = {}
-        for run, asset in self.session.execute(stmt):
-            newest_by_configuration.setdefault((run.asset_id, run.config_hash), (run, asset))
+            conditions.append(BacktestRunORM.sector_label.ilike(f"%{sector.strip()}%"))
+
+        # The official matrix can contain hundreds of configurations for the
+        # same strategy.  Loading an arbitrary recent slice used to omit whole
+        # tickers and also allowed three configurations of one strategy to
+        # occupy the complete podium.  Rank in the database instead: retain
+        # the newest copy of each configuration, then the best configuration
+        # of each strategy, and finally at most ``per_asset`` distinct
+        # strategies for every asset.
+        newest_configuration = (
+            select(
+                BacktestRunORM.id.label("run_id"),
+                BacktestRunORM.asset_id.label("asset_id"),
+                BacktestRunORM.strategy_id.label("strategy_id"),
+                BacktestRunORM.ranking_score.label("ranking_score"),
+                BacktestRunORM.created_at.label("created_at"),
+                func.row_number().over(
+                    partition_by=(BacktestRunORM.asset_id, BacktestRunORM.config_hash),
+                    order_by=(BacktestRunORM.created_at.desc(), BacktestRunORM.id.desc()),
+                ).label("configuration_order"),
+            )
+            .join(AssetORM, AssetORM.id == BacktestRunORM.asset_id)
+            .where(*conditions)
+            .subquery()
+        )
+        best_configuration_per_strategy = (
+            select(
+                newest_configuration.c.run_id,
+                newest_configuration.c.asset_id,
+                newest_configuration.c.strategy_id,
+                newest_configuration.c.ranking_score,
+                newest_configuration.c.created_at,
+                func.row_number().over(
+                    partition_by=(
+                        newest_configuration.c.asset_id,
+                        newest_configuration.c.strategy_id,
+                    ),
+                    order_by=(
+                        func.coalesce(newest_configuration.c.ranking_score, -1000000000).desc(),
+                        newest_configuration.c.created_at.desc(),
+                        newest_configuration.c.run_id.desc(),
+                    ),
+                ).label("strategy_order"),
+            )
+            .where(newest_configuration.c.configuration_order == 1)
+            .subquery()
+        )
+        podium = (
+            select(
+                best_configuration_per_strategy.c.run_id,
+                best_configuration_per_strategy.c.asset_id,
+                func.row_number().over(
+                    partition_by=best_configuration_per_strategy.c.asset_id,
+                    order_by=(
+                        func.coalesce(best_configuration_per_strategy.c.ranking_score, -1000000000).desc(),
+                        best_configuration_per_strategy.c.created_at.desc(),
+                        best_configuration_per_strategy.c.run_id.desc(),
+                    ),
+                ).label("asset_order"),
+            )
+            .where(best_configuration_per_strategy.c.strategy_order == 1)
+            .subquery()
+        )
+        requested_per_asset = max(1, int(per_asset))
+        stmt = (
+            select(BacktestRunORM, AssetORM, podium.c.asset_order)
+            .join(podium, podium.c.run_id == BacktestRunORM.id)
+            .join(AssetORM, AssetORM.id == podium.c.asset_id)
+            .where(podium.c.asset_order <= requested_per_asset)
+            .order_by(AssetORM.ticker, podium.c.asset_order)
+            .limit(max(1, int(limit)))
+        )
         grouped: dict[str, list[tuple]] = {}
-        for run, asset in newest_by_configuration.values():
+        for run, asset, _position in self.session.execute(stmt):
             grouped.setdefault(asset.ticker, []).append((run, asset))
-        for ticker, rows in grouped.items():
-            rows.sort(key=lambda item: (float(item[0].ranking_score or 0), item[0].created_at), reverse=True)
-            grouped[ticker] = rows[: max(1, per_asset)]
         return grouped
 
 
