@@ -12,6 +12,7 @@ from ..infrastructure.db.models import AssetORM, utcnow
 
 
 FEATURE_ALGORITHM = "local-price-bars-v1"
+_CURRENT_ROW_NOT_PRELOADED = object()
 
 
 def _bar_timestamp(bar) -> str | None:
@@ -76,31 +77,126 @@ class AssetCurrentMetricsService:
             return "missing"
         return "exact" if str(source.id) == str(current_id or "") else "stale"
 
-    def sync_asset(self, asset: AssetORM) -> dict:
-        existed = self.current.get(asset.id) is not None
-        self.current.ensure(asset.id)
-        fundamental = self.assets.latest_fundamentals(asset.id)
-        technical = self.assets.latest_technical(asset.id, timeframe="1D")
-        score = self.assets.latest_scores(asset.id)
-        latest_bar = self.assets.latest_price_bar(asset.id, timeframe="1D")
-        history = self.assets.price_history(asset.id, timeframe="1D", limit=600)
+    @staticmethod
+    def _instant(value: datetime | None) -> str:
+        if value is None:
+            return ""
+        current = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return current.astimezone(timezone.utc).isoformat()
+
+    @classmethod
+    def _source_ref_matches(
+        cls,
+        source_ref: dict,
+        source,
+        *,
+        as_of_field: str,
+        observed_at_field: str,
+    ) -> bool:
+        if source is None:
+            return False
+        return (
+            str(source_ref.get("id") or "") == str(source.id or "")
+            and str(source_ref.get("as_of") or "")
+            == cls._instant(getattr(source, as_of_field, None))
+            and str(source_ref.get("observed_at") or "")
+            == cls._instant(getattr(source, observed_at_field, None))
+        )
+
+    @classmethod
+    def _component_is_current(
+        cls,
+        row,
+        component: str,
+        source,
+        *,
+        current_id_field: str,
+        as_of_field: str,
+        observed_at_field: str,
+    ) -> bool:
+        if source is None or str(getattr(row, current_id_field, None) or "") != str(source.id or ""):
+            return False
+        return cls._source_ref_matches(
+            dict((row.source_refs_json or {}).get(component) or {}),
+            source,
+            as_of_field=as_of_field,
+            observed_at_field=observed_at_field,
+        )
+
+    @classmethod
+    def _features_are_current(cls, row, latest_bar) -> bool:
+        if not isinstance(row.technical_features_json, dict) or not row.technical_features_json:
+            return False
+        source_ref = dict((row.source_refs_json or {}).get("features") or {})
+        if source_ref.get("algorithm") != FEATURE_ALGORITHM:
+            return False
+        if latest_bar is None:
+            return not any(
+                str(source_ref.get(field) or "")
+                for field in ("id", "as_of", "observed_at")
+            )
+        return cls._source_ref_matches(
+            source_ref,
+            latest_bar,
+            as_of_field="timestamp",
+            observed_at_field="retrieved_at",
+        )
+
+    def sync_asset(
+        self,
+        asset: AssetORM,
+        *,
+        latest_sources: dict | None = None,
+        current_row=_CURRENT_ROW_NOT_PRELOADED,
+    ) -> dict:
+        if current_row is _CURRENT_ROW_NOT_PRELOADED:
+            row, created = self.current.ensure(asset.id)
+        else:
+            row, created = self.current.ensure(asset.id, known_row=current_row)
+        if latest_sources is None:
+            fundamental = self.assets.latest_fundamentals(asset.id)
+            technical = self.assets.latest_technical(asset.id, timeframe="1D")
+            score = self.assets.latest_scores(asset.id)
+            latest_bar = self.assets.latest_price_bar(asset.id, timeframe="1D")
+        else:
+            fundamental = latest_sources.get("fundamental")
+            technical = latest_sources.get("technical")
+            score = latest_sources.get("score")
+            latest_bar = latest_sources.get("price")
 
         changed = 0
-        if fundamental is not None:
-            changed += int(self.current.sync_fundamental(fundamental))
-        if technical is not None:
-            changed += int(self.current.sync_technical(technical))
-        if score is not None:
-            changed += int(self.current.sync_score(score))
-        if latest_bar is not None:
-            changed += int(self.current.sync_price(latest_bar))
-        features = precompute_technical_features(history)
-        changed += int(self.current.sync_features(
-            asset.id, features, latest_bar=latest_bar,
-            history_rows=len(history), algorithm=FEATURE_ALGORITHM,
-        ))
+        if fundamental is not None and not self._component_is_current(
+            row, "fundamental", fundamental,
+            current_id_field="fundamental_snapshot_id",
+            as_of_field="reference_date", observed_at_field="retrieved_at",
+        ):
+            changed += int(self.current.sync_fundamental(fundamental, row=row))
+        if technical is not None and not self._component_is_current(
+            row, "technical", technical,
+            current_id_field="technical_snapshot_id",
+            as_of_field="as_of", observed_at_field="retrieved_at",
+        ):
+            changed += int(self.current.sync_technical(technical, row=row))
+        if score is not None and not self._component_is_current(
+            row, "score", score,
+            current_id_field="score_snapshot_id",
+            as_of_field="as_of", observed_at_field="calculated_at",
+        ):
+            changed += int(self.current.sync_score(score, row=row))
+        if latest_bar is not None and not self._component_is_current(
+            row, "price", latest_bar,
+            current_id_field="price_bar_id",
+            as_of_field="timestamp", observed_at_field="retrieved_at",
+        ):
+            changed += int(self.current.sync_price(latest_bar, row=row))
+        if not self._features_are_current(row, latest_bar):
+            history = self.assets.price_history(asset.id, timeframe="1D", limit=600)
+            features = precompute_technical_features(history)
+            changed += int(self.current.sync_features(
+                asset.id, features, latest_bar=latest_bar,
+                history_rows=len(history), algorithm=FEATURE_ALGORITHM, row=row,
+            ))
 
-        row = self.current.get(asset.id)
         refs = dict(row.source_refs_json or {})
         components = {
             "fundamental": self._component_state(
@@ -117,29 +213,44 @@ class AssetCurrentMetricsService:
                 else "missing" if latest_bar is None else "stale"
             ),
         }
-        changed += int(self.current.set_parity(asset.id, components, checked_at=utcnow()))
+        changed += int(self.current.set_parity(
+            asset.id, components, checked_at=utcnow(), row=row,
+        ))
         self.session.flush()
         return {
             "asset_id": str(asset.id),
             "ticker": asset.ticker,
-            "created": not existed,
+            "created": created,
             "changed_components": changed,
-            "parity": dict(self.current.get(asset.id).parity_json or {}),
+            "parity": dict(row.parity_json or {}),
         }
 
     def sync_batch(self, *, after_ticker: str = "", limit: int = 250) -> dict:
         clean_cursor = str(after_ticker or "").strip().upper()
         batch_limit = max(1, min(1000, int(limit)))
-        statement = select(AssetORM).order_by(AssetORM.ticker, AssetORM.id).limit(batch_limit)
+        statement = (
+            select(AssetORM)
+            .where(AssetORM.is_active.is_(True))
+            .order_by(AssetORM.ticker, AssetORM.id)
+            .limit(batch_limit)
+        )
         if clean_cursor:
             statement = statement.where(AssetORM.ticker > clean_cursor)
         assets = list(self.session.scalars(statement))
+        latest_sources = self.assets.latest_current_sources_batch(
+            [asset.id for asset in assets], timeframe="1D",
+        )
+        current_rows = self.current.get_many([asset.id for asset in assets])
         created = updated = unchanged = 0
         errors: list[dict] = []
         for asset in assets:
             try:
                 with self.session.begin_nested():
-                    result = self.sync_asset(asset)
+                    result = self.sync_asset(
+                        asset,
+                        latest_sources=latest_sources.get(asset.id, {}),
+                        current_row=current_rows.get(asset.id),
+                    )
                 created += int(result["created"])
                 if result["changed_components"]:
                     updated += int(not result["created"])
@@ -150,7 +261,10 @@ class AssetCurrentMetricsService:
 
         next_cursor = assets[-1].ticker if assets else clean_cursor
         remaining = int(self.session.scalar(
-            select(func.count()).select_from(AssetORM).where(AssetORM.ticker > next_cursor)
+            select(func.count()).select_from(AssetORM).where(
+                AssetORM.is_active.is_(True),
+                AssetORM.ticker > next_cursor,
+            )
         ) or 0)
         return {
             "requested": len(assets),

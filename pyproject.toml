@@ -1,9 +1,9 @@
 [project]
 name = "investment-engine"
-version = "1.23.2"
-description = "Formação do Investidor V1.23.2 with materialized current metrics, asynchronous ingestion and isolated release migrations."
+version = "1.23.3"
+description = "Formação do Investidor V1.23.3 with contention-safe current metrics, bounded background work and resilient staging migrations."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["tests_v1160", "tests_v1170", "tests_v1200", "tests_v1202", "tests_v1203", "tests_v1204", "tests_v1205", "tests_v1206", "tests_v1207", "tests_v1210", "tests_v1220", "tests_v1230", "tests_v1231", "tests_v1232"]
+testpaths = ["tests_v1160", "tests_v1170", "tests_v1200", "tests_v1202", "tests_v1203", "tests_v1204", "tests_v1205", "tests_v1206", "tests_v1207", "tests_v1210", "tests_v1220", "tests_v1230", "tests_v1231", "tests_v1232", "tests_v1233"]

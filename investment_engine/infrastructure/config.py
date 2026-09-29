@@ -110,7 +110,13 @@ class Settings(BaseSettings):
     operational_retention_days: int = 180
     operational_retention_batch_size: int = 200
     operational_retention_apply_enabled: bool = True
-    current_metrics_backfill_batch_size: int = 250
+    # Current-metrics feature calculation loads up to 600 local bars per asset.
+    # Keep each transaction deliberately small on the 1 GB primary VM, while
+    # still accepting a bounded override for larger worker-only nodes.
+    current_metrics_backfill_batch_size: int = 50
+    current_metrics_backfill_max_batch_size: int = 100
+    current_metrics_continuation_delay_seconds: int = 3
+    current_metrics_continuation_priority: int = 180
     background_scheduler_enabled: bool = False
     background_scheduler_tick_seconds: int = 60
     in_process_background_worker_enabled: bool = False

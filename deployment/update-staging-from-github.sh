@@ -9,6 +9,8 @@ LOCK_FILE="/tmp/investment-staging-update.lock"
 CANDIDATE_IMAGE="formacao-do-investidor-staging:candidate"
 ROLLBACK_IMAGE="formacao-do-investidor-staging:rollback"
 PUBLIC_READY_URL="https://formacaodoinvestidor.com.br/testefdi/ready"
+STAGING_MIGRATION_ATTEMPTS=2
+STAGING_MIGRATION_RETRY_SECONDS=5
 
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
@@ -55,10 +57,25 @@ if ! COMPOSE_PARALLEL_LIMIT=1 nice -n 10 docker compose -f "${COMPOSE_FILE}" bui
 fi
 "${PROJECT_DIR}/deployment/refresh-staging-db.sh"
 echo "Aplicando as migrações do candidato no banco isolado de teste..."
-if ! docker compose --profile operations -f "${COMPOSE_FILE}" \
-  run --rm --no-deps staging-migration; then
+migration_succeeded=false
+for ((attempt = 1; attempt <= STAGING_MIGRATION_ATTEMPTS; attempt++)); do
+  if docker compose --profile operations -f "${COMPOSE_FILE}" \
+    run --rm --no-deps staging-migration; then
+    migration_succeeded=true
+    break
+  fi
+  if [[ "${attempt}" -lt "${STAGING_MIGRATION_ATTEMPTS}" ]]; then
+    echo "A migração isolada falhou na tentativa ${attempt}; repetindo em ${STAGING_MIGRATION_RETRY_SECONDS}s..." >&2
+    sleep "${STAGING_MIGRATION_RETRY_SECONDS}"
+  fi
+done
+if [[ "${migration_succeeded}" != "true" ]]; then
+  # refresh-staging-db.sh already stops staging before replacing its isolated
+  # database. Stop it again defensively and never start an older image against
+  # a database whose migration did not reach the exact expected head.
+  docker compose -f "${COMPOSE_FILE}" stop staging >/dev/null 2>&1 || true
   echo "${TARGET_COMMIT}" > "${FAILED_FILE}"
-  echo "A migração isolada do staging falhou; a produção não foi alterada."
+  echo "A migração isolada do staging falhou após duas tentativas; o staging permanece parado e a produção não foi alterada."
   exit 1
 fi
 FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate staging

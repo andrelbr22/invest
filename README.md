@@ -1,6 +1,27 @@
-# Formação do Investidor • V1.23.2
+# Formação do Investidor • V1.23.3
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
+
+## Desempenho sob carga V1.23.3
+
+A V1.23.3 preserva a tabela materializada, todos os snapshots históricos e
+os fallbacks da V1.23.2, mas reduz o custo de mantê-los atualizados. As fontes
+mais recentes e as linhas atuais passam a ser buscadas por lote, em vez de por
+ativo. Quando os identificadores, datas de observação e algoritmo não mudaram,
+o worker não relê 600 barras nem recalcula indicadores com Pandas.
+
+Na VM principal de 1 GB, os lotes são menores, espaçados e recebem menor peso
+de CPU que a API e o PostgreSQL. Isso evita que um preenchimento inicial ou uma
+atualização diária monopolize os recursos usados pelos painéis. A mesma
+configuração é compatível com o worker da segunda VM.
+
+A atualização automática do staging também repete uma migração isolada uma
+vez em caso de falha transitória. Se ambas as tentativas falharem, o staging
+permanece parado e a produção não é tocada. Não há nova migração de banco
+nesta versão; a revisão esperada continua sendo `0029_v1_23_current_metrics`.
+
+Consulte `V1_23_3.md`, `PATCH_V1233.md`, `INSTRUCOES_ORACLE_V1233.md` e
+`RELATORIO_VALIDACAO_V1233.md` antes de publicar ou promover.
 
 ## Otimização estrutural V1.23.2
 

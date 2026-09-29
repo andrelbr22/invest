@@ -7,6 +7,7 @@ import json
 import math
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...infrastructure.db.models import (
@@ -20,6 +21,7 @@ from ...infrastructure.db.models import (
 
 
 SCHEMA_VERSION = "1"
+_ROW_NOT_LOADED = object()
 
 FUNDAMENTAL_FIELDS = (
     "price", "pe", "pbv", "dividend_yield_pct", "ev_ebitda",
@@ -92,14 +94,40 @@ class AssetCurrentMetricsRepository:
     def get(self, asset_id) -> AssetCurrentMetricsORM | None:
         return self.session.get(AssetCurrentMetricsORM, asset_id)
 
-    def ensure(self, asset_id) -> tuple[AssetCurrentMetricsORM, bool]:
-        row = self.get(asset_id)
+    def get_many(self, asset_ids) -> dict:
+        ids = list(dict.fromkeys(asset_ids or []))
+        if not ids:
+            return {}
+        rows = self.session.scalars(
+            select(AssetCurrentMetricsORM).where(AssetCurrentMetricsORM.asset_id.in_(ids))
+        )
+        return {row.asset_id: row for row in rows}
+
+    def ensure(
+        self,
+        asset_id,
+        *,
+        known_row: AssetCurrentMetricsORM | None | object = _ROW_NOT_LOADED,
+    ) -> tuple[AssetCurrentMetricsORM, bool]:
+        row = self.get(asset_id) if known_row is _ROW_NOT_LOADED else known_row
         if row is not None:
             return row, False
         row = AssetCurrentMetricsORM(asset_id=asset_id, schema_version=SCHEMA_VERSION)
         self.session.add(row)
         self.session.flush()
         return row, True
+
+    def _resolve_row(
+        self,
+        asset_id,
+        row: AssetCurrentMetricsORM | None,
+    ) -> AssetCurrentMetricsORM:
+        """Reuse a row already loaded by a batch without changing public callers."""
+        if row is None:
+            return self.ensure(asset_id)[0]
+        if str(row.asset_id) != str(asset_id):
+            raise ValueError("current_metrics_asset_mismatch")
+        return row
 
     @staticmethod
     def _current_ref(row: AssetCurrentMetricsORM, component: str) -> dict:
@@ -188,8 +216,13 @@ class AssetCurrentMetricsRepository:
             "historical_tables_preserved": True,
         }
 
-    def sync_fundamental(self, snapshot: FundamentalSnapshotORM) -> bool:
-        row, _ = self.ensure(snapshot.asset_id)
+    def sync_fundamental(
+        self,
+        snapshot: FundamentalSnapshotORM,
+        *,
+        row: AssetCurrentMetricsORM | None = None,
+    ) -> bool:
+        row = self._resolve_row(snapshot.asset_id, row)
         payload = _payload(snapshot, FUNDAMENTAL_FIELDS, {
             "status": snapshot.status,
             "quality_score": snapshot.quality_score,
@@ -221,10 +254,15 @@ class AssetCurrentMetricsRepository:
         self._touch(row)
         return True
 
-    def sync_technical(self, snapshot: TechnicalSnapshotORM) -> bool:
+    def sync_technical(
+        self,
+        snapshot: TechnicalSnapshotORM,
+        *,
+        row: AssetCurrentMetricsORM | None = None,
+    ) -> bool:
         if str(snapshot.timeframe or "").upper() != "1D":
             return False
-        row, _ = self.ensure(snapshot.asset_id)
+        row = self._resolve_row(snapshot.asset_id, row)
         payload = _payload(snapshot, TECHNICAL_FIELDS, {
             "timeframe": snapshot.timeframe,
             "status": snapshot.status,
@@ -256,8 +294,13 @@ class AssetCurrentMetricsRepository:
         self._touch(row)
         return True
 
-    def sync_score(self, snapshot: ScoreSnapshotORM) -> bool:
-        row, _ = self.ensure(snapshot.asset_id)
+    def sync_score(
+        self,
+        snapshot: ScoreSnapshotORM,
+        *,
+        row: AssetCurrentMetricsORM | None = None,
+    ) -> bool:
+        row = self._resolve_row(snapshot.asset_id, row)
         payload = _payload(snapshot, SCORE_FIELDS, {
             "model_version": snapshot.model_version,
             "details": snapshot.details_json or {},
@@ -282,10 +325,15 @@ class AssetCurrentMetricsRepository:
         self._touch(row)
         return True
 
-    def sync_price(self, bar: PriceBarORM) -> bool:
+    def sync_price(
+        self,
+        bar: PriceBarORM,
+        *,
+        row: AssetCurrentMetricsORM | None = None,
+    ) -> bool:
         if str(bar.timeframe or "").upper() != "1D":
             return False
-        row, _ = self.ensure(bar.asset_id)
+        row = self._resolve_row(bar.asset_id, row)
         price = bar.adjusted_close if bar.adjusted_close is not None else bar.close
         payload = _payload(bar, ("open", "high", "low", "close", "adjusted_close", "volume"), {
             "timeframe": bar.timeframe, "status": bar.status, "source": bar.source,
@@ -316,8 +364,9 @@ class AssetCurrentMetricsRepository:
         latest_bar: PriceBarORM | None,
         history_rows: int,
         algorithm: str,
+        row: AssetCurrentMetricsORM | None = None,
     ) -> bool:
-        row, _ = self.ensure(asset_id)
+        row = self._resolve_row(asset_id, row)
         payload = _json_safe(features or {})
         content_hash = _hash(payload)
         as_of = latest_bar.timestamp if latest_bar is not None else None
@@ -339,8 +388,15 @@ class AssetCurrentMetricsRepository:
         self._touch(row)
         return True
 
-    def set_parity(self, asset_id, components: dict[str, str], *, checked_at=None) -> bool:
-        row, _ = self.ensure(asset_id)
+    def set_parity(
+        self,
+        asset_id,
+        components: dict[str, str],
+        *,
+        checked_at=None,
+        row: AssetCurrentMetricsORM | None = None,
+    ) -> bool:
+        row = self._resolve_row(asset_id, row)
         clean = {str(key): str(value) for key, value in components.items()}
         states = set(clean.values())
         state = "stale" if "stale" in states else "exact" if "exact" in states else "no_sources"

@@ -108,6 +108,10 @@ services:
       IN_PROCESS_BACKGROUND_WORKER_ENABLED: "true"
       BACKGROUND_WORKER_POLL_SECONDS: "10"
       BACKGROUND_SCHEDULER_ENABLED: "false"
+      CURRENT_METRICS_BACKFILL_BATCH_SIZE: "50"
+      CURRENT_METRICS_BACKFILL_MAX_BATCH_SIZE: "100"
+      CURRENT_METRICS_CONTINUATION_DELAY_SECONDS: "3"
+      CURRENT_METRICS_CONTINUATION_PRIORITY: "180"
       DATABASE_POOL_SIZE: "2"
       DATABASE_MAX_OVERFLOW: "0"
       DATABASE_POOL_TIMEOUT_SECONDS: "10"
@@ -154,6 +158,10 @@ services:
       APP_COMMIT_SHA: "${FDI_RELEASE_COMMIT:-unknown}"
       SERVICE_HEARTBEAT_SECONDS: "30"
       RUNTIME_LEASE_SECONDS: "180"
+      CURRENT_METRICS_BACKFILL_BATCH_SIZE: "50"
+      CURRENT_METRICS_BACKFILL_MAX_BATCH_SIZE: "100"
+      CURRENT_METRICS_CONTINUATION_DELAY_SECONDS: "3"
+      CURRENT_METRICS_CONTINUATION_PRIORITY: "180"
       # O processo possui consumidor, scheduler, monitor de alertas e duas
       # rotinas internas de heartbeat. Uma única conexão fazia essas rotinas
       # disputarem o pool durante trabalhos longos.
@@ -171,7 +179,9 @@ services:
       postgres:
         condition: service_healthy
     mem_limit: 260m
-    cpu_shares: 256
+    # Batch work remains available, but yields more aggressively to the web
+    # process and PostgreSQL whenever the 1 GB host is under CPU contention.
+    cpu_shares: 128
     pids_limit: 100
     init: true
     logging:

@@ -31,7 +31,7 @@ def test_primary_runtime_prioritizes_the_site_and_bounds_auxiliary_services():
     assert "cpu_shares: 1024" in postgres
     assert "cpu_shares: 1024" in app
     assert "cpu_shares: 128" in staging
-    assert "cpu_shares: 256" in worker
+    assert "cpu_shares: 128" in worker
     assert 'BACKGROUND_WORKER_POLL_SECONDS: "10"' in staging
     assert 'BACKGROUND_WORKER_POLL_SECONDS: "5"' in worker
     assert 'DATABASE_POOL_SIZE: "4"' in app

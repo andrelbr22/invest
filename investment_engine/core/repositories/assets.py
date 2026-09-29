@@ -396,6 +396,82 @@ class AssetRepository:
     def latest_scores(self, asset_id):
         return self.session.scalar(select(ScoreSnapshotORM).where(ScoreSnapshotORM.asset_id==asset_id).order_by(ScoreSnapshotORM.as_of.desc(), ScoreSnapshotORM.calculated_at.desc(), ScoreSnapshotORM.id.desc()).limit(1))
 
+    def _latest_rows_by_asset(self, model, asset_ids, *, filters=(), order_by=()):
+        """Return one latest ORM row per asset without issuing an N+1 query."""
+        ids = list(dict.fromkeys(asset_ids or []))
+        if not ids:
+            return {}
+        ranked = (
+            select(
+                model.id.label("row_id"),
+                func.row_number().over(
+                    partition_by=model.asset_id,
+                    order_by=order_by,
+                ).label("row_rank"),
+            )
+            .where(model.asset_id.in_(ids), *filters)
+            .subquery()
+        )
+        rows = self.session.scalars(
+            select(model)
+            .join(ranked, ranked.c.row_id == model.id)
+            .where(ranked.c.row_rank == 1)
+        )
+        return {row.asset_id: row for row in rows}
+
+    def latest_current_sources_batch(self, asset_ids, *, timeframe: str = "1D") -> dict:
+        """Load the four historical sources needed by a materializer batch."""
+        ids = list(dict.fromkeys(asset_ids or []))
+        if not ids:
+            return {}
+        fundamentals = self._latest_rows_by_asset(
+            FundamentalSnapshotORM,
+            ids,
+            order_by=(
+                FundamentalSnapshotORM.reference_date.desc(),
+                FundamentalSnapshotORM.retrieved_at.desc(),
+                FundamentalSnapshotORM.id.desc(),
+            ),
+        )
+        technicals = self._latest_rows_by_asset(
+            TechnicalSnapshotORM,
+            ids,
+            filters=(TechnicalSnapshotORM.timeframe == timeframe,),
+            order_by=(
+                TechnicalSnapshotORM.as_of.desc(),
+                TechnicalSnapshotORM.retrieved_at.desc(),
+                TechnicalSnapshotORM.id.desc(),
+            ),
+        )
+        scores = self._latest_rows_by_asset(
+            ScoreSnapshotORM,
+            ids,
+            order_by=(
+                ScoreSnapshotORM.as_of.desc(),
+                ScoreSnapshotORM.calculated_at.desc(),
+                ScoreSnapshotORM.id.desc(),
+            ),
+        )
+        prices = self._latest_rows_by_asset(
+            PriceBarORM,
+            ids,
+            filters=(PriceBarORM.timeframe == timeframe,),
+            order_by=(
+                PriceBarORM.timestamp.desc(),
+                PriceBarORM.retrieved_at.desc(),
+                PriceBarORM.id.desc(),
+            ),
+        )
+        return {
+            asset_id: {
+                "fundamental": fundamentals.get(asset_id),
+                "technical": technicals.get(asset_id),
+                "score": scores.get(asset_id),
+                "price": prices.get(asset_id),
+            }
+            for asset_id in ids
+        }
+
     def _latest_fundamental_alias(self):
         latest_id = (
             select(FundamentalSnapshotORM.id)

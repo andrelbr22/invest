@@ -27,7 +27,11 @@ def main() -> int:
 
     commit = str(args.commit or "unknown").strip()
     cycle = f"release:{commit}"
-    batch_size = max(1, min(1000, int(args.batch_size)))
+    max_batch_size = max(1, min(
+        1000,
+        int(settings.current_metrics_backfill_max_batch_size),
+    ))
+    batch_size = max(1, min(max_batch_size, int(args.batch_size)))
     session = get_session_factory()()
     try:
         job, created = BackgroundJobRepository(session).enqueue(

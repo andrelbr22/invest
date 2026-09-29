@@ -904,9 +904,21 @@ def handle_current_metrics_refresh(payload: dict) -> dict:
     """Materialize current values from local history in bounded, resumable batches."""
     snapshot_key = str(payload.get("snapshot_key") or "market:current-metrics")
     after_ticker = str(payload.get("after_ticker") or "").strip().upper()
-    batch_size = max(1, min(
+    max_batch_size = max(1, min(
         1000,
+        int(settings.current_metrics_backfill_max_batch_size),
+    ))
+    batch_size = max(1, min(
+        max_batch_size,
         int(payload.get("batch_size") or settings.current_metrics_backfill_batch_size),
+    ))
+    continuation_delay = max(0, min(
+        60,
+        int(settings.current_metrics_continuation_delay_seconds),
+    ))
+    continuation_priority = max(0, min(
+        1000,
+        int(settings.current_metrics_continuation_priority),
     ))
     cycle = str(payload.get("cycle") or payload.get("scheduled_for") or _market_today().isoformat())
     session = get_session_factory()()
@@ -935,8 +947,12 @@ def handle_current_metrics_refresh(payload: dict) -> dict:
                     "cycle": cycle,
                     "trigger": "continuation",
                 },
-                priority=146,
+                # Continuations intentionally yield to interactive-supporting
+                # refreshes and leave a short CPU/IO recovery window between
+                # batches on the 1 GB primary VM.
+                priority=continuation_priority,
                 max_attempts=3,
+                run_after=utcnow() + timedelta(seconds=continuation_delay),
                 deduplication_key=f"current-metrics:{token}",
                 idempotency_key=f"current-metrics:{token}",
             )
