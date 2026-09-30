@@ -1,4 +1,21 @@
-# Formação do Investidor • V1.23.4
+# Formação do Investidor • V1.23.5
+
+## Painéis mais rápidos • V1.23.5 R1
+
+A V1.23.5 R1 reduz o trabalho repetido durante a navegação sem remover
+funcionalidades. Leituras de manchetes, comparações, agenda, fatos relevantes
+e proventos não gravam mais no banco. Quando uma fonte realmente estiver
+ausente ou vencida, o navegador solicita uma atualização separada e preserva
+o último resultado válido.
+
+Permissões, presets, respostas compartilhadas e screeners usam janelas de
+cache maiores, sempre com invalidação nas operações que alteram esses dados.
+Catálogo e filtros personalizados são carregados em paralelo. O painel
+operacional também passa a registrar o tempo real até Dashboard, Análises e
+Carteira ficarem utilizáveis no navegador, complementando o benchmark interno.
+
+Não há migração de banco nesta revisão. A revisão esperada continua sendo
+`0029_v1_23_current_metrics`.
 
 O escopo, as invariantes e a sequência completa da linha V1.20 estão documentados em `GUIA_MESTRE_V1.20.md`. A auditoria de valoração, filtros e backtests da V1.21 está em `RELATORIO_AUDITORIA_VALUATION_E_BACKTESTS_V1210.md`.
 

@@ -1171,6 +1171,13 @@ class AdminAnalysisResetRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class ClientPanelMetricRequest(BaseModel):
+    panel: Literal["dashboard", "analysis", "portfolio", "backtests", "finances", "admin"]
+    duration_ms: float = Field(ge=0, le=120_000)
+    success: bool = True
+    cache_state: Literal["cold", "warm", "stale"] | None = None
+
+
 _PLATFORM_DESTINATIONS = frozenset({"/plataforma/", "/testefdi/plataforma/"})
 
 
@@ -1480,6 +1487,20 @@ def list_background_jobs(
     db: Session = Depends(get_db),
 ):
     return [background_job_dict(row) for row in BackgroundJobRepository(db).list_recent(limit)]
+
+
+@app.post("/operations/client-performance", status_code=204)
+def record_client_panel_performance(
+    metric: ClientPanelMetricRequest,
+    _email: str = Depends(_request_email),
+):
+    """Record real time-to-usable panel latency without a database write."""
+    ROUTE_LATENCIES.observe(
+        f"panel_{metric.panel}",
+        metric.duration_ms,
+        200 if metric.success else 500,
+    )
+    return Response(status_code=204)
 
 
 @app.get("/admin/operations")
@@ -3426,22 +3447,36 @@ def portfolio_dividend_calendar(
         raise HTTPException(422, "invalid_investor_event_period")
     if portfolio_id is not None and PortfolioRepository(db).get_portfolio(portfolio_id, access["email"]) is None:
         raise HTTPException(404, "portfolio_not_found")
-    _job, scheduled = enqueue_refresh(
-        db, "portfolio_dividends", trigger="access", requested_by=access.get("email"),
-    )
     rows = InvestorEventsRepository(db).list_portfolio_dividends(
         access["email"], portfolio_id=portfolio_id, start=initial, end=final, limit=limit,
     )
-    db.commit()
     return {
         "items": rows,
         "period": {"start": initial, "end": final},
         "source": "B3 • Empresas Listadas",
-        "scheduled": scheduled,
+        "scheduled": False,
         "update": refresh_status(db, "portfolio_dividends"),
         "gross_amount_note": (
             "O total estimado usa a quantidade atual da posição e não substitui o informe da corretora."
         ),
+    }
+
+
+@app.post("/investor-events/dividends/ensure")
+def ensure_portfolio_dividend_calendar(
+    access=Depends(require_permission("can_view_portfolio")),
+    db: Session = Depends(get_db),
+):
+    """Schedule missing/stale dividend data without making the GET route write."""
+    row, scheduled = enqueue_refresh(
+        db, "portfolio_dividends", trigger="access", requested_by=access.get("email"),
+    )
+    db.commit()
+    _invalidate_shared_response_cache(db)
+    return {
+        "scheduled": scheduled,
+        "job": background_job_dict(row) if row is not None else None,
+        "update": refresh_status(db, "portfolio_dividends"),
     }
 
 
@@ -3453,15 +3488,11 @@ def relevant_facts_feed(
     db: Session = Depends(get_db),
 ):
     """Expose official CVM IPE metadata and links without copying filing contents."""
-    _job, scheduled = enqueue_refresh(
-        db, "cvm_relevant_facts", trigger="access", requested_by=access.get("email"),
-    )
     rows = InvestorEventsRepository(db).list_relevant_facts(ticker=ticker, limit=limit)
-    db.commit()
     return {
         "items": [relevant_fact_dict(row) for row in rows],
         "source": "CVM • Dados Abertos IPE",
-        "scheduled": scheduled,
+        "scheduled": False,
         "update": refresh_status(db, "cvm_relevant_facts"),
     }
 
@@ -3478,15 +3509,11 @@ def official_investor_calendar(
     final = end or date.today() + timedelta(days=730)
     if initial > final or (final - initial).days > 3650:
         raise HTTPException(422, "invalid_investor_event_period")
-    _job, scheduled = enqueue_refresh(
-        db, "official_calendar", trigger="access", requested_by=access.get("email"),
-    )
     rows = InvestorEventsRepository(db).list_calendar(start=initial, end=final, limit=limit)
-    db.commit()
     return {
         "items": [official_calendar_event_dict(row) for row in rows],
         "period": {"start": initial, "end": final},
-        "scheduled": scheduled,
+        "scheduled": False,
         "update": refresh_status(db, "official_calendar"),
     }
 
@@ -4135,14 +4162,11 @@ def market_dashboard_headlines(
     db: Session = Depends(get_db),
 ):
     row = SharedSnapshotRepository(db).get(REFRESH_SCHEDULES["headlines"].snapshot_key)
-    _job, scheduled = enqueue_refresh(db, "headlines", trigger="access", requested_by=_access.get("email"))
-    db.commit()
-    _invalidate_shared_response_cache(db)
     update = _cached_refresh_statuses(db)["headlines"]
     return {
         "data": dict(row.payload_json or {}) if row is not None else {},
         "refreshing": update["status"] in {"queued", "running"},
-        "error": update.get("last_error_code"), "scheduled": scheduled,
+        "error": update.get("last_error_code"), "scheduled": False,
         "ttl_seconds": settings.economy_headlines_ttl_seconds, "update": update,
     }
 
@@ -4164,14 +4188,11 @@ def market_dashboard_comparison(
     db: Session = Depends(get_db),
 ):
     row = SharedSnapshotRepository(db).get(REFRESH_SCHEDULES["comparison"].snapshot_key)
-    _job, scheduled = enqueue_refresh(db, "comparison", trigger="access", requested_by=_access.get("email"))
-    db.commit()
-    _invalidate_shared_response_cache(db)
     update = _cached_refresh_statuses(db)["comparison"]
     return {
         "data": dict(row.payload_json or {}) if row is not None else {},
         "refreshing": update["status"] in {"queued", "running"},
-        "error": update.get("last_error_code"), "scheduled": scheduled,
+        "error": update.get("last_error_code"), "scheduled": False,
         "ttl_seconds": 24 * 60 * 60, "update": update,
     }
 

@@ -33,6 +33,14 @@ ROUTE_TARGETS_MS = {
     "screener_50": 2000.0,
     "screener_100": 3000.0,
     "asset_detail": 2000.0,
+    # Browser-reported time until the panel is usable, including proxy,
+    # network, chained requests and rendering. These complement route timings.
+    "panel_dashboard": 2000.0,
+    "panel_analysis": 3000.0,
+    "panel_portfolio": 3000.0,
+    "panel_backtests": 3000.0,
+    "panel_finances": 2500.0,
+    "panel_admin": 3000.0,
 }
 
 

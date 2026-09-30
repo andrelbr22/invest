@@ -100,13 +100,16 @@ class Settings(BaseSettings):
     canonical_url: str = "https://formacaodoinvestidor.com.br"
     secure_cookies: bool = True
     economy_headlines_ttl_seconds: int = 3600
-    access_policy_cache_ttl_seconds: float = 5.0
-    analysis_preset_cache_ttl_seconds: float = 15.0
-    shared_response_cache_ttl_seconds: float = 3.0
+    # These payloads change only through explicit administrative/data-update
+    # operations, which invalidate their cache namespace. Longer windows keep
+    # routine navigation away from PostgreSQL without hiding committed edits.
+    access_policy_cache_ttl_seconds: float = 60.0
+    analysis_preset_cache_ttl_seconds: float = 120.0
+    shared_response_cache_ttl_seconds: float = 60.0
     # System screeners calculate peer valuations over the complete local
     # universe. Reuse an identical, access-safe page briefly so navigation and
     # repeated table requests do not redo that CPU-heavy work.
-    screener_response_cache_ttl_seconds: float = 30.0
+    screener_response_cache_ttl_seconds: float = 120.0
     application_cache_max_entries: int = 2048
     background_worker_poll_seconds: float = 2.0
     background_job_lease_timeout_seconds: int = 300
