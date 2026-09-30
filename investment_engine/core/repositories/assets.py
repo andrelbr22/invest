@@ -13,6 +13,26 @@ from ...core.instruments import B3_CATALOG_TYPES, is_supported_ticker, require_s
 from .current_metrics import AssetCurrentMetricsRepository
 
 
+_CURRENT_FUNDAMENTAL_FIELDS = (
+    "pe", "pbv", "dividend_yield_pct", "ev_ebitda", "ebit_margin_pct",
+    "net_margin_pct", "current_ratio", "roe_pct", "roic_pct",
+    "gross_debt_to_equity", "net_debt_to_ebitda", "revenue_cagr_5y_pct",
+    "earnings_cagr_5y_pct", "ffo_yield_pct", "cap_rate_pct", "vacancy_pct",
+    "financial_vacancy_pct", "ltv_pct", "wale_years",
+)
+_CURRENT_TECHNICAL_FIELDS = (
+    "score_tv", "signal_tv", "market_cap", "daily_liquidity", "sma20",
+    "sma50", "sma200", "sma20_1w", "sma50_1w", "sma20_1m", "sma50_1m",
+    "rsi14", "macd", "atr14", "volatility_annual_pct",
+    "max_drawdown_1y_pct", "return_1m_pct", "return_3m_pct", "return_12m_pct",
+)
+_CURRENT_SCORE_FIELDS = (
+    "quality_score", "value_score", "growth_score", "technical_score",
+    "risk_score", "liquidity_score", "alb_score", "coverage_pct",
+    "data_quality_score",
+)
+
+
 def _decimal_or_none(value):
     if value is None:
         return None
@@ -594,6 +614,88 @@ class AssetRepository:
             _current_component(metrics, "score"),
         )
 
+    @staticmethod
+    def _current_projection_columns(metrics, *, fundamental_price):
+        """Small, typed projection used by navigation and screeners.
+
+        The JSON mirrors remain stored and auditable, but are intentionally
+        absent from this hot read path. The fundamental price comes from the
+        referenced typed snapshot, so PostgreSQL never needs to decompress a
+        provider payload merely to render the list.
+        """
+        return [
+            metrics.asset_id.label("cm_asset_id"),
+            metrics.fundamental_snapshot_id.label("cm_fundamental_id"),
+            metrics.technical_snapshot_id.label("cm_technical_id"),
+            metrics.price_bar_id.label("cm_price_bar_id"),
+            metrics.score_snapshot_id.label("cm_score_id"),
+            func.coalesce(fundamental_price, metrics.price).label("cm_fundamental_price"),
+            metrics.fundamental_daily_liquidity.label("cm_fundamental_daily_liquidity"),
+            metrics.price.label("cm_close"),
+            *[
+                getattr(metrics, field).label(f"cm_fundamental_{field}")
+                for field in _CURRENT_FUNDAMENTAL_FIELDS
+            ],
+            *[
+                getattr(metrics, field).label(f"cm_technical_{field}")
+                for field in _CURRENT_TECHNICAL_FIELDS
+            ],
+            *[
+                getattr(metrics, field).label(f"cm_score_{field}")
+                for field in _CURRENT_SCORE_FIELDS
+            ],
+        ]
+
+    @staticmethod
+    def _current_projection_tuple(row):
+        asset = row[0]
+        values = row._mapping
+        asset_id = values["cm_asset_id"]
+        fundamental = None
+        if values["cm_fundamental_id"] is not None:
+            fundamental_values = {
+                field: values[f"cm_fundamental_{field}"]
+                for field in _CURRENT_FUNDAMENTAL_FIELDS
+            }
+            fundamental_values.update({
+                "id": values["cm_fundamental_id"],
+                "asset_id": asset_id,
+                "price": values["cm_fundamental_price"],
+                "daily_liquidity": values["cm_fundamental_daily_liquidity"],
+                # row_from_orm recovers the TTM dividend exactly from price
+                # and DY when no normalized provider dividend is present.
+                "raw_payload": {},
+            })
+            fundamental = SimpleNamespace(**fundamental_values)
+
+        technical = None
+        if values["cm_technical_id"] is not None or values["cm_price_bar_id"] is not None:
+            technical_values = {
+                field: values[f"cm_technical_{field}"]
+                for field in _CURRENT_TECHNICAL_FIELDS
+            }
+            technical_values.update({
+                "id": values["cm_technical_id"] or values["cm_price_bar_id"],
+                "asset_id": asset_id,
+                "close": values["cm_close"],
+                "raw_payload": {},
+            })
+            technical = SimpleNamespace(**technical_values)
+
+        score = None
+        if values["cm_score_id"] is not None:
+            score_values = {
+                field: values[f"cm_score_{field}"]
+                for field in _CURRENT_SCORE_FIELDS
+            }
+            score_values.update({
+                "id": values["cm_score_id"],
+                "asset_id": asset_id,
+                "details_json": {},
+            })
+            score = SimpleNamespace(**score_values)
+        return asset, fundamental, technical, score
+
     def current_technical_features(self, asset_ids) -> dict:
         ids = list(dict.fromkeys(asset_ids or []))
         if not ids:
@@ -653,10 +755,7 @@ class AssetRepository:
                 (m.pe * m.pbv) < 22.5,
             )
         rows = self._current_metrics_page(stmt, m, limit=limit, offset=offset)
-        return [
-            (asset, _current_component(metrics, "fundamental"), _current_component(metrics, "score"))
-            for asset, metrics in rows
-        ]
+        return [(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
 
     def _current_metrics_page(self, stmt, metrics, *, limit: int, offset: int):
         """Page on narrow typed columns before loading the selected JSON rows.
@@ -680,13 +779,23 @@ class AssetRepository:
             .limit(max(1, int(limit)))
             .subquery("current_metrics_page")
         )
-        return self.session.execute(
-            select(AssetORM, metrics)
+        projected = self.session.execute(
+            select(
+                AssetORM,
+                *self._current_projection_columns(
+                    metrics, fundamental_price=FundamentalSnapshotORM.price,
+                ),
+            )
             .select_from(page)
             .join(AssetORM, AssetORM.id == page.c.asset_id)
             .join(metrics, metrics.asset_id == page.c.asset_id)
+            .outerjoin(
+                FundamentalSnapshotORM,
+                FundamentalSnapshotORM.id == metrics.fundamental_snapshot_id,
+            )
             .order_by(page.c.sort_score.desc().nullslast(), page.c.sort_ticker)
         )
+        return [self._current_projection_tuple(row) for row in projected]
 
     def _screen_current_fiis(self, filters, *, limit: int, offset: int):
         m = AssetCurrentMetricsORM
@@ -715,10 +824,7 @@ class AssetRepository:
                 m.dividend_yield_pct.is_not(None), m.dividend_yield_pct > 6.0,
             )
         rows = self._current_metrics_page(stmt, m, limit=limit, offset=offset)
-        return [
-            (asset, _current_component(metrics, "fundamental"), _current_component(metrics, "score"))
-            for asset, metrics in rows
-        ]
+        return [(asset, fundamental, score) for asset, fundamental, _technical, score in rows]
 
     def screen_latest_stocks(self, filters, limit=100, offset=0):
         """PostgreSQL-first screener: latest snapshots + filters are executed in SQL."""
@@ -799,6 +905,34 @@ class AssetRepository:
         accepted_types = {"etf", "bdr", "future"} if asset_type == "other_b3" else {asset_type}
         required_component = "fundamental" if accepted_types <= {"stock", "fii"} else "technical"
         if self._current_coverage_complete(accepted_types, component=required_component):
+            if accepted_types <= {"stock", "fii"}:
+                projected = self.session.execute(
+                    select(
+                        AssetORM,
+                        *self._current_projection_columns(
+                            AssetCurrentMetricsORM,
+                            fundamental_price=FundamentalSnapshotORM.price,
+                        ),
+                    )
+                    .select_from(AssetORM)
+                    .join(
+                        AssetCurrentMetricsORM,
+                        AssetCurrentMetricsORM.asset_id == AssetORM.id,
+                    )
+                    .outerjoin(
+                        FundamentalSnapshotORM,
+                        FundamentalSnapshotORM.id
+                        == AssetCurrentMetricsORM.fundamental_snapshot_id,
+                    )
+                    .where(
+                        AssetORM.asset_type.in_(accepted_types),
+                        AssetORM.is_active.is_(True),
+                        self._supported_catalog_clause(accepted_types),
+                    )
+                    .order_by(AssetORM.ticker)
+                    .limit(limit)
+                )
+                return [self._current_projection_tuple(row) for row in projected]
             rows = self.session.execute(
                 select(AssetORM, AssetCurrentMetricsORM)
                 .select_from(AssetORM)

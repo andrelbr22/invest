@@ -84,3 +84,8 @@ def test_current_stock_screener_pages_narrow_rows_and_avoids_like_explosion():
     assert " like " not in screener_sql.lower()
     assert "substr(" in screener_sql.lower()
     assert "length(" in screener_sql.lower()
+    assert "fundamental_json" not in screener_sql.lower()
+    assert "join fundamental_snapshots" in screener_sql.lower()
+    assert "technical_json" not in screener_sql.lower()
+    assert "score_json" not in screener_sql.lower()
+    assert "technical_features_json" not in screener_sql.lower()
