@@ -141,6 +141,10 @@ _SHARED_RESPONSE_CACHE = BoundedTTLCache(
     settings.shared_response_cache_ttl_seconds,
     max_entries=max(32, settings.application_cache_max_entries // 8),
 )
+_SCREENER_RESPONSE_CACHE = BoundedTTLCache(
+    settings.screener_response_cache_ttl_seconds,
+    max_entries=max(64, settings.application_cache_max_entries // 8),
+)
 
 
 def _is_quiet_successful_request(path: str, status_code: int) -> bool:
@@ -338,11 +342,47 @@ def _invalidate_analysis_settings_cache(db: Session, asset_type: str | None = No
     _ANALYSIS_SETTINGS_CACHE.invalidate(
         lambda key: key[0] == namespace and (not clean or key[1] == clean)
     )
+    _SCREENER_RESPONSE_CACHE.invalidate(
+        lambda key: key[0] == namespace and (not clean or key[1] == clean)
+    )
 
 
 def _invalidate_shared_response_cache(db: Session) -> None:
     namespace = _cache_namespace(db)
     _SHARED_RESPONSE_CACHE.invalidate(lambda key: key[0] == namespace)
+
+
+_SCREENER_ACCESS_FIELDS = (
+    "can_use_alb_analysis",
+    "can_use_graham_valuation",
+    "can_use_dividend_ceiling",
+    "can_use_relative_valuation",
+    "can_use_economic_valuation",
+)
+
+
+def _system_screener_cache_key(
+    db: Session,
+    *,
+    asset_type: str,
+    strategy_id: str,
+    limit: int,
+    offset: int,
+    setting: dict,
+    access: dict,
+) -> tuple:
+    """Build an access-safe key for a fully rendered system screener page."""
+    return (
+        _cache_namespace(db),
+        str(asset_type),
+        str(strategy_id),
+        int(limit),
+        int(offset),
+        str(setting.get("active_variant") or "factory"),
+        int(setting.get("revision") or 0),
+        str(setting.get("factory_version") or ""),
+        tuple(bool(access.get(field)) for field in _SCREENER_ACCESS_FIELDS),
+    )
 
 
 def _request_email(request: Request, x_app_user_email: str = Header(default="")) -> str:
@@ -3046,15 +3086,25 @@ def screen_db_stocks(strategy_id: str, limit:int=50, offset:int=0, access=Depend
     if not strategy: raise HTTPException(404,"strategy_not_found")
     _require_system_analysis_access(strategy_id, access)
     setting = _cached_analysis_preset_payload(db, "stock", strategy_id)
+    cache_key = _system_screener_cache_key(
+        db, asset_type="stock", strategy_id=strategy_id, limit=limit,
+        offset=offset, setting=setting, access=access,
+    )
+    found, cached, generation = _SCREENER_RESPONSE_CACHE.get_with_generation(cache_key)
+    if found:
+        return cached
     if setting["active_variant"] == "owner":
-        return _owner_preset_rows(
+        result = _owner_preset_rows(
             setting["configuration"], asset_type="stock", limit=limit, offset=offset, access=access, db=db,
         )
-    repo = AssetRepository(db)
-    rows = _alb_stock_rows(repo, limit=limit, offset=offset) if strategy_id == "alb" else repo.screen_latest_stocks(strategy.filters,limit=limit,offset=offset)
-    return _enrich_listing_valuations(
-        repo, _stock_screen_result(rows, access), asset_type="stock", access=access,
-    )
+    else:
+        repo = AssetRepository(db)
+        rows = _alb_stock_rows(repo, limit=limit, offset=offset) if strategy_id == "alb" else repo.screen_latest_stocks(strategy.filters,limit=limit,offset=offset)
+        result = _enrich_listing_valuations(
+            repo, _stock_screen_result(rows, access), asset_type="stock", access=access,
+        )
+    _SCREENER_RESPONSE_CACHE.set_if_generation(cache_key, result, generation)
+    return result
 
 @app.get("/screen/db/fiis/{strategy_id}")
 def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, access=Depends(require_permission("can_view_market")), db: Session = Depends(get_db)):
@@ -3063,15 +3113,25 @@ def screen_db_fiis(strategy_id: str, limit: int = 50, offset: int = 0, access=De
         raise HTTPException(404, "strategy_not_found")
     _require_system_analysis_access(strategy_id, access)
     setting = _cached_analysis_preset_payload(db, "fii", strategy_id)
+    cache_key = _system_screener_cache_key(
+        db, asset_type="fii", strategy_id=strategy_id, limit=limit,
+        offset=offset, setting=setting, access=access,
+    )
+    found, cached, generation = _SCREENER_RESPONSE_CACHE.get_with_generation(cache_key)
+    if found:
+        return cached
     if setting["active_variant"] == "owner":
-        return _owner_preset_rows(
+        result = _owner_preset_rows(
             setting["configuration"], asset_type="fii", limit=limit, offset=offset, access=access, db=db,
         )
-    repo = AssetRepository(db)
-    rows = repo.screen_latest_fiis(strategy.filters, limit=limit, offset=offset)
-    return _enrich_listing_valuations(
-        repo, _fii_screen_result(rows), asset_type="fii", access=access,
-    )
+    else:
+        repo = AssetRepository(db)
+        rows = repo.screen_latest_fiis(strategy.filters, limit=limit, offset=offset)
+        result = _enrich_listing_valuations(
+            repo, _fii_screen_result(rows), asset_type="fii", access=access,
+        )
+    _SCREENER_RESPONSE_CACHE.set_if_generation(cache_key, result, generation)
+    return result
 
 
 @app.get("/screen/db/universe/{asset_type}")

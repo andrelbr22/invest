@@ -615,13 +615,14 @@ class AssetRepository:
         )
 
     @staticmethod
-    def _current_projection_columns(metrics, *, fundamental_price):
+    def _current_projection_columns(metrics):
         """Small, typed projection used by navigation and screeners.
 
         The JSON mirrors remain stored and auditable, but are intentionally
-        absent from this hot read path. The fundamental price comes from the
-        referenced typed snapshot, so PostgreSQL never needs to decompress a
-        provider payload merely to render the list.
+        absent from this hot read path. Only the historical-equivalent
+        fundamental price scalar is extracted from the materialized mirror;
+        the route never reopens the large historical snapshot or transfers
+        the complete provider payload merely to render the list.
         """
         return [
             metrics.asset_id.label("cm_asset_id"),
@@ -629,7 +630,10 @@ class AssetRepository:
             metrics.technical_snapshot_id.label("cm_technical_id"),
             metrics.price_bar_id.label("cm_price_bar_id"),
             metrics.score_snapshot_id.label("cm_score_id"),
-            func.coalesce(fundamental_price, metrics.price).label("cm_fundamental_price"),
+            func.coalesce(
+                metrics.fundamental_json["price"].as_float(),
+                metrics.price,
+            ).label("cm_fundamental_price"),
             metrics.fundamental_daily_liquidity.label("cm_fundamental_daily_liquidity"),
             metrics.price.label("cm_close"),
             *[
@@ -782,17 +786,11 @@ class AssetRepository:
         projected = self.session.execute(
             select(
                 AssetORM,
-                *self._current_projection_columns(
-                    metrics, fundamental_price=FundamentalSnapshotORM.price,
-                ),
+                *self._current_projection_columns(metrics),
             )
             .select_from(page)
             .join(AssetORM, AssetORM.id == page.c.asset_id)
             .join(metrics, metrics.asset_id == page.c.asset_id)
-            .outerjoin(
-                FundamentalSnapshotORM,
-                FundamentalSnapshotORM.id == metrics.fundamental_snapshot_id,
-            )
             .order_by(page.c.sort_score.desc().nullslast(), page.c.sort_ticker)
         )
         return [self._current_projection_tuple(row) for row in projected]
@@ -909,20 +907,12 @@ class AssetRepository:
                 projected = self.session.execute(
                     select(
                         AssetORM,
-                        *self._current_projection_columns(
-                            AssetCurrentMetricsORM,
-                            fundamental_price=FundamentalSnapshotORM.price,
-                        ),
+                        *self._current_projection_columns(AssetCurrentMetricsORM),
                     )
                     .select_from(AssetORM)
                     .join(
                         AssetCurrentMetricsORM,
                         AssetCurrentMetricsORM.asset_id == AssetORM.id,
-                    )
-                    .outerjoin(
-                        FundamentalSnapshotORM,
-                        FundamentalSnapshotORM.id
-                        == AssetCurrentMetricsORM.fundamental_snapshot_id,
                     )
                     .where(
                         AssetORM.asset_type.in_(accepted_types),
