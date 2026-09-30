@@ -153,7 +153,30 @@ class AssetRepository:
 
     @staticmethod
     def _ticker_patterns(root_lengths: tuple[int, ...], suffixes: tuple[str, ...]):
-        return [AssetORM.ticker.like(("_" * root_length) + suffix) for root_length in root_lengths for suffix in suffixes]
+        """Build compact, portable suffix clauses for the supported B3 catalog.
+
+        The previous implementation expanded stocks into 21 ``LIKE``
+        predicates.  PostgreSQL then repeatedly evaluated that disjunction on
+        every screener request, even though the rule only depends on the
+        ticker length and suffix.  Grouping equal-size suffixes preserves the
+        exact accepted lengths while producing only one predicate per suffix
+        size (two for stocks and one for FIIs/ETFs/BDRs).
+        """
+        grouped: dict[int, list[str]] = {}
+        for suffix in suffixes:
+            grouped.setdefault(len(suffix), []).append(suffix)
+        clauses = []
+        for suffix_length, values in grouped.items():
+            accepted_lengths = tuple(sorted({root + suffix_length for root in root_lengths}))
+            clauses.append(and_(
+                func.length(AssetORM.ticker).in_(accepted_lengths),
+                func.substr(
+                    AssetORM.ticker,
+                    func.length(AssetORM.ticker) - suffix_length + 1,
+                    suffix_length,
+                ).in_(tuple(values)),
+            ))
+        return clauses
 
     @classmethod
     def _supported_catalog_clause(cls, asset_types: set[str] | None = None):
@@ -629,14 +652,41 @@ class AssetRepository:
                 m.pbv.is_not(None), m.pbv > 0,
                 (m.pe * m.pbv) < 22.5,
             )
-        rows = self.session.execute(
-            stmt.order_by(m.alb_score.desc().nullslast(), AssetORM.ticker)
-            .offset(offset).limit(limit)
-        )
+        rows = self._current_metrics_page(stmt, m, limit=limit, offset=offset)
         return [
             (asset, _current_component(metrics, "fundamental"), _current_component(metrics, "score"))
             for asset, metrics in rows
         ]
+
+    def _current_metrics_page(self, stmt, metrics, *, limit: int, offset: int):
+        """Page on narrow typed columns before loading the selected JSON rows.
+
+        ``asset_current_metrics`` deliberately keeps auditable JSON mirrors.
+        Selecting the complete ORM row before ``ORDER BY/LIMIT`` made
+        PostgreSQL carry those large values through the screener sort.  On the
+        micro VM this could exceed the statement timeout.  The inner query now
+        filters and sorts only identifiers plus the score; the outer query
+        loads the complete rows for at most the requested page.  Ordering and
+        returned objects remain identical.
+        """
+        page = (
+            stmt.with_only_columns(
+                AssetORM.id.label("asset_id"),
+                metrics.alb_score.label("sort_score"),
+                AssetORM.ticker.label("sort_ticker"),
+            )
+            .order_by(metrics.alb_score.desc().nullslast(), AssetORM.ticker)
+            .offset(max(0, int(offset)))
+            .limit(max(1, int(limit)))
+            .subquery("current_metrics_page")
+        )
+        return self.session.execute(
+            select(AssetORM, metrics)
+            .select_from(page)
+            .join(AssetORM, AssetORM.id == page.c.asset_id)
+            .join(metrics, metrics.asset_id == page.c.asset_id)
+            .order_by(page.c.sort_score.desc().nullslast(), page.c.sort_ticker)
+        )
 
     def _screen_current_fiis(self, filters, *, limit: int, offset: int):
         m = AssetCurrentMetricsORM
@@ -664,10 +714,7 @@ class AssetRepository:
                 m.price.is_not(None), m.price > 0,
                 m.dividend_yield_pct.is_not(None), m.dividend_yield_pct > 6.0,
             )
-        rows = self.session.execute(
-            stmt.order_by(m.alb_score.desc().nullslast(), AssetORM.ticker)
-            .offset(offset).limit(limit)
-        )
+        rows = self._current_metrics_page(stmt, m, limit=limit, offset=offset)
         return [
             (asset, _current_component(metrics, "fundamental"), _current_component(metrics, "score"))
             for asset, metrics in rows
