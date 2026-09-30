@@ -42,7 +42,9 @@ def test_navigation_caches_cover_normal_tab_switching():
 def test_browser_reports_real_panel_time_without_database_write():
     app.dependency_overrides[_request_email] = lambda: "owner@example.com"
     try:
-        response = TestClient(app).post(
+        # localhost belongs to every deployment allow-list. This keeps the
+        # isolated metric test independent from the staging TrustedHost list.
+        response = TestClient(app, base_url="http://localhost").post(
             "/operations/client-performance",
             json={
                 "panel": "analysis",
