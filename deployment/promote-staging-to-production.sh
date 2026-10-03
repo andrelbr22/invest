@@ -120,11 +120,15 @@ verify_exact_worker() {
   local expected_node="${1:?Informe o nó esperado}"
   local expected_environment="${2:?Informe o ambiente esperado}"
   local expected_commit="${3:?Informe o commit esperado}"
+  # A primeira verificação ocorre antes da troca da aplicação. Portanto o
+  # contêiner ainda pode conter o verificador da versão anterior. Execute o
+  # verificador do commit aprovado no ambiente/banco da aplicação atual.
   docker compose -f "${COMPOSE_FILE}" exec -T app \
-    python /app/deployment/second-instance/verify-worker-coordination.py \
+    python - \
       --expected-node "${expected_node}" \
       --expected-environment "${expected_environment}" \
-      --expected-commit "${expected_commit}"
+      --expected-commit "${expected_commit}" \
+    < "${PROJECT_DIR}/deployment/second-instance/verify-worker-coordination.py"
 }
 
 wait_exact_worker() {

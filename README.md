@@ -1,5 +1,18 @@
 # Formação do Investidor • V1.23.5
 
+## Verificação de transição • V1.23.5 R2B
+
+A R2B resolve o último caso de inicialização da promoção. Antes da troca da
+aplicação, o contêiner de produção ainda executa a imagem anterior; agora ele
+recebe pela entrada padrão o verificador do commit já aprovado no staging.
+Assim, a checagem usa as regras R2A no banco e no ambiente reais da produção,
+sem depender da cópia antiga existente dentro do contêiner.
+
+Todas as verificações de unicidade, commit, nó, ambiente, scheduler, monitor e
+leases permanecem fechadas em caso de divergência. Não há mudança funcional ou
+de banco. Consulte `PATCH_V1235_R2B.md`, `INSTRUCOES_ORACLE_V1235_R2B.md` e
+`RELATORIO_VALIDACAO_V1235_R2B.md`.
+
 ## Correção operacional segura • V1.23.5 R2A
 
 A R2A corrige a validação final da promoção sem alterar telas, cálculos,

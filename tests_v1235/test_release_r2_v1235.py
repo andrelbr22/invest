@@ -19,8 +19,8 @@ def test_r2_release_identity_schema_assets_and_operator_documents():
     publisher = read("PUBLICAR_GITHUB.ps1")
     workflow = read(".github/workflows/tests.yml")
     html = read("investment_engine/web/index.html")
-    assert "Corrige a coordenacao operacional na V1.23.5 R2A em teste" in publisher
-    assert "valide a V1.23.5 R2A" in publisher
+    assert "Corrige a verificacao de transicao na V1.23.5 R2B em teste" in publisher
+    assert "valide a V1.23.5 R2B" in publisher
     assert "SEGURANCA DA PRIMEIRA MIGRACAO" not in publisher
     assert "stagingConfirmation" not in publisher
     assert "0030_v1_23_navigation_metrics" in workflow
@@ -29,6 +29,9 @@ def test_r2_release_identity_schema_assets_and_operator_documents():
     assert "app.js?v=1.23.5-r2" in html
 
     for relative in (
+        "PATCH_V1235_R2B.md",
+        "RELATORIO_VALIDACAO_V1235_R2B.md",
+        "INSTRUCOES_ORACLE_V1235_R2B.md",
         "PATCH_V1235_R2A.md",
         "RELATORIO_VALIDACAO_V1235_R2A.md",
         "INSTRUCOES_ORACLE_V1235_R2A.md",

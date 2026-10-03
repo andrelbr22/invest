@@ -337,6 +337,16 @@ def test_local_promotion_retries_the_final_coordination_check():
     assert "Preserve the actionable diagnostic on the final attempt" in promote
 
 
+def test_promotion_uses_the_approved_host_verifier_before_replacing_the_old_app():
+    promote = read("deployment/promote-staging-to-production.sh")
+    helper_start = promote.index("verify_exact_worker()")
+    helper_end = promote.index("\n}\n", helper_start)
+    helper = promote[helper_start:helper_end]
+    assert "python - \\" in helper
+    assert '< "${PROJECT_DIR}/deployment/second-instance/verify-worker-coordination.py"' in helper
+    assert "python /app/deployment/second-instance/verify-worker-coordination.py" not in helper
+
+
 def test_worker_verifier_requires_the_canonical_service_identity():
     verifier = read("deployment/second-instance/verify-worker-coordination.py")
     assert 'expected_service_id = f"worker:{expected_environment}:{expected_node}"' in verifier
