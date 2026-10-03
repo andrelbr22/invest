@@ -163,5 +163,5 @@ def test_interface_exposes_three_columns_and_owner_launch_control():
     assert 'id:"backtest_3",label:"3º backtest"' in script
     assert "data-launch-official-backtests" in script
     assert 'api("/backtests/batch/official-launch",{method:"POST"' in script
-    assert 'owner?api("/backtests/batch/official-launch",{bypassCache:true})' in script
+    assert 'owner?api("/backtests/batch/official-launch",{requestKey:"admin-official-launch",bypassCache:true})' in script
     assert "12 horas da rodada oficial anterior" in script

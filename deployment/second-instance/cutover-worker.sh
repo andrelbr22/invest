@@ -6,12 +6,23 @@ COMPOSE_FILE="${PROJECT_DIR}/docker-compose.oracle-web.yml"
 LOCATION_FILE="${PROJECT_DIR}/deployment/runtime/worker-location.env"
 COMMIT_FILE="${PROJECT_DIR}/.git/investment-production-commit"
 LOCATION_LIB="${PROJECT_DIR}/deployment/second-instance/worker-location-lib.sh"
+LOCK_FILE="/tmp/investment-worker-location.lock"
+
+exec 8>"${LOCK_FILE}"
+if ! flock -n 8; then
+  echo "Outra troca de localização do worker já está em andamento."
+  exit 1
+fi
 
 cd "${PROJECT_DIR}"
 [[ -f "${LOCATION_LIB}" ]] || { echo "Biblioteca segura da VM2 ausente."; exit 1; }
 # shellcheck disable=SC1090
 source "${LOCATION_LIB}"
 load_worker_location_config "${LOCATION_FILE}" true
+[[ "${FDI_WORKER_LOCATION}" == "local" ]] || {
+  echo "O worker já está registrado como remoto; valide a topologia em vez de repetir o corte."
+  exit 1
+}
 build_worker_ssh_command
 COMMIT="$(cat "${COMMIT_FILE}" 2>/dev/null || git rev-parse HEAD)"
 [[ "${COMMIT}" =~ ^[0-9a-f]{40}$ ]] || { echo "Commit de produção inválido."; exit 1; }
@@ -26,33 +37,28 @@ verify_expected_worker() {
       --expected-commit "${COMMIT}"
 }
 
-start_and_verify_local() {
-  local container_id status
-  FDI_RELEASE_COMMIT="${COMMIT}" docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate worker
-  container_id="$(docker compose -f "${COMPOSE_FILE}" ps -q worker)"
-  for _ in $(seq 1 120); do
-    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container_id}" 2>/dev/null || echo missing)"
-    if [[ "${status}" == "healthy" ]] && verify_expected_worker primary-worker production >/dev/null 2>&1; then
-      return 0
-    fi
-    [[ "${status}" == "missing" || "${status}" == "exited" || "${status}" == "dead" ]] && break
-    sleep 5
-  done
-  return 1
-}
-
 "${WORKER_SSH[@]}" "cd '${FDI_WORKER_PROJECT_DIR}' && ./deployment/second-instance/prepare-worker.sh '${COMMIT}'"
 
+LOCAL_WORKER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q worker)"
+worker_set_restart_policy "${LOCAL_WORKER_ID}" no
 docker compose -f "${COMPOSE_FILE}" stop -t 600 worker
 if "${WORKER_SSH[@]}" "cd '${FDI_WORKER_PROJECT_DIR}' && ./deployment/second-instance/activate-worker.sh '${COMMIT}'" && \
   verify_expected_worker "${FDI_REMOTE_WORKER_NODE_ID}" production-worker >/dev/null; then
-  sed -i 's/^FDI_WORKER_LOCATION=.*/FDI_WORKER_LOCATION=remote/' "${LOCATION_FILE}"
+  # O helper persiste atomicamente a linha FDI_WORKER_LOCATION=remote.
+  worker_write_location "${LOCATION_FILE}" remote
   echo "Worker transferido para a VM2; um único consumidor, scheduler e monitor foram confirmados."
   exit 0
 fi
 
 echo "A ativação remota falhou; executando retorno local."
-"${WORKER_SSH[@]}" "cd '${FDI_WORKER_PROJECT_DIR}' && ./deployment/second-instance/stop-worker.sh" || true
-start_and_verify_local || { echo "O retorno local não confirmou saúde e lideranças únicas."; exit 1; }
-sed -i 's/^FDI_WORKER_LOCATION=.*/FDI_WORKER_LOCATION=local/' "${LOCATION_FILE}"
+# Mesmo que o marcador ainda seja local, a ativação pode ter iniciado um
+# contêiner remoto antes de falhar. O failback centralizado exige a parada via
+# SSH por stop-worker.sh ou a expiração comprovada de heartbeat e leases
+# antes de iniciar a VM1. Ao concluir, ele persiste FDI_WORKER_LOCATION=local.
+FDI_WORKER_LOCATION_LOCK_HELD=true \
+FDI_FAILBACK_REMOTE_MAY_BE_ACTIVE=true \
+  bash "${PROJECT_DIR}/deployment/second-instance/failback-worker.sh" || {
+    echo "O retorno local não confirmou saúde e lideranças únicas."
+    exit 1
+  }
 exit 1

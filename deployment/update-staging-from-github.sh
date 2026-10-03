@@ -18,6 +18,41 @@ if ! flock -n 9; then
   exit 0
 fi
 
+ensure_staging_active() {
+  local target_commit="${1:?Informe o commit do staging}"
+  local container_id status payload
+  container_id="$(docker compose -f "${COMPOSE_FILE}" ps -aq staging)"
+  if [[ -z "${container_id}" ]]; then
+    FDI_RELEASE_COMMIT="${target_commit}" docker compose -f "${COMPOSE_FILE}" \
+      up -d --no-deps --no-build staging
+    container_id="$(docker compose -f "${COMPOSE_FILE}" ps -q staging)"
+  else
+    # A promoção estaciona o staging com restart=no. Reabilite a política
+    # antes do start para que uma reinicialização do daemon durante a
+    # homologação não o deixe indisponível.
+    docker update --restart=unless-stopped "${container_id}" >/dev/null
+    docker compose -f "${COMPOSE_FILE}" start staging >/dev/null
+  fi
+  [[ -n "${container_id}" ]] || { echo "O contêiner de staging não foi criado."; return 1; }
+  docker update --restart=unless-stopped "${container_id}" >/dev/null
+  for _ in $(seq 1 120); do
+    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container_id}" 2>/dev/null || echo missing)"
+    [[ "${status}" == "healthy" ]] && break
+    [[ "${status}" == "unhealthy" || "${status}" == "missing" || "${status}" == "exited" || "${status}" == "dead" ]] && return 1
+    sleep 5
+  done
+  [[ "${status}" == "healthy" ]] || return 1
+  bash "${PROJECT_DIR}/deployment/reload-proxy.sh" || return 1
+  for _ in $(seq 1 36); do
+    payload="$(curl --fail --silent --show-error --max-time 15 "${PUBLIC_READY_URL}" 2>/dev/null || true)"
+    if [[ "${payload}" == *'"status":"ready"'* && "${payload}" == *'"environment":"staging"'* ]]; then
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
 cd "${PROJECT_DIR}"
 if [[ -f "${PROJECT_DIR}/deployment/quiesce-legacy-stack.sh" ]]; then
   bash "${PROJECT_DIR}/deployment/quiesce-legacy-stack.sh"
@@ -30,8 +65,13 @@ DEPLOYED_COMMIT="$(cat "${DEPLOYED_FILE}" 2>/dev/null || true)"
 FAILED_COMMIT="$(cat "${FAILED_FILE}" 2>/dev/null || true)"
 
 if [[ "${TARGET_COMMIT}" == "${DEPLOYED_COMMIT}" ]]; then
-  echo "O ambiente de teste já está atualizado."
-  exit 0
+  if ensure_staging_active "${TARGET_COMMIT}"; then
+    echo "O ambiente de teste já estava atualizado e está ativo para homologação."
+    exit 0
+  fi
+  docker compose -f "${COMPOSE_FILE}" logs --tail=120 staging || true
+  echo "O commit já estava atualizado, mas o staging não pôde ser reativado."
+  exit 1
 fi
 if [[ "${TARGET_COMMIT}" == "${FAILED_COMMIT}" ]]; then
   echo "Este commit já falhou no teste; aguardando uma nova versão."
@@ -81,6 +121,7 @@ fi
 FDI_RELEASE_COMMIT="${TARGET_COMMIT}" docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate staging
 
 CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q staging)"
+docker update --restart=unless-stopped "${CONTAINER_ID}" >/dev/null
 for _ in $(seq 1 120); do
   STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${CONTAINER_ID}" 2>/dev/null || echo missing)"
   if [[ "${STATUS}" == "healthy" ]]; then

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from enum import Enum
 import hashlib
 import json
 import math
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,7 +22,7 @@ from ...infrastructure.db.models import (
 )
 
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 _ROW_NOT_LOADED = object()
 
 FUNDAMENTAL_FIELDS = (
@@ -51,6 +53,10 @@ def _json_safe(value: Any):
         return current.isoformat()
     if isinstance(value, Decimal):
         return float(value)
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Enum):
+        return _json_safe(value.value)
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if isinstance(value, dict):
@@ -385,6 +391,94 @@ class AssetCurrentMetricsRepository:
             extra={"history_rows": int(history_rows), "algorithm": algorithm},
         )
         self._refresh_fallbacks(row)
+        self._touch(row)
+        return True
+
+    def sync_valuation(
+        self,
+        asset_id,
+        payload: dict,
+        *,
+        calculated_at: datetime | None = None,
+        source: str = "worker-default-valuation-v1",
+        row: AssetCurrentMetricsORM | None = None,
+    ) -> bool:
+        """Replace the rebuildable default-valuation read model when changed.
+
+        This never writes to or deletes from ``valuation_snapshots``.  The
+        content hash prevents an unchanged worker pass from touching the row
+        and invalidating otherwise useful caches.
+        """
+        row = self._resolve_row(asset_id, row)
+        clean = _json_safe(dict(payload or {}))
+        # A provider/cohort outage must never turn a valid projection into an
+        # empty document.  A brand-new row may remain empty until its first
+        # successful materialization, which is how request-time compatibility
+        # code detects a genuine post-migration gap.
+        if not clean and dict(row.valuation_json or {}):
+            return False
+        content_hash = _hash(clean)
+        existing = self._current_ref(row, "valuation")
+        if (
+            existing.get("content_hash") == content_hash
+            and dict(row.valuation_json or {}) == clean
+        ):
+            return False
+        now = calculated_at or utcnow()
+        row.valuation_json = clean
+        row.valuation_calculated_at = now
+        self._set_ref(
+            row,
+            "valuation",
+            source_id=None,
+            as_of=now,
+            observed_at=now,
+            source=source,
+            content_hash=content_hash,
+            extra={"historical_tables_preserved": True},
+        )
+        self._touch(row)
+        return True
+
+    def sync_backtest_leaders(
+        self,
+        asset_id,
+        leaders: list[dict],
+        *,
+        calculated_at: datetime | None = None,
+        source: str = "official-backtest-runs-v1",
+        row: AssetCurrentMetricsORM | None = None,
+    ) -> bool:
+        """Store a compact top-three projection, never the backtest history."""
+        row = self._resolve_row(asset_id, row)
+        clean = _json_safe(list(leaders or []))
+        # Official runs are append-only in normal operation.  An empty result
+        # after a previously populated podium is therefore treated as a
+        # transient read failure and preserves the last-known-good projection.
+        # Empty is still stored for a never-covered asset so it can be marked
+        # as covered without forcing a historical query on every page view.
+        if not clean and list(row.backtest_leaders_json or []):
+            return False
+        content_hash = _hash({"leaders": clean})
+        existing = self._current_ref(row, "backtest_leaders")
+        if (
+            existing.get("content_hash") == content_hash
+            and list(row.backtest_leaders_json or []) == clean
+        ):
+            return False
+        now = calculated_at or utcnow()
+        row.backtest_leaders_json = clean
+        row.backtest_leaders_calculated_at = now
+        self._set_ref(
+            row,
+            "backtest_leaders",
+            source_id=None,
+            as_of=now,
+            observed_at=now,
+            source=source,
+            content_hash=content_hash,
+            extra={"historical_tables_preserved": True, "leader_count": len(clean)},
+        )
         self._touch(row)
         return True
 

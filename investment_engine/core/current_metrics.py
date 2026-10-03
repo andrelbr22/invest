@@ -6,8 +6,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .repositories.assets import AssetRepository
+from .repositories.backtests import BacktestRepository, run_summary
 from .repositories.current_metrics import AssetCurrentMetricsRepository
-from .screening.advanced import technical_features
+from .screening.advanced import (
+    MATERIALIZED_VALUATION_FIELDS,
+    VALUATION_FAMILIES,
+    _enrich_valuation_rows,
+    row_from_orm,
+    technical_features,
+)
 from ..infrastructure.db.models import AssetORM, utcnow
 
 
@@ -70,6 +77,7 @@ class AssetCurrentMetricsService:
         self.session = session
         self.assets = AssetRepository(session)
         self.current = AssetCurrentMetricsRepository(session)
+        self.backtests = BacktestRepository(session)
 
     @staticmethod
     def _component_state(source, current_id) -> str:
@@ -225,7 +233,204 @@ class AssetCurrentMetricsService:
             "parity": dict(row.parity_json or {}),
         }
 
-    def sync_batch(self, *, after_ticker: str = "", limit: int = 250) -> dict:
+    @staticmethod
+    def _valuation_payload(fundamentals: dict) -> dict:
+        payload = {
+            key: value
+            for key, value in dict(fundamentals or {}).items()
+            if key in MATERIALIZED_VALUATION_FIELDS
+            or key in {f"{family_id}_status" for family_id in VALUATION_FAMILIES}
+        }
+        payload["_meta"] = {
+            "schema_version": "1",
+            "assumptions": "default",
+            "source": "worker-local-current-metrics",
+        }
+        return payload
+
+    @staticmethod
+    def _valuation_payload_is_covered(payload: dict | None) -> bool:
+        """Accept valid values and explicit N/D, but reject metadata-only rows."""
+        current = dict(payload or {})
+        methods = current.get("valuation_methods")
+        if isinstance(methods, dict) and methods:
+            return True
+        return any(
+            key in current
+            for key in MATERIALIZED_VALUATION_FIELDS
+            if key != "valuation_methods"
+        )
+
+    def sync_navigation_metrics(
+        self,
+        assets: list[AssetORM],
+        *,
+        include_valuation: bool = True,
+        include_backtests: bool = True,
+    ) -> dict:
+        """Build expensive default navigation projections outside requests.
+
+        The worker is allowed to read the complete local peer/backtest history;
+        web routes only consume the compact JSON produced here.  Failures are
+        isolated by asset class and never erase the last known valid payload.
+        """
+        selected = list({asset.id: asset for asset in (assets or [])}.values())
+        rows = self.current.get_many([asset.id for asset in selected])
+        result = {
+            "requested": len(selected),
+            "valuations_updated": 0,
+            "backtest_podiums_updated": 0,
+            "errors": [],
+        }
+        if not selected:
+            return result
+
+        if include_valuation:
+            selected_by_type: dict[str, list[AssetORM]] = {}
+            for asset in selected:
+                selected_by_type.setdefault(str(asset.asset_type), []).append(asset)
+            for asset_type, targets in selected_by_type.items():
+                try:
+                    universe = list(self.assets.latest_universe(
+                        asset_type=asset_type,
+                        limit=5000,
+                    ))
+                    peer_entries = []
+                    entries_by_id = {}
+                    for asset, fundamental, technical, score in universe:
+                        entry = (asset, row_from_orm(asset, fundamental, technical, score))
+                        peer_entries.append(entry)
+                        entries_by_id[asset.id] = entry
+                    # Assets without a usable provider snapshot still receive
+                    # an explicit N/D projection.  This marks the read model as
+                    # covered and prevents an expensive historical fallback on
+                    # every page view while keeping every value fail-closed.
+                    entries = []
+                    for target in targets:
+                        entry = entries_by_id.get(target.id)
+                        if entry is None:
+                            entry = (target, row_from_orm(target, None, None, None))
+                        entries.append(entry)
+                    _enrich_valuation_rows(
+                        entries,
+                        peer_entries=peer_entries,
+                        valuation_assumptions=None,
+                    )
+                    calculated_at = datetime.now(timezone.utc)
+                    payload_by_id = {
+                        asset.id: self._valuation_payload(row["fundamentals"])
+                        for asset, row in entries
+                    }
+                    for target in targets:
+                        payload = payload_by_id.get(target.id)
+                        if not self._valuation_payload_is_covered(payload):
+                            # Preserve last-known-good valuation when the
+                            # current provider cohort is temporarily incomplete.
+                            result["errors"].append({
+                                "component": "valuation",
+                                "ticker": target.ticker,
+                                "error": "valuation_inputs_unavailable",
+                            })
+                            continue
+                        current_row = rows.get(target.id)
+                        if current_row is None:
+                            current_row, _created = self.current.ensure(target.id)
+                            rows[target.id] = current_row
+                        changed = self.current.sync_valuation(
+                            target.id,
+                            payload,
+                            calculated_at=calculated_at,
+                            row=current_row,
+                        )
+                        result["valuations_updated"] += int(changed)
+                except Exception as exc:
+                    result["errors"].append({
+                        "component": "valuation",
+                        "asset_type": asset_type,
+                        "error": type(exc).__name__,
+                    })
+
+        if include_backtests:
+            try:
+                tickers = [asset.ticker for asset in selected]
+                grouped = self.backtests.leaderboard(
+                    tickers=tickers,
+                    per_asset=3,
+                    limit=max(3, len(tickers) * 3),
+                )
+                calculated_at = datetime.now(timezone.utc)
+                for asset in selected:
+                    current_row = rows.get(asset.id)
+                    if current_row is None:
+                        current_row, _created = self.current.ensure(asset.id)
+                        rows[asset.id] = current_row
+                    leaders = [
+                        run_summary(run, leader_asset)
+                        for run, leader_asset in grouped.get(asset.ticker, [])
+                    ]
+                    if not leaders and list(current_row.backtest_leaders_json or []):
+                        # A successfully materialized podium cannot disappear
+                        # because of a transient read problem.  Preserve it and
+                        # let the next worker pass retry from authoritative
+                        # history.
+                        result["errors"].append({
+                            "component": "backtest_leaders",
+                            "ticker": asset.ticker,
+                            "error": "empty_result_preserved_last_known_good",
+                        })
+                        continue
+                    changed = self.current.sync_backtest_leaders(
+                        asset.id,
+                        leaders,
+                        calculated_at=calculated_at,
+                        row=current_row,
+                    )
+                    result["backtest_podiums_updated"] += int(changed)
+            except Exception as exc:
+                result["errors"].append({
+                    "component": "backtest_leaders",
+                    "error": type(exc).__name__,
+                })
+        self.session.flush()
+        return result
+
+    def sync_navigation_tickers(
+        self,
+        tickers: list[str],
+        *,
+        include_valuation: bool = True,
+        include_backtests: bool = True,
+    ) -> dict:
+        clean = sorted({
+            str(ticker or "").strip().upper()
+            for ticker in (tickers or [])
+            if str(ticker or "").strip()
+        })
+        if not clean:
+            return self.sync_navigation_metrics(
+                [],
+                include_valuation=include_valuation,
+                include_backtests=include_backtests,
+            )
+        assets = list(self.session.scalars(
+            select(AssetORM).where(
+                AssetORM.ticker.in_(clean),
+                AssetORM.is_active.is_(True),
+            ).order_by(AssetORM.ticker)
+        ))
+        return self.sync_navigation_metrics(
+            assets,
+            include_valuation=include_valuation,
+            include_backtests=include_backtests,
+        )
+
+    def sync_batch(
+        self,
+        *,
+        after_ticker: str = "",
+        limit: int = 250,
+        materialize_navigation: bool = False,
+    ) -> dict:
         clean_cursor = str(after_ticker or "").strip().upper()
         batch_limit = max(1, min(1000, int(limit)))
         statement = (
@@ -266,6 +471,16 @@ class AssetCurrentMetricsService:
                 AssetORM.ticker > next_cursor,
             )
         ) or 0)
+        navigation = (
+            self.sync_navigation_metrics(assets)
+            if materialize_navigation
+            else {
+                "requested": 0,
+                "valuations_updated": 0,
+                "backtest_podiums_updated": 0,
+                "errors": [],
+            }
+        )
         return {
             "requested": len(assets),
             "created": created,
@@ -277,5 +492,6 @@ class AssetCurrentMetricsService:
             "remaining": remaining,
             "cycle_completed": remaining == 0,
             "algorithm": FEATURE_ALGORITHM,
+            "navigation": navigation,
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }

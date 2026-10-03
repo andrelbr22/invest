@@ -62,7 +62,17 @@ def test_browser_reports_real_panel_time_without_database_write():
 
 def test_browser_parallelizes_catalog_and_preserves_stale_data():
     javascript = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
-    assert "const [presetPayload,custom]=await Promise.all" in javascript
+    # Both requests start together, but R2 no longer blocks the first useful
+    # render on the optional custom-filter response.
+    preset_start = "const presetPromise=needPresets?api("
+    custom_start = "const customPromise=needCustom?api("
+    preset_wait = "const presetPayload=await presetPromise;"
+    assert preset_start in javascript
+    assert custom_start in javascript
+    assert preset_wait in javascript
+    assert javascript.index(preset_start) < javascript.index(preset_wait)
+    assert javascript.index(custom_start) < javascript.index(preset_wait)
+    assert "else if(needCustom)customPromise.then(applyCustom)" in javascript
     assert "reportPanelPerformance(\"analysis\"" in javascript
     assert 'cacheTtlMs:120000' in javascript
     assert 'cacheTtlMs:60000,bypassCache:true' not in javascript

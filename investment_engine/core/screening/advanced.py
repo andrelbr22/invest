@@ -62,6 +62,15 @@ VALUATION_FLAT_FIELDS = {
     "economic_value": ("economic_value", "economic_value_upside_pct"),
 }
 
+MATERIALIZED_VALUATION_FIELDS = frozenset({
+    "graham_number", "graham_upside_pct", "graham_reference_status",
+    "barsi_ceiling_price", "barsi_upside_pct",
+    "dividend_yield_ceiling_value", "dividend_yield_ceiling_upside_pct",
+    "dividend_yield_ceiling_status", "relative_peers_value",
+    "relative_peers_upside_pct", "relative_peers_status", "economic_value",
+    "economic_value_upside_pct", "economic_value_status", "valuation_methods",
+})
+
 
 def _f(value):
     if value is None:
@@ -729,6 +738,22 @@ def _enrich_valuation_rows(
         _set_valuation_result(fund, "economic_value", economic_payload)
 
 
+def apply_materialized_valuation(fundamentals: dict, payload: Mapping | None) -> bool:
+    """Overlay a worker-produced default valuation using the public shape."""
+    if not isinstance(payload, Mapping) or not payload:
+        return False
+    copied = False
+    for key in MATERIALIZED_VALUATION_FIELDS:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if key == "valuation_methods" and isinstance(value, Mapping):
+            value = {str(name): dict(item) for name, item in value.items()}
+        fundamentals[key] = value
+        copied = True
+    return copied
+
+
 def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None = None,
                     score_filters: dict | None = None, valuation_flags: dict | None = None,
                     valuation_assumptions: dict | None = None,
@@ -783,11 +808,38 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
                       score_filters=score_filters, valuation_flags=None):
             preliminary.append((asset, row))
 
-    _enrich_valuation_rows(
-        preliminary,
-        peer_entries=peer_rows,
-        valuation_assumptions=valuation_assumptions,
-    )
+    valuation_source = "calculated"
+    current_valuation_loader = getattr(repo, "current_valuation_payloads", None)
+    if not valuation_assumptions and callable(current_valuation_loader):
+        payloads = current_valuation_loader([asset.id for asset, _row in preliminary])
+        missing_entries = []
+        for asset, row in preliminary:
+            if not apply_materialized_valuation(
+                row["fundamentals"], payloads.get(asset.id),
+            ):
+                missing_entries.append((asset, row))
+        if missing_entries:
+            # Temporary compatibility during migration/backfill: only missing
+            # assets are calculated. Once worker coverage is complete every
+            # default navigation request is a pure materialized read.
+            _enrich_valuation_rows(
+                missing_entries,
+                peer_entries=peer_rows,
+                valuation_assumptions=None,
+            )
+        valuation_source = (
+            "materialized" if not missing_entries
+            else "calculated_fallback" if len(missing_entries) == len(preliminary)
+            else "mixed"
+        )
+    else:
+        # Explicit user assumptions retain the exact historical behaviour.
+        # Default navigation never enters this CPU-heavy branch.
+        _enrich_valuation_rows(
+            preliminary,
+            peer_entries=peer_rows,
+            valuation_assumptions=valuation_assumptions,
+        )
     preliminary = [
         (asset, row)
         for asset, row in preliminary
@@ -885,5 +937,6 @@ def advanced_screen(repo, *, asset_type: str, fundamental_filters: dict | None =
             "valuation_families": list(VALUATION_FAMILIES),
             "valuation_filter_active": _active_valuation_families(valuation_flags),
             "valuation_logic": str((valuation_flags or {}).get("logic") or (valuation_flags or {}).get("valuation_logic") or "all").casefold(),
+            "valuation_source": valuation_source,
         },
     }

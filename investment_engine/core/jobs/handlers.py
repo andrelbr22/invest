@@ -6,6 +6,7 @@ from uuid import UUID
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from zoneinfo import ZoneInfo
 import math
+import inspect
 
 from sqlalchemy import exists, select
 
@@ -923,11 +924,27 @@ def handle_current_metrics_refresh(payload: dict) -> dict:
     cycle = str(payload.get("cycle") or payload.get("scheduled_for") or _market_today().isoformat())
     session = get_session_factory()()
     try:
-        result = AssetCurrentMetricsService(session).sync_batch(
-            after_ticker=after_ticker, limit=batch_size,
-        )
+        service = AssetCurrentMetricsService(session)
+        sync_options = {"after_ticker": after_ticker, "limit": batch_size}
+        # Compatibility with deployments/tests that still provide the R1
+        # service shape.  The real R2 service advertises the option explicitly;
+        # avoiding a catch-and-retry also ensures an internal TypeError cannot
+        # accidentally execute the batch twice.
+        if "materialize_navigation" in inspect.signature(service.sync_batch).parameters:
+            sync_options["materialize_navigation"] = True
+        result = service.sync_batch(**sync_options)
+        navigation = result.setdefault("navigation", {
+            "requested": 0,
+            "valuations_updated": 0,
+            "backtest_podiums_updated": 0,
+            "errors": [],
+        })
         result["cycle"] = cycle
-        result["status"] = "partial" if result["errors"] or result["remaining"] else "complete"
+        result["status"] = "partial" if (
+            result["errors"]
+            or navigation["errors"]
+            or result["remaining"]
+        ) else "complete"
         SharedSnapshotRepository(session).save_valid(
             snapshot_key=snapshot_key,
             snapshot_kind="asset_current_metrics",
@@ -961,6 +978,28 @@ def handle_current_metrics_refresh(payload: dict) -> dict:
     except Exception as exc:
         session.rollback()
         _record_refresh_failure(snapshot_key, exc)
+        raise
+    finally:
+        session.close()
+
+
+def handle_asset_navigation_metrics_refresh(payload: dict) -> dict:
+    """Refresh one or more compact navigation projections asynchronously."""
+    tickers = list(payload.get("tickers") or [])
+    include_valuation = bool(payload.get("include_valuation", True))
+    include_backtests = bool(payload.get("include_backtests", True))
+    session = get_session_factory()()
+    try:
+        result = AssetCurrentMetricsService(session).sync_navigation_tickers(
+            tickers,
+            include_valuation=include_valuation,
+            include_backtests=include_backtests,
+        )
+        result["status"] = "partial" if result["errors"] else "complete"
+        session.commit()
+        return result
+    except Exception:
+        session.rollback()
         raise
     finally:
         session.close()
@@ -1091,6 +1130,7 @@ DEFAULT_JOB_HANDLERS = {
     "data_quality_refresh": handle_data_quality_refresh,
     "operational_retention": handle_operational_retention,
     "current_metrics_refresh": handle_current_metrics_refresh,
+    "asset_navigation_metrics_refresh": handle_asset_navigation_metrics_refresh,
     "market_full_sync": run_market_full_sync,
     "asset_price_ingest": run_asset_price_ingest,
     "b3_index_portfolio_refresh": refresh_b3_index_portfolio,

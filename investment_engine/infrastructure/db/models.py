@@ -304,6 +304,13 @@ class AssetCurrentMetricsORM(Base):
     technical_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     score_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     technical_features_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # Default navigation results are deliberately kept beside the other
+    # current values.  Historical valuation snapshots and backtest runs remain
+    # authoritative; these JSON documents are only inexpensive read models.
+    valuation_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    backtest_leaders_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    valuation_calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    backtest_leaders_calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_refs_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     fallback_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     parity_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)

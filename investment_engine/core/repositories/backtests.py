@@ -9,7 +9,12 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from ...infrastructure.db.models import AssetORM, BacktestRunORM, BacktestTradeORM
+from ...infrastructure.db.models import (
+    AssetCurrentMetricsORM,
+    AssetORM,
+    BacktestRunORM,
+    BacktestTradeORM,
+)
 
 
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
@@ -386,6 +391,163 @@ class BacktestRepository:
         return list(self.session.scalars(
             select(BacktestTradeORM).where(BacktestTradeORM.run_id == run_id).order_by(BacktestTradeORM.sequence)
         ))
+
+    def materialized_leaderboard(
+        self,
+        *,
+        tickers: list[str] | None = None,
+        sector: str | None = None,
+        per_asset: int = 3,
+        limit: int = 5000,
+    ) -> dict[str, list[dict]]:
+        """Read the compact worker-built podium used during navigation.
+
+        The historical/window-function implementation below remains available
+        to the worker and explicit refresh actions.  Interactive GET routes use
+        this projection so they never scan the official backtest matrix.
+        """
+        grouped, _covered = self._materialized_leaderboard_state(
+            tickers=tickers,
+            sector=sector,
+            per_asset=per_asset,
+            limit=limit,
+        )
+        return grouped
+
+    def _materialized_leaderboard_state(
+        self,
+        *,
+        tickers: list[str] | None = None,
+        sector: str | None = None,
+        per_asset: int = 3,
+        limit: int = 5000,
+    ) -> tuple[dict[str, list[dict]], set[str]]:
+        """Return projection rows plus tickers whose read model is covered."""
+        requested = max(1, int(per_asset))
+        maximum = max(1, int(limit))
+        statement = (
+            select(
+                AssetORM.ticker,
+                AssetORM.sector,
+                AssetORM.industry,
+                AssetORM.segment,
+                AssetCurrentMetricsORM.backtest_leaders_json,
+                AssetCurrentMetricsORM.backtest_leaders_calculated_at,
+            )
+            .join(
+                AssetCurrentMetricsORM,
+                AssetCurrentMetricsORM.asset_id == AssetORM.id,
+            )
+            .where(AssetORM.is_active.is_(True))
+            .order_by(AssetORM.ticker)
+        )
+        if tickers:
+            clean = sorted({
+                str(ticker or "").strip().upper()
+                for ticker in tickers
+                if str(ticker or "").strip()
+            })
+            if not clean:
+                return {}, set()
+            statement = statement.where(AssetORM.ticker.in_(clean))
+
+        sector_token = str(sector or "").strip().casefold()
+        grouped: dict[str, list[dict]] = {}
+        covered: set[str] = set()
+        total = 0
+        for (
+            ticker, asset_sector, industry, segment, payload, calculated_at,
+        ) in self.session.execute(statement):
+            clean_ticker = str(ticker)
+            if calculated_at is not None:
+                covered.add(clean_ticker)
+            if not isinstance(payload, list) or not payload:
+                continue
+            asset_haystack = " ".join(
+                str(value or "") for value in (asset_sector, industry, segment)
+            ).casefold()
+            leaders = []
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                leader = dict(item)
+                leader.setdefault("ticker", ticker)
+                if sector_token:
+                    leader_haystack = f"{asset_haystack} {leader.get('sector') or ''}".casefold()
+                    if sector_token not in leader_haystack:
+                        continue
+                leaders.append(leader)
+                if len(leaders) >= requested:
+                    break
+            if not leaders:
+                continue
+            remaining = maximum - total
+            if remaining <= 0:
+                break
+            grouped[clean_ticker] = leaders[:remaining]
+            total += len(grouped[clean_ticker])
+        return grouped, covered
+
+    def navigation_leaderboard(
+        self,
+        *,
+        tickers: list[str] | None = None,
+        sector: str | None = None,
+        per_asset: int = 3,
+        limit: int = 5000,
+    ) -> dict[str, list[dict]]:
+        """Serve the compact podium, falling back only for uncovered assets.
+
+        During the migration window an explicitly requested ticker may not yet
+        have ``backtest_leaders_calculated_at``.  Only those gaps use the
+        historical window query.  Once coverage exists, including an explicit
+        empty podium, interactive reads never scan the official run matrix.
+        """
+        projected, covered = self._materialized_leaderboard_state(
+            tickers=tickers,
+            sector=sector,
+            per_asset=per_asset,
+            limit=limit,
+        )
+        clean = sorted({
+            str(ticker or "").strip().upper()
+            for ticker in (tickers or [])
+            if str(ticker or "").strip()
+        })
+        if clean:
+            missing = [ticker for ticker in clean if ticker not in covered]
+            if not missing:
+                return projected
+            legacy = self.leaderboard(
+                tickers=missing,
+                sector=sector,
+                per_asset=per_asset,
+                limit=max(1, min(int(limit), len(missing) * max(1, int(per_asset)))),
+            )
+            for ticker, rows in legacy.items():
+                projected[ticker] = [run_summary(run, asset) for run, asset in rows]
+            return {
+                ticker: projected[ticker]
+                for ticker in clean
+                if ticker in projected
+            }
+
+        # A global request immediately after migration receives the historical
+        # result only while no asset has been covered.  Partial coverage is
+        # returned as-is so one slow historical scan cannot re-enter every
+        # navigation request while the resumable backfill advances.
+        if covered:
+            return projected
+        legacy = self.leaderboard(
+            tickers=None,
+            sector=sector,
+            per_asset=per_asset,
+            limit=limit,
+        )
+        return {
+            ticker: [run_summary(run, asset) for run, asset in rows]
+            for ticker, rows in legacy.items()
+        }
 
     def leaderboard(self, *, tickers: list[str] | None = None, sector: str | None = None, per_asset: int = 3, limit: int = 5000):
         conditions = [

@@ -18,11 +18,11 @@ def test_release_identity_ci_assets_and_documents_are_v1234():
     assert '"tests_v1234"' in project
     assert '"tests_v1235"' in project
     assert workflow.count("tests_v1232 tests_v1233 tests_v1234 tests_v1235") == 2
-    assert "0029_v1_23_current_metrics" in workflow
+    assert "0030_v1_23_navigation_metrics" in workflow
     assert "V1.23.5" in publisher
     assert readme.startswith("# Formação do Investidor • V1.23.5")
-    assert "../ui-assets/app.css?v=1.23.5-r1" in platform
-    assert "../ui-assets/app.js?v=1.23.5-r1" in platform
+    assert "../ui-assets/app.css?v=1.23.5-r2" in platform
+    assert "../ui-assets/app.js?v=1.23.5-r2" in platform
 
     for relative in (
         "V1_23_4.md",
@@ -35,7 +35,7 @@ def test_release_identity_ci_assets_and_documents_are_v1234():
 
 def test_v1234_preserves_schema_head_and_historical_release_documents():
     migrations = sorted((ROOT / "alembic/versions").glob("[0-9]*.py"))
-    assert migrations[-1].name == "0029_v1_23_current_metrics.py"
+    assert migrations[-1].name == "0030_v1_23_navigation_metrics.py"
     for relative in (
         "V1_23_3.md",
         "PATCH_V1233.md",

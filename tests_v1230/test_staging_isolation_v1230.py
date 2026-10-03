@@ -91,7 +91,9 @@ def test_staging_clone_scrubs_active_credentials_and_uses_a_restricted_database_
     assert 'psql -v ON_ERROR_STOP=1 -U "${STAGING_USER}" -d "${STAGING_DB}"' in refresh
     assert "REASSIGN OWNED BY investment TO investment_staging" not in refresh
     assert "create-staging-runtime.py" in update
-    assert update.index("create-staging-runtime.py") < update.index("build staging")
+    assert update.index("create-staging-runtime.py") < update.index(
+        'docker compose -f "${COMPOSE_FILE}" build staging'
+    )
 
 
 def test_authentication_error_is_provider_neutral():

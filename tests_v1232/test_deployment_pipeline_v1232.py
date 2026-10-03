@@ -91,7 +91,13 @@ def test_release_queues_resumable_current_metrics_only_after_healthy_startup():
     assert staging.index('[[ "${STATUS}" == "healthy" ]]') < staging.index(
         "scripts.enqueue_current_metrics_refresh"
     )
-    assert production.count("scripts.enqueue_current_metrics_refresh") == 2
+    # Um único helper idempotente atende os três finais mutuamente exclusivos:
+    # remoto confirmado, retorno local após falha remota e worker local normal.
+    assert production.count("scripts.enqueue_current_metrics_refresh") == 1
+    assert production.count("enqueue_current_metrics_after_worker_promotion") == 4
+    assert production.index("mark_worker_promotion_complete") < production.index(
+        "enqueue_current_metrics_after_worker_promotion"
+    )
     assert production.index("wait_local_worker_ready") < production.rindex(
         "scripts.enqueue_current_metrics_refresh"
     )

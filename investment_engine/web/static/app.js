@@ -32,6 +32,13 @@ const state = {
   analysisLimit: 50,
   analysisResultCache: new Map(),
   analysisRequestSerial: 0,
+  navigationSerial: 0,
+  portfolioListRequestSerial: 0,
+  portfolioRequestSerial: 0,
+  financeRequestSerial: 0,
+  backtestRequestSerial: 0,
+  adminRequestSerial: 0,
+  assetRequestSerial: 0,
   analysisUpdateCheckedAt: 0,
   analysisEnsureSentAt: 0,
   refreshEnsureSentAt: {},
@@ -61,6 +68,7 @@ const state = {
   officialBacktestJobs: new Map(),
   backtestCatalog: null,
   requestControllers: new Map(),
+  navigationTimers: new Set(),
   emailLoginAddress: "",
   portalAdmin: null,
   adminAnalysisSettings: null,
@@ -84,6 +92,52 @@ function toast(message, type = "") {
   node.textContent = message;
   $("#toast-region").append(node);
   setTimeout(() => node.remove(), 5200);
+}
+
+const panelRequestKeys={
+  dashboard:["market-get","comparison","official-calendar","relevant-facts","headlines"],
+  analysis:["analysis","analysis-backtests","asset-detail"],
+  portfolio:["portfolios","portfolio-detail","portfolio-catalog","portfolio-news","portfolio-alerts","dividends-"],
+  finances:["finances","finance-catalog"],
+  backtests:["backtests","backtests-"],
+  admin:["admin-"],
+};
+
+function abortRequestGroups(groups){
+  const prefixes=groups.flatMap(group=>panelRequestKeys[group]||[]);
+  for(const [key,controller] of state.requestControllers.entries()){
+    if(prefixes.some(prefix=>key===prefix||key.startsWith(prefix))){controller.abort();state.requestControllers.delete(key);}
+  }
+}
+
+function beginNavigation(previousView,nextView){
+  state.navigationSerial+=1;
+  for(const timer of state.navigationTimers)clearTimeout(timer);
+  state.navigationTimers.clear();
+  clearTimeout(state.newsRefreshTimer);state.newsRefreshTimer=null;
+  if(typeof searchTimer!=="undefined"){clearTimeout(searchTimer);searchTimer=null;}
+  if(previousView)abortRequestGroups([previousView]);
+  if(previousView===nextView)abortRequestGroups([nextView]);
+  state.requestControllers.get("search")?.abort();
+}
+
+function navigationIsCurrent(serial,view,tabGroup=null,tab=null){
+  return serial===state.navigationSerial&&state.view===view&&(!tabGroup||state.tabs[tabGroup]===tab);
+}
+
+function scheduleIdleTask(callback,timeout=1800){
+  if("requestIdleCallback" in window)window.requestIdleCallback(()=>callback(),{timeout});
+  else setTimeout(callback,Math.min(timeout,1200));
+}
+
+function scheduleNavigationTask(callback,delay,serial=state.navigationSerial){
+  const timer=setTimeout(()=>{
+    state.navigationTimers.delete(timer);
+    if(serial!==state.navigationSerial)return;
+    try{Promise.resolve(callback()).catch(()=>{});}catch(_){/* tarefa de interface obsoleta ou opcional */}
+  },delay);
+  state.navigationTimers.add(timer);
+  return timer;
 }
 
 function readableApiError(detail,status){
@@ -153,7 +207,7 @@ async function api(path, options = {}) {
     if (cached && Date.now() - cached.savedAt < cacheTtlMs) return cached.body;
   }
   const key = requestOptions.requestKey;
-  const coalesceKey = method === "GET" && cacheTtlMs > 0 && !bypassCache && !key ? path : null;
+  const coalesceKey = method === "GET" && !bypassCache && !key ? path : null;
   if (coalesceKey && state.readRequests.has(coalesceKey)) return state.readRequests.get(coalesceKey);
   let controller = null;
   if (key) {
@@ -298,6 +352,8 @@ async function verifyEmailLogin(form){
 }
 
 function setView(view, tab = null) {
+  const previousView=state.view;
+  beginNavigation(previousView,view);
   state.view = view;
   if (tab) state.tabs[view] = tab;
   $$(".view").forEach(node => node.classList.toggle("active", node.id === `view-${view}`));
@@ -308,6 +364,7 @@ function setView(view, tab = null) {
 }
 
 function activateTab(group, tab, load = true) {
+  if(load)beginNavigation(state.view,state.view);
   state.tabs[group] = tab;
   $$(`.tabs[data-tabs="${group}"] .tab`).forEach(node => node.classList.toggle("active", node.dataset.tab === tab));
   if (load) loadCurrentView();
@@ -623,7 +680,7 @@ async function loadComparison(force=false,attempt=0,baselineGeneratedAt=null) {
     if(hasSnapshot){state.comparison=payload.data;renderComparison();}
     if((payload.refreshing||payload.scheduled)&&attempt<120){
       state.comparisonLoading=false;
-      setTimeout(()=>loadComparison(false,attempt+1,baselineGeneratedAt),3000);
+      scheduleNavigationTask(()=>loadComparison(false,attempt+1,baselineGeneratedAt),3000);
       return;
     }
     if(hasSnapshot){state.comparisonLoading=false;return;}
@@ -664,21 +721,24 @@ async function loadMarket(force = false) {
     else if (queued.data && Object.keys(queued.data).length) { state.marketEnvelope=queued; state.market=queued.data; renderMarketSummary(); renderDashboardTab(); }
     reportPanelPerformance("dashboard",panelStarted,{cacheState:hadCached?"warm":"cold"});
   } catch (error) {
+    if (error.name === "AbortError") return;
     if (!state.market) $("#dashboard-tab-content").innerHTML = errorState(error, "market");
     toast(`Dados de mercado: ${error.message}`, "error");
     reportPanelPerformance("dashboard",panelStarted,{success:false,cacheState:hadCached?"stale":"cold"});
   }
 }
 
-async function pollMarket(attempt = 0) {
-  if (attempt > 35) return;
-  await new Promise(resolve => setTimeout(resolve, 2500));
-  try {
-    const envelope = await api("/market-dashboard");
-    if (envelope.data && Object.keys(envelope.data).length) { state.marketEnvelope=envelope; state.market=envelope.data; renderMarketSummary(); renderDashboardTab(); }
-    if (["queued","running"].includes(envelope.refresh_status)) pollMarket(attempt+1);
-    else if (envelope.refresh_status === "completed") toast("Painel de mercado atualizado.", "success");
-  } catch (_) { /* keep stale data visible */ }
+function pollMarket(attempt = 0, navigationSerial = state.navigationSerial) {
+  if (attempt > 35 || !navigationIsCurrent(navigationSerial,"dashboard")) return;
+  scheduleNavigationTask(async()=>{
+    try {
+      const envelope = await api("/market-dashboard");
+      if(!navigationIsCurrent(navigationSerial,"dashboard"))return;
+      if (envelope.data && Object.keys(envelope.data).length) { state.marketEnvelope=envelope; state.market=envelope.data; renderMarketSummary(); renderDashboardTab(); }
+      if (["queued","running"].includes(envelope.refresh_status)) pollMarket(attempt+1,navigationSerial);
+      else if (envelope.refresh_status === "completed") toast("Painel de mercado atualizado.", "success");
+    } catch (_) { /* keep stale data visible */ }
+  },2500,navigationSerial);
 }
 
 async function loadHeadlines() {
@@ -690,7 +750,7 @@ async function loadHeadlines() {
     if (payload.data?.items?.length) renderHeadlines(payload);
     else if (payload.refreshing || payload.scheduled) {
       root.innerHTML = `${loadingCards(5)}<div class="notice info" style="margin-top:14px">Buscando as principais manchetes em segundo plano. O restante do site continua disponível.</div>`;
-      setTimeout(async () => { try { payload=await api("/market-dashboard/headlines"); renderHeadlines(payload); } catch (_) {} }, 2500);
+      scheduleNavigationTask(async () => { try { payload=await api("/market-dashboard/headlines"); renderHeadlines(payload); } catch (_) {} }, 2500);
     } else renderHeadlines(payload);
   } catch (error) { root.innerHTML = errorState(error); }
 }
@@ -711,7 +771,7 @@ async function refreshMarketGroups(keys) {
     const results=await Promise.all(groups.map(group=>api(`/market-dashboard/groups/${encodeURIComponent(group)}/refresh`,{method:"POST"})));
     const scheduled=results.filter(result=>result.scheduled).length;
     toast(scheduled?"Atualização solicitada. Os dados atuais permanecerão visíveis.":"Esses dados foram solicitados há menos de 5 minutos.",scheduled?"success":"info");
-    setTimeout(()=>loadCurrentView(),2500);
+    scheduleNavigationTask(()=>loadCurrentView(),2500);
   } catch(error) { toast(error.message,"error"); }
 }
 
@@ -724,7 +784,7 @@ function ensureRefreshGroupIfNeeded(group,update,missing,onReady,endpoint=null){
   state.refreshEnsureSentAt[group]=now;
   api(endpoint||`/market-dashboard/groups/${encodeURIComponent(group)}/ensure`,{method:"POST",invalidateCache:false})
     .then(result=>{
-      if(result?.scheduled)setTimeout(()=>{
+      if(result?.scheduled)scheduleNavigationTask(()=>{
         state.readCache.clear();
         onReady?.();
       },3000);
@@ -987,21 +1047,35 @@ function updateCustomFilterControls() {
 async function loadAnalysisCatalog(type, force=false) {
   const needPresets=force||!state.analysisCatalog[type];
   const needCustom=Number(state.session?.access?.custom_filter_limit||0)>0&&(force||!state.analysisCustomCache[type]);
-  const [presetPayload,custom]=await Promise.all([
-    needPresets?api(`/screen/presets?asset_type=${type}`,{cacheTtlMs:300000,bypassCache:force}):Promise.resolve(null),
-    needCustom?api(`/screen/custom-filters?asset_type=${type}`,{cacheTtlMs:120000,bypassCache:force}).catch(()=>({items:[],used:0,limit:0})):Promise.resolve(null),
-  ]);
+  const presetPromise=needPresets?api(`/screen/presets?asset_type=${type}`,{cacheTtlMs:300000,bypassCache:force}):Promise.resolve(null);
+  const customPromise=needCustom?api(`/screen/custom-filters?asset_type=${type}`,{cacheTtlMs:120000,bypassCache:force}).catch(()=>({items:[],used:0,limit:0})):Promise.resolve(null);
+  const presetPayload=await presetPromise;
   if(presetPayload){
     state.analysisCatalog[type]=Object.fromEntries((presetPayload.items||[]).map(item=>[item.id,item]));
     state.analysisColumnCatalog[type]=presetPayload.columns||null;
   }
-  if(custom){
-    state.analysisCustomCache[type]=custom.items||[];
-    state.analysisCustomUsageCache[type]={used:custom.used||0,limit:custom.limit||0};
-  }
-  state.analysisCustom=state.analysisCustomCache[type]||[];
-  state.analysisCustomUsage=state.analysisCustomUsageCache[type]||{used:0,limit:Number(state.session?.access?.custom_filter_limit||0)};
-  renderCustomPresetButtons();
+  const applyCustom=custom=>{
+    if(custom){state.analysisCustomCache[type]=custom.items||[];state.analysisCustomUsageCache[type]={used:custom.used||0,limit:custom.limit||0};}
+    if(type!==analysisType())return;
+    state.analysisCustom=state.analysisCustomCache[type]||[];
+    state.analysisCustomUsage=state.analysisCustomUsageCache[type]||{used:0,limit:Number(state.session?.access?.custom_filter_limit||0)};
+    renderCustomPresetButtons();
+  };
+  applyCustom(null);
+  if(force)applyCustom(await customPromise);
+  else if(needCustom)customPromise.then(applyCustom).catch(()=>{});
+}
+
+function prefetchAnalysisCatalogs(){
+  const queue=["stock","fii","etf","bdr","future"].filter(type=>!state.analysisCatalog[type]);
+  const next=()=>{
+    const type=queue.shift();if(!type)return;
+    api(`/screen/presets?asset_type=${type}`,{cacheTtlMs:300000}).then(payload=>{
+      state.analysisCatalog[type]=Object.fromEntries((payload.items||[]).map(item=>[item.id,item]));
+      state.analysisColumnCatalog[type]=payload.columns||null;
+    }).catch(()=>{}).finally(()=>scheduleIdleTask(next,2200));
+  };
+  scheduleIdleTask(next,1000);
 }
 
 function markActiveAnalysis({presetId=null,custom=null}={}) {
@@ -1045,7 +1119,7 @@ async function loadAnalysis() {
   const panelStarted=performance.now(),hadCached=state.analysisResultCache.has(analysisResultCacheKey(analysisType()));
   if(state.tabs.analysisMode==="guide"){renderIndicatorGuide();return;}
   $("#analysis-list-workspace").classList.remove("hidden");$("#analysis-guide").classList.add("hidden");
-  const type=analysisType();
+  const type=analysisType(),analysisTab=state.tabs.analysis,navigationSerial=state.navigationSerial;
   const now=Date.now();
   if(now-state.analysisUpdateCheckedAt>60000){
     state.analysisUpdateCheckedAt=now;
@@ -1055,7 +1129,7 @@ async function loadAnalysis() {
       const ensureGroups=["catalog","fundamentals","technical_daily","technical_intraday"].filter(group=>["unavailable","stale","failed"].includes(updatePayload.updates?.[group]?.status));
       if(ensureGroups.length&&Date.now()-state.analysisEnsureSentAt>300000){
         state.analysisEnsureSentAt=Date.now();
-        setTimeout(()=>Promise.all(ensureGroups.map(group=>api(`/market-dashboard/groups/${encodeURIComponent(group)}/ensure`,{method:"POST",invalidateCache:false}))).catch(()=>{}),1500);
+        scheduleNavigationTask(()=>Promise.all(ensureGroups.map(group=>api(`/market-dashboard/groups/${encodeURIComponent(group)}/ensure`,{method:"POST",invalidateCache:false}))).catch(()=>{}),1500,navigationSerial);
       }
     }).catch(()=>{if(state.view==="analysis"&&$("#analysis-update-status"))$("#analysis-update-status").innerHTML='<div class="notice warning">O estado das atualizações não pôde ser consultado agora. Os dados disponíveis continuam acessíveis.</div>';});
   } else if($("#analysis-update-status")) {
@@ -1063,12 +1137,12 @@ async function loadAnalysis() {
   }
   try {
     await loadAnalysisCatalog(type);
-    if(state.view!=="analysis"||type!==analysisType())return;
+    if(!navigationIsCurrent(navigationSerial,"analysis","analysis",analysisTab)||type!==analysisType())return;
     if(state.analysisLoadedType!==type){state.analysisLoadedType=type;state.currentCustomFilter=null;state.analysisPreset="default";fillAnalysisForm(state.analysisCatalog[type]?.default?.configuration||{});markActiveAnalysis({presetId:"default"});}
   } catch(error){toast(`Configuração dos filtros: ${error.message}`,"error");}
   updateFilterAvailability();
   await loadAnalysisResults();
-  reportPanelPerformance("analysis",panelStarted,{cacheState:hadCached?"warm":"cold"});
+  if(navigationIsCurrent(navigationSerial,"analysis","analysis",analysisTab))reportPanelPerformance("analysis",panelStarted,{cacheState:hadCached?"warm":"cold"});
 }
 
 function analysisResultCacheKey(type) {
@@ -1078,9 +1152,15 @@ function analysisResultCacheKey(type) {
 async function loadAnalysisResults(force=false) {
   const root = $("#analysis-table");
   const type = analysisType();
+  const analysisTab=state.tabs.analysis;
+  const navigationSerial=state.navigationSerial;
   const requestSerial=++state.analysisRequestSerial;
   const cacheKey=analysisResultCacheKey(type),cached=state.analysisResultCache.get(cacheKey);
-  if(!force&&cached&&Date.now()-cached.savedAt<ANALYSIS_CACHE_TTL_MS){state.analysisRows=cached.rows;renderAnalysisRows(cached.rows);return;}
+  if(!force&&cached&&Date.now()-cached.savedAt<ANALYSIS_CACHE_TTL_MS){
+    state.analysisRows=cached.rows;renderAnalysisRows(cached.rows);
+    if(cached.rows?.some(row=>row.backtest_leaders_pending))enrichAnalysisRowsInBackground(cached.rows,{type,analysisTab,cacheKey,requestSerial,navigationSerial});
+    return;
+  }
   if(cached?.rows?.length){state.analysisRows=cached.rows;renderAnalysisRows(cached.rows);root.insertAdjacentHTML("afterbegin",'<div class="notice info analysis-refreshing">Atualizando a lista em segundo plano…</div>');}
   else root.innerHTML = loadingCards(6);
   try {
@@ -1100,21 +1180,28 @@ async function loadAnalysisResults(force=false) {
     }
     if (type === "stock") rows.sort((a,b)=>(Number(b.graham_upside_pct)||-Infinity)-(Number(a.graham_upside_pct)||-Infinity));
     else rows.sort((a,b)=>String(a.ticker).localeCompare(String(b.ticker)));
-    if(state.view!=="analysis"||type!==analysisType()||requestSerial!==state.analysisRequestSerial||cacheKey!==analysisResultCacheKey(type))return;
-    state.analysisRows = rows;
-    state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows});
-    renderAnalysisRows(rows);
+    if(!navigationIsCurrent(navigationSerial,"analysis","analysis",analysisTab)||state.tabs.analysisMode!=="list"||type!==analysisType()||requestSerial!==state.analysisRequestSerial||cacheKey!==analysisResultCacheKey(type))return;
+    const primaryRows=state.session?.access?.can_view_backtests?rows.map(row=>({...row,backtest_leaders_pending:true})):rows;
+    state.analysisRows = primaryRows;
+    state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows:primaryRows});
+    renderAnalysisRows(primaryRows);
     if(warnings.length)toast(warnings.join(" "),"warning");
-    const enrichedRows=await enrichBacktestLeaders(rows);
-    if(state.view!=="analysis"||type!==analysisType()||requestSerial!==state.analysisRequestSerial||cacheKey!==analysisResultCacheKey(type))return;
-    state.analysisRows=enrichedRows;
-    state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows:enrichedRows});
-    renderAnalysisRows(enrichedRows);
+    enrichAnalysisRowsInBackground(rows,{type,analysisTab,cacheKey,requestSerial,navigationSerial});
   } catch (error) {
     if(error.name==="AbortError"||state.view!=="analysis"||type!==analysisType()||requestSerial!==state.analysisRequestSerial)return;
     if(cached?.rows?.length){state.analysisRows=cached.rows;renderAnalysisRows(cached.rows);root.insertAdjacentHTML("afterbegin",'<div class="notice warning analysis-refreshing">Não foi possível renovar a lista agora. Exibindo a última consulta concluída.</div>');}
     else root.innerHTML = errorState(error, "analysis");
   }
+}
+
+function enrichAnalysisRowsInBackground(rows,{type,analysisTab,cacheKey,requestSerial,navigationSerial}){
+  if(!state.session?.access?.can_view_backtests||!rows?.length)return;
+  enrichBacktestLeaders(rows).then(enrichedRows=>{
+    if(!navigationIsCurrent(navigationSerial,"analysis","analysis",analysisTab)||state.tabs.analysisMode!=="list"||type!==analysisType()||requestSerial!==state.analysisRequestSerial||cacheKey!==analysisResultCacheKey(type))return;
+    state.analysisRows=enrichedRows;
+    state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows:enrichedRows});
+    renderAnalysisRows(enrichedRows);
+  }).catch(()=>{});
 }
 
 async function enrichBacktestLeaders(rows) {
@@ -1124,11 +1211,11 @@ async function enrichBacktestLeaders(rows) {
     const payload=await api(`/backtests/leaderboard?per_asset=3&tickers=${encodeURIComponent(tickers)}`,{requestKey:"analysis-backtests",cacheTtlMs:60000});
     return rows.map(row=>{
       const leaders=payload.items?.[row.ticker]||[];
-      return {...row,backtest_leaders:leaders,best_signal:leaders[0]?.current_signal,best_strategy:leaders[0]?.strategy_name};
+      return {...row,backtest_leaders_pending:false,backtest_leaders:leaders,best_signal:leaders[0]?.current_signal,best_strategy:leaders[0]?.strategy_name};
     });
   } catch(error) {
     if(error.name!=="AbortError") toast("Os sinais dos backtests serão exibidos assim que o catálogo estiver disponível.");
-    return rows;
+    return rows.map(row=>({...row,backtest_leaders_pending:false}));
   }
 }
 
@@ -1137,12 +1224,14 @@ function signalLabel(value) {
 }
 
 function backtestLeadersCell(row) {
+  if(row.backtest_leaders_pending)return '<span class="secondary-loading"><span class="loading-dot" aria-hidden="true"></span> Carregando sinais…</span>';
   const leaders=(row.backtest_leaders||[]).slice(0,3);
   if(!leaders.length)return '<span class="muted">Sem dados</span>';
   return `<div class="backtest-leader-stack">${leaders.map((leader,index)=>`<div><span class="leader-rank">${index+1}</span><span><strong>${esc(leader.strategy_name||leader.strategy_id||"Estratégia")}</strong><small>${nullable(leader.ranking_score)?"":`Pontuação ${number(leader.ranking_score,1)}`}</small></span><span class="pill signal-${esc(leader.current_signal||"neutral")}">${signalLabel(leader.current_signal)}</span></div>`).join("")}</div>`;
 }
 
 function backtestLeaderCell(row,index) {
+  if(row.backtest_leaders_pending)return '<span class="secondary-loading"><span class="loading-dot" aria-hidden="true"></span> Carregando…</span>';
   const leader=(row.backtest_leaders||[])[index];
   if(!leader)return '<span class="muted">Sem dados</span>';
   return `<div class="backtest-leader-single"><strong>${esc(leader.strategy_name||leader.strategy_id||"Estratégia")}</strong><span class="pill signal-${esc(leader.current_signal||"neutral")}">${signalLabel(leader.current_signal)}</span><small>${nullable(leader.ranking_score)?"Sem pontuação":`Pontuação ${number(leader.ranking_score,1)}`}</small></div>`;
@@ -1244,29 +1333,33 @@ function renderAnalysisRows(rows) {
 async function applyAdvancedFilters(showToast=true) {
   const request=analysisRequestFromForm();
   try{validateAnalysisRequest(request);}catch(error){toast(error.message,"error");return;}
-  const type=analysisType(),requestSerial=++state.analysisRequestSerial;
+  const type=analysisType(),analysisTab=state.tabs.analysis,navigationSerial=state.navigationSerial,requestSerial=++state.analysisRequestSerial;
   revealSelectedValuationColumns(request);
   if(!state.currentCustomFilter){const label=state.analysisCatalog[analysisType()]?.[state.analysisPreset]?.name||"Análise";$("#active-analysis-summary").textContent=`${label} • ajustes temporários`;}
   $("#analysis-table").innerHTML=loadingCards(6);
   try {
     const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify(request)});
     const rows=payload.rows||payload;
-    if(state.view!=="analysis"||type!==analysisType()||requestSerial!==state.analysisRequestSerial)return;
-    state.analysisRows=rows; renderAnalysisRows(rows);
+    if(!navigationIsCurrent(navigationSerial,"analysis","analysis",analysisTab)||type!==analysisType()||requestSerial!==state.analysisRequestSerial)return;
+    const primaryRows=state.session?.access?.can_view_backtests?rows.map(row=>({...row,backtest_leaders_pending:true})):rows;
+    state.analysisRows=primaryRows; renderAnalysisRows(primaryRows);
     const warnings=payload?.meta?.warnings||[];
     if(warnings.length) toast(warnings.join(" "),"warning");
     else if(showToast) toast(`${rows.length} ativo(s) após os ajustes.`,"success");
-    const enrichedRows=await enrichBacktestLeaders(rows);
-    if(state.view!=="analysis"||type!==analysisType()||requestSerial!==state.analysisRequestSerial)return;
-    state.analysisRows=enrichedRows;renderAnalysisRows(enrichedRows);
+    if(state.session?.access?.can_view_backtests)enrichBacktestLeaders(rows).then(enrichedRows=>{
+      if(!navigationIsCurrent(navigationSerial,"analysis","analysis",analysisTab)||type!==analysisType()||requestSerial!==state.analysisRequestSerial)return;
+      state.analysisRows=enrichedRows;renderAnalysisRows(enrichedRows);
+    }).catch(()=>{});
   } catch(error) { if(error.name!=="AbortError"&&state.view==="analysis"&&type===analysisType()&&requestSerial===state.analysisRequestSerial) $("#analysis-table").innerHTML=errorState(error,"analysis"); }
 }
 
 async function openAsset(ticker) {
   const dialog=$("#asset-dialog"), content=$("#asset-dialog-content");
+  const requestSerial=++state.assetRequestSerial;
   content.innerHTML=loadingCards(4); dialog.showModal();
   try {
-    const data=await api(`/assets/${encodeURIComponent(ticker)}`,{cacheTtlMs:60000});
+    const data=await api(`/assets/${encodeURIComponent(ticker)}`,{requestKey:"asset-detail",cacheTtlMs:120000});
+    if(requestSerial!==state.assetRequestSerial||!dialog.open)return;
     const a=data.asset||{}, f=data.fundamentals||{}, t=data.technical||{}, d=data.derived||{}, tech=data.technical_analysis||{}, scores=data.scores||{}, leaders=data.backtests||[];
     const valuationLabels={graham_reference:"Número de Graham",dividend_yield_ceiling:"Preço-teto por DY-alvo",relative_peers:"Valuation relativo",economic_value:"Valor econômico"};
     const valuationStatus=result=>result.status==="not_applicable"?"Não se aplica":result.status==="valid"?"Calculado":"Dados insuficientes";
@@ -1301,16 +1394,21 @@ async function openAsset(ticker) {
         ${sectionCard("Notas do ativo",`<div class="detail-list">${Object.entries({"Qualidade":scores.quality_score,"Valor":scores.value_score,"Crescimento":scores.growth_score,"Técnica":scores.technical_score,"Risco":scores.risk_score,"Liquidez":scores.liquidity_score,"ALB":scores.alb_score,"Qualidade dos dados":scores.data_quality_score}).map(([label,value])=>`<div><span>${esc(label)}</span><strong>${number(value,1)}</strong></div>`).join("")}</div>`)}
         ${sectionCard("3 melhores backtests e sinal atual",leaderTable,"Ordenados pela consistência dos resultados oficiais")}
       </div>`;
-  } catch(error) { content.innerHTML=errorState(error); }
+  } catch(error) { if(error.name!=="AbortError"&&requestSerial===state.assetRequestSerial&&dialog.open)content.innerHTML=errorState(error); }
 }
 
 async function loadPortfolios() {
-  const panelStarted=performance.now(),hadCached=Boolean(state.portfolios.length);
-  const root=$("#portfolio-tab-content"); root.innerHTML=loadingCards(5);
+  const panelStarted=performance.now(),hadCached=Boolean(state.portfolios.length),navigationSerial=state.navigationSerial,requestSerial=++state.portfolioListRequestSerial;
+  const root=$("#portfolio-tab-content"),expectedPanelKey=`${state.portfolioId||"none"}:${state.tabs.portfolio}`;
+  if(root.dataset.panelKey!==expectedPanelKey||!root.childElementCount)root.innerHTML=loadingCards(5);
+  else root.classList.add("panel-refreshing");
   try {
-    state.portfolios=await api("/portfolios",{requestKey:"portfolios",cacheTtlMs:30000});
+    const portfolios=await api("/portfolios",{requestKey:"portfolios",cacheTtlMs:120000});
+    if(requestSerial!==state.portfolioListRequestSerial||!navigationIsCurrent(navigationSerial,"portfolio"))return;
+    state.portfolios=portfolios;
     if (!state.portfolios.length) {
       state.portfolioId=null;$("#portfolio-selector-wrap").innerHTML="";
+      root.dataset.panelKey=`none:${state.tabs.portfolio}`;
       if(state.tabs.portfolio==="alerts"){await renderAlerts(root);return;}
       if(state.tabs.portfolio==="news"){await renderNewsWorkspace(root);return;}
       root.innerHTML='<div class="data-card empty-state"><strong>Você ainda não criou uma carteira</strong>A criação estará disponível aqui para contas com permissão de edição.</div>'; return;
@@ -1318,8 +1416,13 @@ async function loadPortfolios() {
     if (!state.portfolioId || !state.portfolios.some(p=>p.id===state.portfolioId)) state.portfolioId=state.portfolios[0].id;
     $("#portfolio-selector-wrap").innerHTML=`<select id="portfolio-selector" class="button secondary">${state.portfolios.map(p=>`<option value="${esc(p.id)}" ${p.id===state.portfolioId?"selected":""}>${esc(p.name)}</option>`).join("")}</select>`;
     await renderPortfolioTab();
-    reportPanelPerformance("portfolio",panelStarted,{cacheState:hadCached?"warm":"cold"});
-  } catch(error) { root.innerHTML=errorState(error,"portfolio");reportPanelPerformance("portfolio",panelStarted,{success:false,cacheState:hadCached?"stale":"cold"}); }
+    if(requestSerial===state.portfolioListRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio"))reportPanelPerformance("portfolio",panelStarted,{cacheState:hadCached?"warm":"cold"});
+  } catch(error) { if(error.name!=="AbortError"&&requestSerial===state.portfolioListRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio")){root.innerHTML=errorState(error,"portfolio");reportPanelPerformance("portfolio",panelStarted,{success:false,cacheState:hadCached?"stale":"cold"});} }
+  finally {if(requestSerial===state.portfolioListRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio"))root.classList.remove("panel-refreshing");}
+}
+
+function portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial){
+  return root?.dataset.panelKey===panelKey&&requestSerial===state.portfolioRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio","portfolio",state.tabs.portfolio);
 }
 
 function allocationDonut(items) {
@@ -1412,18 +1515,23 @@ function newsHeadline(item,index,{recommendation=false}={}) {
 
 function queueNewsPanelReload(cache) {
   clearTimeout(state.newsRefreshTimer);
+  state.newsRefreshTimer=null;
   if(!["pending","queued","running"].includes(cache?.status))return;
+  const navigationSerial=state.navigationSerial,portfolioId=state.portfolioId,newsMode=state.portfolioNewsMode;
   state.newsRefreshTimer=setTimeout(()=>{
-    if(state.view==="portfolio"&&state.tabs.portfolio==="news")renderPortfolioTab();
+    state.newsRefreshTimer=null;
+    if(navigationIsCurrent(navigationSerial,"portfolio","portfolio","news")&&state.portfolioId===portfolioId&&state.portfolioNewsMode===newsMode)renderPortfolioTab();
   },4500);
 }
 
 async function renderPortfolioNews(root) {
+  const panelKey=root.dataset.panelKey;
   if(!state.portfolioId) {
     root.innerHTML='<div class="data-card empty-state"><strong>Nenhuma carteira cadastrada</strong>Crie uma carteira para receber notícias relacionadas aos ativos. As notícias de recomendações continuam disponíveis acima.</div>';
     return;
   }
-  const cache=await api(`/insights/news/cache/portfolios/${state.portfolioId}`,{cacheTtlMs:15000,bypassCache:true});
+  const cache=await api(`/insights/news/cache/portfolios/${state.portfolioId}`,{requestKey:"portfolio-news",cacheTtlMs:15000,bypassCache:true});
+  if(root.dataset.panelKey!==panelKey||state.view!=="portfolio"||state.tabs.portfolio!=="news")return;
   const data=cache.data||{},groups=data.assets||data.items||[];
   const update=`<div class="update-panel"><div class="update-summary"><span><strong>Notícias dos ativos da carteira</strong><small>${cache.finished_at?`Última atualização: ${dateTime(cache.finished_at)}`:"A atualização diária será iniciada no primeiro acesso autenticado."}</small></span><span><span class="pill ${cache.status==="failed"?"danger":""}">${esc(newsCacheStatus(cache))}</span><button class="button secondary compact" data-portfolio-news-refresh="${esc(state.portfolioId)}" ${["pending","queued","running"].includes(cache.status)?"disabled":""}>Atualizar novamente hoje</button></span></div>${cache.error?`<div class="notice danger">A última tentativa não foi concluída. Os dados anteriores foram preservados.</div>`:""}</div>`;
   const content=groups.length?groups.map(group=>`<div class="card-section"><div class="card-heading"><h3>${esc(group.ticker||group.label||"Ativo")}</h3><small>${(group.items||group.news||[]).length} notícia(s)</small></div><div class="headline-list">${(group.items||group.news||[]).map((item,index)=>newsHeadline(item,index)).join("")}</div></div>`).join(""):'<div class="empty-state"><strong>Notícias sendo preparadas</strong>O carregamento ocorre em segundo plano e a página continua disponível para outras tarefas.</div>';
@@ -1432,8 +1540,10 @@ async function renderPortfolioNews(root) {
 }
 
 async function renderRecommendationNews(root) {
+  const panelKey=root.dataset.panelKey;
   const category=state.recommendationCategory;
-  const cache=await api(`/insights/news/cache/recommendations?category=${encodeURIComponent(category)}`,{cacheTtlMs:15000,bypassCache:true});
+  const cache=await api(`/insights/news/cache/recommendations?category=${encodeURIComponent(category)}`,{requestKey:"portfolio-news",cacheTtlMs:15000,bypassCache:true});
+  if(root.dataset.panelKey!==panelKey||state.view!=="portfolio"||state.tabs.portfolio!=="news"||category!==state.recommendationCategory)return;
   const data=cache.data||{},items=data.items||[];
   const categories=[{id:"all",label:"Todas"},{id:"brazil",label:"Instituições brasileiras"},{id:"global",label:"Instituições globais"}];
   const controls=`<div class="recommendation-controls"><div class="segmented-control">${categories.map(item=>`<button class="button ${item.id===category?"primary":"ghost"} compact" data-recommendation-category="${item.id}">${item.label}</button>`).join("")}</div><button class="button secondary compact" data-recommendation-news-refresh="${esc(category)}" ${["pending","queued","running"].includes(cache.status)?"disabled":""}>Atualizar novamente hoje</button></div>`;
@@ -1454,10 +1564,15 @@ async function renderNewsWorkspace(root) {
 
 async function renderPortfolioTab() {
   const root=$("#portfolio-tab-content"), tab=state.tabs.portfolio;
-  root.innerHTML=loadingCards(5);
+  clearTimeout(state.newsRefreshTimer);state.newsRefreshTimer=null;
+  const portfolioId=state.portfolioId,navigationSerial=state.navigationSerial,requestSerial=++state.portfolioRequestSerial,panelKey=`${portfolioId||"none"}:${tab}`;
+  const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;
+  root.dataset.panelKey=panelKey;
+  if(!samePanel)root.innerHTML=loadingCards(5);else root.classList.add("panel-refreshing");
   try {
     if (tab==="positions") {
-      const data=await api(`/portfolios/${state.portfolioId}`,{cacheTtlMs:30000});
+      const data=await api(`/portfolios/${portfolioId}`,{requestKey:"portfolio-detail",cacheTtlMs:120000});
+      if(!portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial))return;
       const positions=data.positions||data.items||[];
       const summary=data.summary||{};
       const cards=`<div class="metric-grid summary-grid">${metricCard("Patrimônio",money(data.consolidated_summary?.total_value??data.consolidated_summary?.known_total_value??summary.market_value))}${metricCard("Posições",String(positions.length))}${metricCard("Outros investimentos",money(data.custom_summary?.current_value||0))}${metricCard("Caixa",money(data.portfolio?.cash_balance))}</div>`;
@@ -1468,7 +1583,8 @@ async function renderPortfolioTab() {
       const positionTable=marketTable(positions,[{label:"Ativo",render:r=>`<span class="ticker-cell">${esc(r.ticker)}</span>`},{label:"Quantidade",render:r=>Number(r.quantity||0).toLocaleString("pt-BR",{maximumFractionDigits:6})},{label:"Preço médio",render:r=>money(r.average_price)},{label:"Preço atual",render:r=>`${money(r.current_price)}${r.current_price_as_of?`<br><small>${dateTime(r.current_price_as_of)} • ${esc(r.price_source||"")}</small>`:""}`},{label:"Valor",render:r=>money(r.market_value??(Number(r.quantity)*Number(r.current_price)))},{label:"Peso / meta",render:r=>`${pct(r.current_weight_pct)}<br><small>meta ${pct(r.effective_target_weight_pct??r.target_weight_pct)}</small>`},{label:"Rebalanceamento",render:r=>nullable(r.rebalance_value)?"—":`<strong class="${variationClass(r.rebalance_value)}">${Number(r.rebalance_value)>=0?"Comprar":"Reduzir"} ${money(Math.abs(Number(r.rebalance_value)))}</strong>${nullable(r.rebalance_quantity)?"":`<br><small>aprox. ${number(Math.abs(Number(r.rebalance_quantity)),0)} unidade(s)</small>`}`},{label:"Setor / segmento",render:r=>`${esc(r.sector||r.classification||"—")}<br><small>${esc(r.segment||"—")}</small>`},{label:"",render:r=>state.session.access.can_write_portfolio?`<button class="button ghost compact danger" data-delete-position="${esc(r.ticker)}">Remover</button>`:""}]);
       root.innerHTML=quoteUpdate+cards+sectionCard("Posições",positionTable,"Sugestão matemática baseada nas metas informadas; não constitui recomendação de investimento.")+positionForm;
     } else if (tab==="allocation") {
-      const [data,catalog]=await Promise.all([api(`/portfolios/${state.portfolioId}`,{cacheTtlMs:30000}),api(`/portfolios/${state.portfolioId}/custom-investments/catalog`,{cacheTtlMs:300000})]);
+      const [data,catalog]=await Promise.all([api(`/portfolios/${portfolioId}`,{requestKey:"portfolio-detail",cacheTtlMs:120000}),api(`/portfolios/${portfolioId}/custom-investments/catalog`,{requestKey:"portfolio-catalog",cacheTtlMs:300000})]);
+      if(!portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial))return;
       const rows=data.custom_investments||[],summary=data.consolidated_summary||{},today=new Date().toISOString().slice(0,10);
       state.portfolioAllocationHierarchy=data.consolidated_allocation_hierarchy||null;
       if(state.portfolioAllocationType&&!state.portfolioAllocationHierarchy?.types?.some(item=>item.id===state.portfolioAllocationType))state.portfolioAllocationType=null;
@@ -1481,17 +1597,20 @@ async function renderPortfolioTab() {
     } else {
       await renderAlerts(root);
     }
-  } catch(error) { root.innerHTML=errorState(error); }
+  } catch(error) { if(error.name!=="AbortError"&&portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial))root.innerHTML=errorState(error); }
+  finally {if(portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial))root.classList.remove("panel-refreshing");}
 }
 
 async function renderAlerts(root) {
+  const panelKey=root.dataset.panelKey;
   const access=state.session.access;
   if (!access.can_use_price_alerts) { root.innerHTML='<div class="data-card empty-state"><strong>Alertas não liberados para esta conta</strong>O administrador pode conceder um limite de 1, 3, 5 ou 10 ativos.</div>'; return; }
   const [catalog,data,history]=await Promise.all([
-    api("/alerts/catalog",{cacheTtlMs:300000}),
-    api("/alerts",{cacheTtlMs:10000,bypassCache:true}),
-    api("/alerts/history?limit=100",{cacheTtlMs:10000,bypassCache:true}),
+    api("/alerts/catalog",{requestKey:"portfolio-alerts-catalog",cacheTtlMs:300000}),
+    api("/alerts",{requestKey:"portfolio-alerts-list",cacheTtlMs:30000}),
+    api("/alerts/history?limit=100",{requestKey:"portfolio-alerts-history",cacheTtlMs:30000}),
   ]);
+  if(root.dataset.panelKey!==panelKey||state.view!=="portfolio"||state.tabs.portfolio!=="alerts")return;
   state.alertCatalog=catalog;state.alertData={...data,history};
   const alerts=data.alerts||[],active=alerts.filter(item=>item.status==="active");
   const permissions=catalog.permissions||data.permissions||{};
@@ -1583,7 +1702,7 @@ function editPriceAlert(alertId){
 }
 
 async function refreshRecommendationNews(category){
-  try{const result=await api(`/insights/news/cache/recommendations/refresh?category=${encodeURIComponent(category)}`,{method:"POST"});toast(result.scheduled===false?"As recomendações já estão sendo atualizadas.":"Atualização das recomendações solicitada.",result.scheduled===false?"info":"success");setTimeout(()=>renderPortfolioTab(),2500);}
+  try{const result=await api(`/insights/news/cache/recommendations/refresh?category=${encodeURIComponent(category)}`,{method:"POST"});toast(result.scheduled===false?"As recomendações já estão sendo atualizadas.":"Atualização das recomendações solicitada.",result.scheduled===false?"info":"success");scheduleNavigationTask(()=>renderPortfolioTab(),2500);}
   catch(error){toast(error.message,"error");}
 }
 
@@ -1591,7 +1710,7 @@ async function refreshPortfolioNews(portfolioId) {
   try {
     const result=await api(`/insights/news/cache/portfolios/${encodeURIComponent(portfolioId)}/refresh`,{method:"POST"});
     toast(result.scheduled===false?"As notícias já estão sendo atualizadas.":"Atualização das notícias solicitada.",result.scheduled===false?"info":"success");
-    setTimeout(()=>renderPortfolioTab(),2500);
+    scheduleNavigationTask(()=>renderPortfolioTab(),2500);
   } catch(error) { toast(error.message,"error"); }
 }
 
@@ -1641,7 +1760,7 @@ async function refreshPortfolioPrices(portfolioId) {
   try {
     const result=await api(`/portfolios/${encodeURIComponent(portfolioId)}/refresh-prices`,{method:"POST"});
     toast(result.scheduled?"Atualização das cotações solicitada.":"As cotações foram solicitadas há menos de 5 minutos.",result.scheduled?"success":"info");
-    setTimeout(()=>renderPortfolioTab(),3000);
+    scheduleNavigationTask(()=>renderPortfolioTab(),3000);
   } catch(error) { toast(error.message,"error"); }
 }
 
@@ -1840,25 +1959,31 @@ function collectBacktestStrategyParameters(form,strategyIds){
 }
 
 async function loadBacktests() {
-  const root=$("#backtests-tab-content"),tab=state.tabs.backtests; root.innerHTML=loadingCards(6);
+  const root=$("#backtests-tab-content"),tab=state.tabs.backtests,navigationSerial=state.navigationSerial,requestSerial=++state.backtestRequestSerial,panelKey=tab;
+  const isCurrent=()=>root.dataset.panelKey===panelKey&&requestSerial===state.backtestRequestSerial&&navigationIsCurrent(navigationSerial,"backtests","backtests",tab);
+  const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;root.dataset.panelKey=panelKey;
+  if(!samePanel)root.innerHTML=loadingCards(6);else root.classList.add("panel-refreshing");
   try {
     if(tab==="history") {
       const rows=await api("/backtests/runs?limit=100",{requestKey:"backtests",cacheTtlMs:15000});
+      if(!isCurrent())return;
       rows.sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
       root.innerHTML=recordedUpdatePanel("Histórico de backtests",rows[0]?.created_at,"Atualizado sempre que um teste é concluído")+sectionCard("Últimos 100 backtests",marketTable(rows,[{label:"Data e hora",render:r=>dateTime(r.created_at)},{label:"Ativo",render:r=>`<span class="ticker-cell">${esc(r.ticker||"—")}</span>`},{label:"Estratégia",render:r=>esc(r.strategy_name||r.strategy_id||"—")},{label:"Retorno",render:r=>pct(r.metrics?.total_return_pct??r.return_pct,true),className:r=>variationClass(r.metrics?.total_return_pct??r.return_pct)},{label:"Status",render:r=>`<span class="pill">${esc(r.status||"—")}</span>`}]));
     } else if(tab==="study") {
-      const data=await api("/backtests/study?limit=5",{cacheTtlMs:60000}); const rows=data.items||data.ranking||[];
+      const data=await api("/backtests/study?limit=5",{requestKey:"backtests-study",cacheTtlMs:120000});if(!isCurrent())return; const rows=data.items||data.ranking||[];
       root.innerHTML=recordedUpdatePanel("Estudos oficiais",data.generated_at||data.updated_at,"Recalculado a partir das rodadas oficiais")+sectionCard("Estratégias mais consistentes",marketTable(rows,[{label:"Posição",render:(r)=>`<strong>${esc(r.position||r.rank||"—")}</strong>`},{label:"Estratégia",render:r=>`<button class="table-link" data-study-strategy="${esc(r.strategy_id)}">${esc(r.strategy_name||r.name||r.strategy_id)}</button><small class="block-hint">Abrir configurações</small>`},{label:"Pontuação",render:r=>number(r.study_score??r.score??r.points,1)},{label:"Presença no top 3",render:r=>number(r.top_three_count??r.top3_count,0)},{label:"1º lugares",render:r=>number(r.first_places,0)},{label:"Cobertura",render:r=>pct(r.coverage_pct)}]),"Ranking ponderado por recorrência no top 3, posição, qualidade e cobertura. Clique na estratégia para ver todas as variáveis.");
     } else if(tab==="official") {
       const [rows,launchStatus]=await Promise.all([
-        api("/backtests/batch/jobs?limit=30",{cacheTtlMs:10000}),
-        api("/backtests/batch/official-launch",{cacheTtlMs:10000}),
+        api("/backtests/batch/jobs?limit=30",{requestKey:"backtests-official-jobs",cacheTtlMs:30000}),
+        api("/backtests/batch/official-launch",{requestKey:"backtests-official-launch",cacheTtlMs:30000}),
       ]);
+      if(!isCurrent())return;
       state.officialBacktestJobs=new Map(rows.map(row=>[String(row.id),row]));
       const officialUpdated=rows.map(row=>row.last_update_at||row.finished_at||row.created_at).filter(Boolean).sort().pop();
       root.innerHTML=recordedUpdatePanel("Backtests oficiais",officialUpdated,"Rodada automática aos sábados às 00h01, horário de Brasília")+officialRoundLaunchCard(launchStatus)+sectionCard("Rodadas oficiais",marketTable(rows,[{label:"Criado em",render:r=>dateTime(r.created_at)},{label:"Identificador",render:r=>`<button class="table-link" data-official-job="${esc(r.id)}">${esc(String(r.id).slice(0,8))}…</button>`},{label:"Ativos",render:r=>number((r.requested_tickers||r.tickers||[]).length,0)},{label:"Progresso",render:r=>`${number(r.processed_assets||0,0)} / ${number(r.total_assets||(r.requested_tickers||r.tickers||[]).length,0)}`},{label:"Partes",render:r=>number(r.received_chunks||0,0)},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":""}">${esc(officialStatusLabels[r.status]||r.status)}</span>`},{label:"",render:r=>`<button class="button ghost compact" data-official-job="${esc(r.id)}">Detalhes</button>`}]),"Em caso de falha, abra Detalhes e use Reprocessar ativos pendentes ou com falha. O sistema não recalcula entregas já concluídas.");
     } else {
-      const [catalog,recentJobs]=await Promise.all([api("/backtests/strategies",{cacheTtlMs:300000}),api("/backtests/jobs?limit=5",{cacheTtlMs:10000})]);
+      const [catalog,recentJobs]=await Promise.all([api("/backtests/strategies",{requestKey:"backtests-catalog",cacheTtlMs:300000}),api("/backtests/jobs?limit=5",{requestKey:"backtests-recent",cacheTtlMs:30000})]);
+      if(!isCurrent())return;
       const access=state.session.access;state.backtestCatalog=catalog;
       root.innerHTML=sectionCard("Comparar estratégias",`<form id="backtest-form" class="filter-grid backtest-form">
         <div class="field wide-action"><label>Ativos — separe por vírgula ou espaço</label><textarea name="tickers" required rows="3" placeholder="PETR4, VALE3, BBAS3"></textarea><small>Limite autorizado por análise: ${number(access.backtest_asset_limit||0,0)} ativo(s).</small></div>
@@ -1889,7 +2014,8 @@ async function loadBacktests() {
       </form><div id="backtest-result" style="margin-top:16px"></div>`+((recentJobs||[]).length?`<div style="margin-top:18px">${sectionCard("Execuções recentes",marketTable(recentJobs,[{label:"Solicitado",render:r=>dateTime(r.created_at)},{label:"Progresso",render:r=>`${number(r.progress_current||0,0)} / ${number(r.progress_total||0,0)}`},{label:"Status",render:r=>`<span class="pill">${esc(r.status)}</span>`}]))}</div>`:""),`Cada envio conta como uma análise diária. Limite: ${access.backtest_daily_limit||0} por dia; até ${access.backtest_strategy_limit||0} estratégia(s); intervalo mínimo de ${access.backtest_cooldown_seconds||60} segundos. A tela permanece livre durante o processamento.`);
       renderBacktestStrategyParameters($("#backtest-form"));
     }
-  } catch(error) { root.innerHTML=errorState(error,"backtests"); }
+  } catch(error) { if(error.name!=="AbortError"&&isCurrent())root.innerHTML=errorState(error,"backtests"); }
+  finally {if(isCurrent())root.classList.remove("panel-refreshing");}
 }
 
 async function runBacktest(form) {
@@ -1974,13 +2100,17 @@ function financeTransactionTable(rows,canWrite) {
 async function loadFinances() {
   const root=$("#finances-tab-content"),monthInput=$("#finance-month");
   if(monthInput&&!monthInput.value)monthInput.value=state.financeMonth;
-  root.innerHTML=loadingCards(5);
+  const month=state.financeMonth,tab=state.tabs.finances,navigationSerial=state.navigationSerial,requestSerial=++state.financeRequestSerial,panelKey=`${month}:${tab}`;
+  const isCurrent=()=>root.dataset.panelKey===panelKey&&requestSerial===state.financeRequestSerial&&navigationIsCurrent(navigationSerial,"finances","finances",tab)&&state.financeMonth===month;
+  const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;root.dataset.panelKey=panelKey;
+  if(!samePanel)root.innerHTML=loadingCards(5);else root.classList.add("panel-refreshing");
   try {
     const [data,catalog]=await Promise.all([
-      api(`/finances/summary?month=${encodeURIComponent(state.financeMonth)}`,{requestKey:"finances",cacheTtlMs:20000}),
-      api("/finances/catalog",{cacheTtlMs:300000}),
+      api(`/finances/summary?month=${encodeURIComponent(month)}`,{requestKey:"finances",cacheTtlMs:120000}),
+      api("/finances/catalog",{requestKey:"finance-catalog",cacheTtlMs:300000}),
     ]);
-    const access=state.session.access,tab=state.tabs.finances,transactions=data.transactions||[];
+    if(!isCurrent())return;
+    const access=state.session.access,transactions=data.transactions||[];
     if(tab==="monthly"){
       const expenseTotal=(data.expense_by_category||[]).reduce((sum,row)=>sum+Number(row.value||0),0);
       root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Receitas recebidas",money(data.realized?.income),"Realizado")}${metricCard("Despesas pagas",money(data.realized?.expense),"Realizado")}${metricCard("Saldo realizado",money(data.realized?.balance),"Entradas menos saídas",data.realized?.balance)}${metricCard("Saldo previsto",money(data.forecast?.balance),"Inclui lançamentos pendentes",data.forecast?.balance)}</div><div class="finance-overview-grid">${sectionCard("Despesas por categoria",financeCategoryBars(data.expense_by_category||[],expenseTotal),`Competência ${state.financeMonth}`)}${sectionCard("Orçamento do mês",(data.budgets||[]).length?financeBudgetTable(data.budgets):'<div class="empty-state compact"><strong>Orçamento ainda não definido</strong>Use a aba Orçamento para criar limites por categoria.</div>')}</div>${sectionCard("Lançamentos mais recentes",financeTransactionTable(transactions.slice(0,8),access.can_write_finances),data.updated_at?`Atualizado em ${dateTime(data.updated_at)}`:"Sem lançamentos")}`;
@@ -1993,7 +2123,8 @@ async function loadFinances() {
       const fields=(catalog.categories?.expense||[]).map(category=>`<div class="field"><label>${esc(category)}</label><input type="number" min="0" step="0.01" name="${esc(category)}" value="${current.get(category)||""}" placeholder="Sem limite"></div>`).join("");
       root.innerHTML=`${sectionCard("Acompanhamento",(data.budgets||[]).length?financeBudgetTable(data.budgets):'<div class="empty-state compact">Nenhum limite definido.</div>',"O consumo inclui despesas previstas e pagas")}${access.can_write_finances?`<form id="finance-budget-form" class="data-card filter-grid" style="margin-top:16px">${fields}<button class="button primary wide-action" type="submit">Salvar orçamento de ${esc(state.financeMonth)}</button></form>`:""}`;
     }
-  }catch(error){root.innerHTML=errorState(error,"finances");}
+  }catch(error){if(error.name!=="AbortError"&&isCurrent())root.innerHTML=errorState(error,"finances");}
+  finally {if(isCurrent())root.classList.remove("panel-refreshing");}
 }
 
 async function saveFinanceTransaction(form){
@@ -2056,15 +2187,21 @@ function accessLevelCard(level){
   return `<details class="access-level-card" data-level-card="${esc(level.slug)}"><summary><span><strong>${esc(level.name)}</strong><small>${esc(level.description||"")}</small></span><span><span class="pill">${number(level.member_count||0,0)} usuário(s)</span>${level.is_active?'<span class="pill">Ativo</span>':'<span class="pill warning">Inativo</span>'}</span></summary><form class="access-level-form" data-access-level-form="${esc(level.slug)}"><div class="access-level-meta"><div class="field"><label>Nome do nível</label><input name="name" maxlength="80" value="${esc(level.name)}" ${locked?"disabled":""}></div><div class="field"><label>Descrição</label><input name="description" maxlength="500" value="${esc(level.description||"")}" ${locked?"disabled":""}></div>${locked?"":`<label class="check access-active"><input name="is_active" type="checkbox" ${level.is_active?"checked":""}> Nível disponível para novas atribuições</label>`}</div>${accessRuleEditor(level,locked)}${locked?'<div class="notice info">O nível do proprietário é permanente e não pode ser reduzido.</div>':'<button class="button primary" type="submit">Salvar regras deste nível</button>'}</form></details>`;
 }
 
-async function loadAccessLevels(root){
-  const levels=await api("/access/levels",{cacheTtlMs:10000,bypassCache:true});
+function adminPanelIsCurrent(root,context){
+  return root?.dataset.panelKey===context.panelKey&&context.requestSerial===state.adminRequestSerial&&navigationIsCurrent(context.navigationSerial,"admin","admin",context.panelKey);
+}
+
+async function loadAccessLevels(root,context){
+  const levels=await api("/access/levels",{requestKey:"admin-levels",cacheTtlMs:10000,bypassCache:true});
+  if(!adminPanelIsCurrent(root,context))return;
   root.innerHTML=`<div class="notice info"><strong>Permissões por nível:</strong> altere uma vez aqui e a mudança será aplicada imediatamente a todos os usuários vinculados. Contas antigas só mudam quando você atribuir um nível.</div><div class="access-level-list">${levels.map(accessLevelCard).join("")}</div><details class="data-card create-level-card"><summary><strong>Criar nível adicional</strong></summary><form id="create-access-level-form" class="filter-grid"><div class="field"><label>Identificador interno</label><input name="slug" required pattern="[a-z][a-z0-9_-]{1,31}" placeholder="ex.: parceiro"></div><div class="field"><label>Nome exibido</label><input name="name" required maxlength="80" placeholder="Ex.: Parceiro"></div><div class="field wide-action"><label>Descrição</label><input name="description" maxlength="500"></div><button class="button primary wide-action" type="submit">Criar nível sem permissões</button></form></details>`;
 }
 
 function userStatusLabel(status){return ({pending:"Pendente",approved:"Aprovado",blocked:"Bloqueado"})[status]||status;}
-async function loadAdminUsers(root){
+async function loadAdminUsers(root,context){
   const params=new URLSearchParams({limit:"100",offset:String(state.adminUsersOffset)});if(state.adminUsersQuery)params.set("q",state.adminUsersQuery);if(state.adminUsersStatus)params.set("status",state.adminUsersStatus);if(state.adminUsersLevel)params.set("level",state.adminUsersLevel);
-  const [payload,levels]=await Promise.all([api(`/access/users/manage?${params}`,{bypassCache:true}),api("/access/levels?include_inactive=true",{cacheTtlMs:10000})]);
+  const [payload,levels]=await Promise.all([api(`/access/users/manage?${params}`,{requestKey:"admin-users",bypassCache:true}),api("/access/levels?include_inactive=true",{requestKey:"admin-levels",cacheTtlMs:10000})]);
+  if(!adminPanelIsCurrent(root,context))return;
   const users=payload.items||[],activeLevels=levels.filter(level=>level.slug!=="owner"&&level.is_active),from=payload.total?payload.offset+1:0,to=Math.min(payload.offset+payload.limit,payload.total);
   const levelOptions=user=>{
     const legacy=!user.access_level_slug?'<option value="legacy" selected disabled>Personalizado legado (preservado)</option>':"";
@@ -2087,13 +2224,14 @@ function adminUpdateTable(updates){
   ]);
 }
 
-async function loadAdminUpdates(root){
+async function loadAdminUpdates(root,context){
   const owner=Boolean(state.session?.access?.is_owner);
   const [summary,updatePayload,officialLaunch]=await Promise.all([
-    api("/data/catalog-summary"),
-    api("/market-dashboard/updates",{bypassCache:true}),
-    owner?api("/backtests/batch/official-launch",{bypassCache:true}):Promise.resolve(null),
+    api("/data/catalog-summary",{requestKey:"admin-catalog-summary"}),
+    api("/market-dashboard/updates",{requestKey:"admin-updates",bypassCache:true}),
+    owner?api("/backtests/batch/official-launch",{requestKey:"admin-official-launch",bypassCache:true}):Promise.resolve(null),
   ]);
+  if(!adminPanelIsCurrent(root,context))return;
   const updates=updatePayload.updates||{};state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),...updates};
   const counts=summary.counts||{},groups=summary.groups||{},allKeys=adminRefreshGroups.map(item=>item.key);
   const grouped=[
@@ -2109,8 +2247,9 @@ async function loadAdminUpdates(root){
 
 const jobTypeLabels={market_group_refresh:"Mercado e economia",economy_headlines_refresh:"Manchetes",historical_comparison_refresh:"Comparador histórico",market_catalog_refresh:"Catálogo",market_fundamentals_refresh:"Fundamentos",market_technicals_refresh:"Indicadores técnicos",market_intraday_refresh:"Cotações intradiárias",market_full_sync:"Sincronização completa de mercado",current_metrics_refresh:"Métricas atuais pré-calculadas",asset_price_ingest:"Histórico de preços do ativo",b3_index_portfolio_refresh:"Composição do Ibovespa",portfolio_prices_refresh:"Preços de carteira",user_news_refresh:"Notícias do usuário",personal_backtest_matrix:"Backtest pessoal",investor_dividends_refresh:"Proventos oficiais",cvm_relevant_facts_refresh:"Fatos relevantes CVM",official_calendar_refresh:"Agenda oficial",anbima_ima_history_refresh:"Histórico IMA-B/IRF-M",alb_universe_monitor:"Monitor do filtro ALB",data_quality_refresh:"Qualidade dos dados",operational_retention:"Retenção operacional",noop:"Verificação interna"};
 function jobStatusLabel(status){return ({queued:"Na fila",running:"Executando",succeeded:"Concluído",failed:"Falhou",cancelled:"Cancelado"})[status]||status;}
-async function loadAdminJobs(root){
-  const jobs=await api("/admin/jobs?limit=100",{bypassCache:true});
+async function loadAdminJobs(root,context){
+  const jobs=await api("/admin/jobs?limit=100",{requestKey:"admin-jobs",bypassCache:true});
+  if(!adminPanelIsCurrent(root,context))return;
   const table=marketTable(jobs,[{label:"Trabalho",render:r=>`<strong>${esc(jobTypeLabels[r.job_type]||r.job_type)}</strong><br><small>${esc(r.id)}</small>`},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":r.status==="running"?"warning":""}">${esc(jobStatusLabel(r.status))}</span>`},{label:"Progresso",render:r=>r.progress_total?`${number(r.progress_current||0,0)} / ${number(r.progress_total,0)}`:"—"},{label:"Tentativas",render:r=>`${number(r.attempts||0,0)} / ${number(r.max_attempts||0,0)}`},{label:"Solicitado por",render:r=>esc(r.requested_by||"Sistema")},{label:"Atualização",render:r=>dateTime(r.updated_at)},{label:"Mensagem",render:r=>`${esc(r.message||"—")}${r.last_error_code?`<br><small>${esc(r.last_error_code)}</small>`:""}`},{label:"",render:r=>["failed","cancelled"].includes(r.status)?`<button class="button secondary compact" data-retry-admin-job="${esc(r.id)}">Reprocessar</button>`:""}]);
   root.innerHTML=`<div class="admin-monitor-row"><span><strong>Fila de trabalhos em segundo plano</strong><small>Atualizações de mercado, notícias, carteiras e backtests sem travar a navegação.</small></span><button class="button secondary" data-reload-admin-jobs>Atualizar lista</button></div>${sectionCard("100 trabalhos mais recentes",table,"Falhas podem ser reprocessadas; trabalhos ativos nunca são duplicados")}`;
 }
@@ -2127,8 +2266,9 @@ function operationsResourceCards(resources){
   return `<div class="metric-grid operations-resources">${item("Memória do contêiner",resources?.container_memory?.used_pct===null?resources?.memory:resources?.container_memory)}${item("Memória da máquina",resources?.memory)}${item("Swap",resources?.swap)}${item("Disco",resources?.disk)}</div>`;
 }
 
-async function loadAdminOperations(root){
-  const payload=await api("/admin/operations",{bypassCache:true});
+async function loadAdminOperations(root,context){
+  const payload=await api("/admin/operations",{requestKey:"admin-operations",bypassCache:true});
+  if(!adminPanelIsCurrent(root,context))return;
   const severityLabel={healthy:"Operacional",warning:"Atenção",critical:"Crítico"};
   const serviceRoleLabel={worker:"Processamento em segundo plano",web:"Aplicação web"};
   const routeLabel={health:"Saúde e disponibilidade",dashboard:"Painel de Mercado",screener_50:"Filtro com até 50 ativos",screener_100:"Filtro com até 100 ativos",asset_detail:"Detalhe do ativo"};
@@ -2164,8 +2304,9 @@ async function loadAdminOperations(root){
 function dataQualityStatus(value){return ({updated:"Atualizado",partial:"Cobertura parcial",stale:"Desatualizado",unavailable:"Indisponível",failed:"Falhou",queued:"Na fila",running:"Atualizando"})[value]||value||"Aguardando";}
 function dataQualityClass(value){return ["failed","unavailable"].includes(value)?"danger":["partial","stale"].includes(value)?"warning":"";}
 
-async function loadAdminQuality(root){
-  const payload=await api("/admin/data-quality",{bypassCache:true});
+async function loadAdminQuality(root,context){
+  const payload=await api("/admin/data-quality",{requestKey:"admin-quality",bypassCache:true});
+  if(!adminPanelIsCurrent(root,context))return;
   const summary=payload.summary||{},alb=payload.alb||null,rows=payload.sources||[];
   const sourceRows=marketTable(rows,[
     {label:"Conjunto de dados",render:r=>`<strong>${esc(r.label||r.key)}</strong><br><small>${esc(r.category||"")}</small>`},
@@ -2235,8 +2376,10 @@ function renderAdminAnalysisSettings(root){
   root.innerHTML=`<div class="notice info"><strong>Configurações seguras:</strong> os padrões homologados continuam imutáveis. A alternativa só passa a valer quando é salva e ativada; restaurar nunca apaga filtros pessoais nem históricos.</div><div class="admin-analysis-type-picker"><label for="admin-analysis-type"><strong>Classe de ativo</strong></label><select id="admin-analysis-type">${adminAnalysisAssetTypes.map(item=>`<option value="${item.id}" ${item.id===type?"selected":""}>${item.label}</option>`).join("")}</select></div>${sectionCard("Filtros Padrão, FDI e ALB",`<div class="admin-analysis-preset-list">${presets.map(adminPresetEditor).join("")}</div>`,`Padrão de fábrica ${esc(payload.factory_version||"V1.23.0 R7")}`)}${columns?sectionCard("Colunas padrão e ordem",adminColumnsEditor(columns),"A preferência individual continua prevalecendo para quem já personalizou a tabela"):""}`;
 }
 
-async function loadAdminAnalysisSettings(root){
-  state.adminAnalysisSettings=await api("/admin/analysis-settings",{bypassCache:true});
+async function loadAdminAnalysisSettings(root,context=null){
+  const payload=await api("/admin/analysis-settings",{requestKey:"admin-analysis-settings",bypassCache:true});
+  if(context&&!adminPanelIsCurrent(root,context))return;
+  state.adminAnalysisSettings=payload;
   renderAdminAnalysisSettings(root);
 }
 
@@ -2333,8 +2476,10 @@ function portalBookForm(book,index,total){
   </form></details>`;
 }
 
-async function loadAdminPortal(root){
-  const payload=await api("/admin/portal",{bypassCache:true});state.portalAdmin=payload;
+async function loadAdminPortal(root,context){
+  const payload=await api("/admin/portal",{requestKey:"admin-portal",bypassCache:true});
+  if(!adminPanelIsCurrent(root,context))return;
+  state.portalAdmin=payload;
   const books=payload.books||[];
   root.innerHTML=`<div class="notice info"><strong>Publicação segura:</strong> as alterações salvas aparecem na página inicial sem substituir a plataforma. Se o banco ficar indisponível, a versão estática atual permanece como reserva.</div>${sectionCard("Textos da página inicial",portalPageEditor(payload),"Edite os campos e salve ao final")}${sectionCard("Livros publicados e futuros",`<div class="portal-book-list">${books.map((book,index)=>portalBookForm(book,index,books.length)).join("")}</div>${portalBookForm({collection:"complementary",is_published:true,sales_links:[]},books.length,books.length+1)}`,`${books.length} livro(s) cadastrado(s); capas aceitas em PNG, JPG e WebP`)}`;
 }
@@ -2367,28 +2512,35 @@ async function deletePortalBook(id){if(!window.confirm("Excluir este livro e seu
 async function movePortalBook(id,direction){const books=[...(state.portalAdmin?.books||[])],index=books.findIndex(book=>book.id===id),target=index+(direction==="up"?-1:1);if(index<0||target<0||target>=books.length)return;[books[index],books[target]]=[books[target],books[index]];try{await api("/admin/portal/books/order",{method:"PUT",body:JSON.stringify({ordered_ids:books.map(book=>book.id)})});toast("Ordem dos livros atualizada.","success");await loadAdmin();}catch(error){toast(error.message,"error");}}
 
 async function loadAdmin() {
-  const root=$("#admin-tab-content"); root.innerHTML=loadingCards(6);
+  const root=$("#admin-tab-content"),panelKey=state.tabs.admin;
+  const context={panelKey,navigationSerial:state.navigationSerial,requestSerial:++state.adminRequestSerial};
+  const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;root.dataset.panelKey=panelKey;
+  if(!samePanel)root.innerHTML=loadingCards(6);else root.classList.add("panel-refreshing");
   try {
-    if(state.tabs.admin==="portal")await loadAdminPortal(root);
-    else if(state.tabs.admin==="levels")await loadAccessLevels(root);
-    else if(state.tabs.admin==="users")await loadAdminUsers(root);
-    else if(state.tabs.admin==="analysis-settings")await loadAdminAnalysisSettings(root);
-    else if(state.tabs.admin==="data")await loadAdminUpdates(root);
-    else if(state.tabs.admin==="quality")await loadAdminQuality(root);
-    else if(state.tabs.admin==="jobs")await loadAdminJobs(root);
-    else if(state.tabs.admin==="operations")await loadAdminOperations(root);
+    if(panelKey==="portal")await loadAdminPortal(root,context);
+    else if(panelKey==="levels")await loadAccessLevels(root,context);
+    else if(panelKey==="users")await loadAdminUsers(root,context);
+    else if(panelKey==="analysis-settings")await loadAdminAnalysisSettings(root,context);
+    else if(panelKey==="data")await loadAdminUpdates(root,context);
+    else if(panelKey==="quality")await loadAdminQuality(root,context);
+    else if(panelKey==="jobs")await loadAdminJobs(root,context);
+    else if(panelKey==="operations")await loadAdminOperations(root,context);
     else {
-      const [health,db,counts]=await Promise.all([api("/health"),api("/health/db"),api("/debug/db-counts")]);
+      const [health,db,counts]=await Promise.all([api("/health",{requestKey:"admin-health"}),api("/health/db",{requestKey:"admin-health-db"}),api("/debug/db-counts",{requestKey:"admin-db-counts"})]);
+      if(!adminPanelIsCurrent(root,context))return;
       root.innerHTML=`<div class="metric-grid">${metricCard("Aplicação",health.status==="ok"?"Operacional":"Atenção",`Versão ${health.version}`)}${metricCard("Banco de dados",db.status==="ok"?"Conectado":"Indisponível",db.database||"")}${metricCard("Hospedagem","Oracle Cloud",health.environment||"Produção")}${metricCard("Domínio","HTTPS ativo","Conexão segura")}</div>${sectionCard("Registros principais",`<div class="detail-list">${Object.entries(counts).map(([key,value])=>`<div><span>${esc(key.replaceAll("_"," "))}</span><strong>${number(value,0)}</strong></div>`).join("")}</div>`,`Consulta somente leitura`)}`;
     }
-  } catch(error) { root.innerHTML=errorState(error); }
+  } catch(error) { if(error.name!=="AbortError"&&adminPanelIsCurrent(root,context))root.innerHTML=errorState(error); }
+  finally {if(adminPanelIsCurrent(root,context))root.classList.remove("panel-refreshing");}
 }
 
 function dividendEventLabel(value){return ({dividend:"Dividendo",jcp:"Juros sobre capital próprio",income:"Rendimento",capital_return:"Restituição de capital",cash_distribution:"Provento em dinheiro"})[value]||value||"Provento";}
 
 async function renderPortfolioDividends(root){
+  const panelKey=root.dataset.panelKey;
   const query=new URLSearchParams({portfolio_id:state.portfolioId,limit:"1000"});
   const payload=await api(`/investor-events/dividends?${query}`,{requestKey:`dividends-${state.portfolioId}`,cacheTtlMs:120000});
+  if(root.dataset.panelKey!==panelKey||state.view!=="portfolio"||state.tabs.portfolio!=="dividends")return;
   ensureRefreshGroupIfNeeded("portfolio_dividends",payload.update,!(payload.items||[]).length,()=>renderPortfolioDividends(root),"/investor-events/dividends/ensure");
   const rows=payload.items||[],known=rows.filter(item=>!nullable(item.estimated_gross_amount));
   const estimated=known.reduce((sum,item)=>sum+Number(item.estimated_gross_amount||0),0);
@@ -2454,7 +2606,7 @@ async function runAlertMonitorNow(button){
 
 async function retryAdminJob(button){
   button.disabled=true;
-  try{await api(`/admin/jobs/${encodeURIComponent(button.dataset.retryAdminJob)}/retry`,{method:"POST"});toast("Trabalho reenfileirado.","success");setTimeout(()=>loadAdmin(),1200);}
+  try{await api(`/admin/jobs/${encodeURIComponent(button.dataset.retryAdminJob)}/retry`,{method:"POST"});toast("Trabalho reenfileirado.","success");scheduleNavigationTask(()=>loadAdmin(),1200);}
   catch(error){toast(error.message,"error");button.disabled=false;}
 }
 
@@ -2540,9 +2692,11 @@ function loadCurrentView() {
 let searchTimer;
 async function runSearch(query) {
   const root=$("#search-results");
-  if(query.trim().length<1) { root.classList.add("hidden"); root.innerHTML=""; return; }
+  const normalized=query.trim();
+  if(normalized.length<1) { state.requestControllers.get("search")?.abort();state.requestControllers.delete("search");root.classList.add("hidden"); root.innerHTML=""; return; }
   try {
-    const data=await api(`/search?q=${encodeURIComponent(query.trim())}`,{requestKey:"search"});
+    const data=await api(`/search?q=${encodeURIComponent(normalized)}`,{requestKey:"search"});
+    if(String($("#global-search")?.value||"").trim()!==normalized)return;
     const items=data.items||[];
     root.innerHTML=items.length?items.map(item=>`<button class="search-result" data-search-item='${esc(JSON.stringify(item))}'><strong>${esc(item.symbol)}</strong><span>${esc(item.label)}</span><small>${esc(item.asset_type)}</small></button>`).join(""):'<div class="empty-state" style="padding:18px"><strong>Nenhum resultado</strong>Revise o código ou nome.</div>';
     root.classList.remove("hidden");
@@ -2621,8 +2775,10 @@ function bindEvents() {
     const retryOfficial=event.target.closest("[data-retry-official-job]");if(retryOfficial)retryOfficialBacktestJob(retryOfficial.dataset.retryOfficialJob,retryOfficial);
     if(!event.target.closest(".global-search-wrap"))$("#search-results").classList.add("hidden");
   });
-  $("#close-asset-dialog").addEventListener("click",()=>$("#asset-dialog").close());
-  $("#asset-dialog").addEventListener("click",event=>{if(event.target===$("#asset-dialog"))$("#asset-dialog").close();});
+  const closeAssetDialog=()=>{state.assetRequestSerial+=1;state.requestControllers.get("asset-detail")?.abort();state.requestControllers.delete("asset-detail");$("#asset-dialog").close();};
+  $("#close-asset-dialog").addEventListener("click",closeAssetDialog);
+  $("#asset-dialog").addEventListener("click",event=>{if(event.target===$("#asset-dialog"))closeAssetDialog();});
+  $("#asset-dialog").addEventListener("close",()=>{state.assetRequestSerial+=1;state.requestControllers.get("asset-detail")?.abort();state.requestControllers.delete("asset-detail");});
   $("#apply-advanced-filters").addEventListener("click",applyAdvancedFilters);
   $("#save-custom-filter").addEventListener("click",saveCustomFilter);
   $("#delete-custom-filter").addEventListener("click",deleteCustomFilter);
@@ -2686,6 +2842,7 @@ async function initialize() {
       setView("admin",safeAdminTab);
     }
     else loadMarket();
+    if(session.access?.can_view_market)prefetchAnalysisCatalogs();
     if(session.access?.can_view_news_insights)api("/insights/news/refresh-daily",{method:"POST",invalidateCache:false}).catch(()=>{});
   } catch(error) { showLogin(); toast(error.message,"error"); }
 }

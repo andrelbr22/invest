@@ -251,4 +251,4 @@ def test_ci_includes_current_suites_and_postgres_migration_head():
     workflow = _read(".github/workflows/tests.yml")
 
     assert workflow.count("tests_v1210 tests_v1220 tests_v1230 tests_v1231 tests_v1232") == 2
-    assert 'assert revision == "0029_v1_23_current_metrics"' in workflow
+    assert 'assert revision == "0030_v1_23_navigation_metrics"' in workflow

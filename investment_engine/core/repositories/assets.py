@@ -716,6 +716,80 @@ class AssetRepository:
             if isinstance(payload, dict) and payload
         }
 
+    def current_valuation_payloads(self, asset_ids) -> dict:
+        """Return worker-built default valuations without touching history.
+
+        An empty payload is intentionally omitted.  Callers can then expose
+        the inexpensive Graham/DY fields already present in their base row and
+        keep the peer/economic methods explicitly unavailable until the worker
+        has produced a trustworthy snapshot.
+        """
+        ids = list(dict.fromkeys(asset_ids or []))
+        if not ids:
+            return {}
+        rows = self.session.execute(
+            select(
+                AssetCurrentMetricsORM.asset_id,
+                AssetCurrentMetricsORM.valuation_json,
+            ).where(AssetCurrentMetricsORM.asset_id.in_(ids))
+        )
+        return {
+            asset_id: dict(payload or {})
+            for asset_id, payload in rows
+            if isinstance(payload, dict) and payload
+        }
+
+    def current_valuation_snapshots_by_ticker(self, tickers) -> dict[str, dict]:
+        """Load compact default valuations and their coverage state in one query.
+
+        ``calculated_at`` distinguishes a trustworthy explicit N/D result from
+        a row created before the V1.23.5 R2 navigation backfill.  Consumers may
+        use the historical calculator only for the latter case.
+        """
+        clean = sorted({
+            str(ticker or "").strip().upper()
+            for ticker in (tickers or [])
+            if str(ticker or "").strip()
+        })
+        if not clean:
+            return {}
+        rows = self.session.execute(
+            select(
+                AssetORM.ticker,
+                AssetCurrentMetricsORM.valuation_json,
+                AssetCurrentMetricsORM.valuation_calculated_at,
+            )
+            .select_from(AssetORM)
+            .outerjoin(
+                AssetCurrentMetricsORM,
+                AssetCurrentMetricsORM.asset_id == AssetORM.id,
+            )
+            .where(
+                AssetORM.ticker.in_(clean),
+                AssetORM.is_active.is_(True),
+            )
+        )
+        return {
+            str(ticker): {
+                "payload": dict(payload or {}) if isinstance(payload, dict) else {},
+                "calculated_at": calculated_at,
+                "covered": calculated_at is not None,
+            }
+            for ticker, payload, calculated_at in rows
+        }
+
+    def current_navigation_snapshot(self, asset_id) -> dict:
+        """Read both compact navigation projections, normally from identity map."""
+        metrics = self.session.get(AssetCurrentMetricsORM, asset_id)
+        if metrics is None:
+            return {"valuation": {}, "backtest_leaders": []}
+        return {
+            "valuation": dict(metrics.valuation_json or {}),
+            "valuation_calculated_at": metrics.valuation_calculated_at,
+            "backtest_leaders": list(metrics.backtest_leaders_json or []),
+            "backtest_leaders_calculated_at": metrics.backtest_leaders_calculated_at,
+        }
+
     def current_snapshot(self, asset_id):
         metrics = self.session.get(AssetCurrentMetricsORM, asset_id)
         if metrics is None:

@@ -42,6 +42,7 @@ from ..core.screening.advanced import (
     FUNDAMENTAL_FIELDS,
     SCORE_FIELDS,
     _materialized_technical_features,
+    apply_materialized_valuation,
     advanced_screen,
     row_from_orm,
     technical_features,
@@ -2608,35 +2609,41 @@ def asset_detail(ticker: str, access=Depends(require_permission("can_view_market
         score = repo.latest_scores(asset.id)
     derived = row_from_orm(asset, fundamentals, technical, score)
     derived_fundamentals = dict(derived.get("fundamentals") or {})
-    # The one-asset page uses the same full peer universe and the same
-    # fail-closed calculations as the screener. No economic-growth or return
-    # assumption is invented on behalf of the user.
-    try:
-        valuation_rows = advanced_screen(
-            repo,
-            asset_type=asset.asset_type,
-            allowed_tickers=[asset.ticker],
-            include_technical_columns=False,
-            limit=1,
-        ).get("rows", [])
-        if valuation_rows:
-            valuation_row = valuation_rows[0]
-            valuation_fields = {
-                key: value
-                for key, value in valuation_row.items()
-                if key == "valuation_methods"
-                or key.endswith("_status")
-                or key.endswith("_upside_pct")
-                or key in {
-                    "graham_number", "barsi_ceiling_price",
-                    "dividend_yield_ceiling_value", "relative_peers_value", "economic_value",
+    navigation = repo.current_navigation_snapshot(asset.id)
+    valuation_covered = navigation.get("valuation_calculated_at") is not None
+    valuation_loaded = apply_materialized_valuation(
+        derived_fundamentals,
+        navigation.get("valuation"),
+    )
+    if not valuation_loaded and not valuation_covered:
+        # Temporary post-migration compatibility.  Once the worker has marked
+        # this ticker as covered, even an explicit N/D is authoritative and the
+        # request never rebuilds the peer universe again.
+        try:
+            valuation_rows = advanced_screen(
+                repo,
+                asset_type=asset.asset_type,
+                allowed_tickers=[asset.ticker],
+                include_technical_columns=False,
+                limit=1,
+            ).get("rows", [])
+            if valuation_rows:
+                valuation_row = valuation_rows[0]
+                valuation_fields = {
+                    key: value
+                    for key, value in valuation_row.items()
+                    if key == "valuation_methods"
+                    or key.endswith("_status")
+                    or key.endswith("_upside_pct")
+                    or key in {
+                        "graham_number", "barsi_ceiling_price",
+                        "dividend_yield_ceiling_value", "relative_peers_value", "economic_value",
+                    }
                 }
-            }
-            derived_fundamentals.update(valuation_fields)
-    except Exception:
-        # Asset detail remains usable when a peer calculation cannot complete.
-        # The base row already carries explicit N/D statuses.
-        pass
+                derived_fundamentals.update(valuation_fields)
+        except Exception:
+            # Asset detail remains usable while the worker retries the gap.
+            pass
     derived_fundamentals = _authorized_valuation_row(derived_fundamentals, access)
     materialized = repo.current_technical_features([asset.id]).get(asset.id)
     features = _materialized_technical_features(
@@ -2647,9 +2654,12 @@ def asset_detail(ticker: str, access=Depends(require_permission("can_view_market
         features = technical_features(history, trend_period=21, pivot_timeframe="daily")
     leaders = []
     if access.get("can_view_backtests"):
-        leaders = [run_summary(run, leader_asset) for run, leader_asset in BacktestRepository(db).leaderboard(
-            tickers=[asset.ticker], per_asset=3,
-        ).get(asset.ticker, [])]
+        if navigation.get("backtest_leaders_calculated_at") is not None:
+            leaders = list(navigation.get("backtest_leaders") or [])[:3]
+        else:
+            leaders = BacktestRepository(db).navigation_leaderboard(
+                tickers=[asset.ticker], per_asset=3,
+            ).get(asset.ticker, [])
     return {
         "asset": {
             "id": str(asset.id), "ticker": asset.ticker, "name": asset.name, "asset_type": asset.asset_type,
@@ -2922,15 +2932,11 @@ def _enrich_listing_valuations(
     asset_type: str,
     access: dict | None,
 ) -> list[dict]:
-    """Attach the same local valuation payload used by the advanced screen.
+    """Attach worker-built values, calculating only uncovered migration gaps.
 
-    System presets deliberately use compact SQL queries so their fundamental
-    filters stay fast.  Historically that shortcut returned the dividend
-    ceiling under a legacy field and never built the peer cohort, leaving the
-    two visible columns blank.  Reusing :func:`advanced_screen` only for the
-    already selected tickers preserves the preset's membership and order while
-    calculating peers against the full local universe.  It performs no network
-    access and fails soft so a valuation problem cannot take down the list.
+    Normal navigation is a single compact read.  The historical peer cohort is
+    retained solely as temporary compatibility for tickers whose R2 projection
+    has not been produced yet; a covered explicit N/D never triggers it.
     """
     if not rows:
         return rows
@@ -2938,23 +2944,34 @@ def _enrich_listing_valuations(
     tickers = [ticker for ticker in tickers if ticker]
     if not tickers:
         return rows
-    try:
-        payload = advanced_screen(
-            repo,
-            asset_type=asset_type,
-            allowed_tickers=tickers,
-            include_technical_columns=False,
-            limit=len(tickers),
-        )
-        valuations_by_ticker = {
-            str(item.get("ticker") or "").strip().upper(): item
-            for item in payload.get("rows", [])
-        }
-    except Exception:
-        # Fundamental screening remains available if one peer calculation is
-        # unexpectedly unavailable. The canonical DY aliases above still show
-        # every price ceiling that can be calculated from local fundamentals.
-        return rows
+    snapshot_loader = getattr(repo, "current_valuation_snapshots_by_ticker", None)
+    snapshots = snapshot_loader(tickers) if callable(snapshot_loader) else {}
+    valuations_by_ticker = {
+        ticker: dict(snapshot.get("payload") or {})
+        for ticker, snapshot in snapshots.items()
+        if snapshot.get("covered")
+    }
+    missing = [
+        ticker for ticker in tickers
+        if not (snapshots.get(ticker) or {}).get("covered")
+    ]
+    if missing:
+        try:
+            payload = advanced_screen(
+                repo,
+                asset_type=asset_type,
+                allowed_tickers=missing,
+                include_technical_columns=False,
+                limit=len(missing),
+            )
+            valuations_by_ticker.update({
+                str(item.get("ticker") or "").strip().upper(): item
+                for item in payload.get("rows", [])
+            })
+        except Exception:
+            # Base Graham/DY fields remain usable while the background worker
+            # retries the missing projection.
+            pass
 
     valuation_fields = {
         "graham_number", "graham_upside_pct", "graham_reference_status",
@@ -4858,14 +4875,11 @@ def backtest_leaderboard(
     requested = [item.strip().upper() for item in tickers.replace(";", ",").split(",") if item.strip()]
     if len(requested) > 200:
         raise HTTPException(400, "leaderboard_ticker_limit_200")
-    grouped = BacktestRepository(db).leaderboard(
+    grouped = BacktestRepository(db).navigation_leaderboard(
         tickers=requested or None, sector=sector, per_asset=per_asset,
     )
     return {
-        "items": {
-            ticker: [run_summary(run, asset) for run, asset in rows]
-            for ticker, rows in grouped.items()
-        },
+        "items": grouped,
         "requested": requested, "per_asset": per_asset,
     }
 
@@ -4875,12 +4889,12 @@ def top_backtests(
     ticker: str | None = None, sector: str | None = None, limit: int = Query(default=5, ge=1, le=20),
     _access=Depends(require_permission("can_view_backtests")), db: Session = Depends(get_db),
 ):
-    grouped = BacktestRepository(db).leaderboard(
+    grouped = BacktestRepository(db).navigation_leaderboard(
         tickers=[ticker] if ticker else None, sector=sector, per_asset=limit,
     )
     rows = [item for values in grouped.values() for item in values]
-    rows.sort(key=lambda item: float(item[0].ranking_score or 0), reverse=True)
-    return [run_summary(run, asset) for run, asset in rows[:limit]]
+    rows.sort(key=lambda item: float(item.get("ranking_score") or 0), reverse=True)
+    return rows[:limit]
 
 
 @app.get("/backtests/study")

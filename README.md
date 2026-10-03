@@ -1,5 +1,31 @@
 # Formação do Investidor • V1.23.5
 
+## Navegação materializada e isolamento de recursos • V1.23.5 R2
+
+A R2 retira da navegação os dois cálculos mais caros que ainda dependiam de
+históricos extensos: as valorações padrão e o pódio oficial de backtests. O
+worker os calcula em segundo plano e grava uma projeção atual por ativo. Os
+históricos permanecem como fonte de verdade e também como fallback enquanto o
+preenchimento inicial ainda não cobriu determinado ativo; um resultado vazio
+nunca apaga o último cálculo válido.
+
+A interface exibe primeiro a lista principal e completa os sinais secundários
+de forma progressiva. Ao trocar rapidamente de painel, pedidos obsoletos e
+temporizadores da tela anterior são cancelados, sem interromper leituras
+compartilhadas úteis. Isso reduz a espera visível e evita trabalho concorrente
+sem remover filtros, colunas, permissões ou detalhes existentes.
+
+Na operação, o staging volta a ser iniciado sempre que uma homologação é
+solicitada e, após uma promoção concluída, pode ficar estacionado por padrão
+para devolver memória à produção. A segunda VM recebe verificações mais fortes
+de commit, processo e liderança única; o retorno para a VM principal continua
+disponível e exige que o worker remoto esteja comprovadamente parado.
+
+A migração `0030_v1_23_navigation_metrics` apenas amplia a tabela de métricas
+atuais com campos reconstruíveis. Nenhuma tabela histórica é removida. Consulte
+`V1_23_5.md`, `PATCH_V1235_R2.md`, `INSTRUCOES_ORACLE_V1235_R2.md` e
+`RELATORIO_VALIDACAO_V1235_R2.md` antes de publicar ou promover.
+
 ## Painéis mais rápidos • V1.23.5 R1
 
 A V1.23.5 R1 reduz o trabalho repetido durante a navegação sem remover

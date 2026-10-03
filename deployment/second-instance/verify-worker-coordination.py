@@ -63,6 +63,10 @@ def main() -> None:
         metadata = dict(lease["metadata_json"] or {})
         if str(metadata.get("node_id") or "") != args.expected_node:
             raise SystemExit(f"A lease {lease['lease_name']} pertence a outro nó.")
+        if str(lease["holder_id"] or "") != str(worker["service_id"] or ""):
+            raise SystemExit(
+                f"A lease {lease['lease_name']} pertence a outro processo do nó esperado."
+            )
 
     print(json.dumps({
         "ok": True,

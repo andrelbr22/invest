@@ -15,6 +15,7 @@ from .service import ENGINE_VERSION, BacktestService, _bar_dict, _fundamental_di
 from .strategies import STRATEGIES, warmup_bars
 from ..repositories.backtests import BacktestRepository
 from ..repositories.assets import AssetRepository
+from ..repositories.background_jobs import BackgroundJobRepository
 from ..strategies.presets import STOCK_STRATEGIES
 from ...infrastructure.db.models import BacktestBatchChunkORM, BacktestBatchDeliveryORM, BacktestBatchJobORM
 from ...core.instruments import is_supported_ticker
@@ -326,6 +327,24 @@ class BacktestBatchService:
             )
             self.session.add(delivery)
             self.session.flush()
+            # Importing hundreds of official configurations must not make the
+            # delivery request calculate the podium.  A tiny idempotent queue
+            # row lets the worker replace the compact read model afterwards.
+            BackgroundJobRepository(self.session).enqueue(
+                "asset_navigation_metrics_refresh",
+                {
+                    "tickers": [clean_ticker],
+                    "include_valuation": False,
+                    "include_backtests": True,
+                    "trigger": "official-backtest-asset-delivered",
+                    "batch_job_id": str(job.id),
+                },
+                requested_by="system:official-backtests",
+                priority=45,
+                max_attempts=3,
+                deduplication_key=f"navigation-metrics:{job.id}:{clean_ticker}",
+                idempotency_key=f"navigation-metrics:{job.id}:{clean_ticker}",
+            )
 
         all_deliveries = self.deliveries(job.id)
         job.total_runs = expected_runs * len(job.requested_tickers_json or [])

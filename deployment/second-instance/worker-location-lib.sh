@@ -74,3 +74,39 @@ build_worker_ssh_command() {
     "${WORKER_REMOTE}"
   )
 }
+
+worker_write_location() {
+  local location_file="${1:?Informe o arquivo de localização}"
+  local location="${2:?Informe local ou remote}"
+  [[ "${location}" == "local" || "${location}" == "remote" ]] || \
+    worker_location_error "localização inválida: ${location}"
+  worker_require_regular_owned_file "${location_file}" 600
+  python3 - "${location_file}" "${location}" <<'PY'
+import os
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+location = sys.argv[2]
+lines = path.read_text(encoding="utf-8").splitlines()
+matches = [index for index, line in enumerate(lines) if line.startswith("FDI_WORKER_LOCATION=")]
+if len(matches) != 1:
+    raise SystemExit("worker-location.env deve conter exatamente uma chave FDI_WORKER_LOCATION.")
+lines[matches[0]] = f"FDI_WORKER_LOCATION={location}"
+temporary = path.with_name(f".{path.name}.tmp")
+temporary.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+os.chmod(temporary, 0o600)
+os.replace(temporary, path)
+PY
+  worker_require_regular_owned_file "${location_file}" 600
+}
+
+worker_set_restart_policy() {
+  local container_id="${1:-}"
+  local policy="${2:?Informe a política de reinício}"
+  [[ "${policy}" == "no" || "${policy}" == "unless-stopped" ]] || \
+    worker_location_error "política de reinício inválida: ${policy}"
+  if [[ -n "${container_id}" ]] && docker inspect "${container_id}" >/dev/null 2>&1; then
+    docker update --restart="${policy}" "${container_id}" >/dev/null
+  fi
+}

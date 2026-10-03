@@ -9,16 +9,23 @@ def test_analysis_renders_rows_before_loading_backtest_leaders():
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert "const ANALYSIS_CACHE_TTL_MS = 300000;" in source
-    render_position = source.index("state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows});")
-    enrichment_position = source.index("const enrichedRows=await enrichBacktestLeaders(rows);")
+    cache_position = source.index(
+        "state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows:primaryRows});"
+    )
+    render_position = source.index("renderAnalysisRows(primaryRows)", cache_position)
+    enrichment_position = source.index(
+        "enrichAnalysisRowsInBackground(rows", render_position,
+    )
 
-    assert render_position < enrichment_position
+    assert cache_position < render_position < enrichment_position
     assert 'requestSerial!==state.analysisRequestSerial' in source
     assert 'cacheKey!==analysisResultCacheKey(type)' in source
     advanced_start = source.index("async function applyAdvancedFilters")
     advanced_end = source.index("async function openAsset", advanced_start)
     advanced = source[advanced_start:advanced_end]
-    assert advanced.index("renderAnalysisRows(rows)") < advanced.index("await enrichBacktestLeaders(rows)")
+    assert advanced.index("renderAnalysisRows(primaryRows)") < advanced.index(
+        "enrichBacktestLeaders(rows).then"
+    )
     assert "requestSerial!==state.analysisRequestSerial" in advanced
 
 

@@ -11,7 +11,9 @@ def test_owner_only_admin_tab_exposes_filters_and_columns():
     assert 'class="tab owner-only hidden" data-tab="analysis-settings"' in html
     assert "async function loadAdminAnalysisSettings" in source
     assert 'api("/admin/analysis-settings"' in source
-    assert 'state.tabs.admin==="analysis-settings"' in source
+    assert 'panelKey==="analysis-settings"' in source
+    assert "loadAdminAnalysisSettings(root,context)" in source
+    assert "adminPanelIsCurrent(root,context)" in source
 
 
 def test_admin_can_save_enable_and_reset_presets_without_overwriting_factory():

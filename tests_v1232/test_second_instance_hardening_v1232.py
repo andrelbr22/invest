@@ -61,7 +61,10 @@ def test_cutover_and_failback_prove_single_worker_and_both_leaders():
     assert "metadata.get(\"node_id\")" in verifier
     assert "verify-worker-coordination.py" in activate
     assert "verify_expected_worker" in cutover
-    assert "start_and_verify_local" in cutover
+    # O retorno não é duplicado no corte: passa pelo único failback protegido,
+    # que comprova a inatividade remota antes de iniciar o consumidor local.
+    assert "failback-worker.sh" in cutover
+    assert "start_and_verify_local" not in cutover
     assert cutover.index("stop -t 600 worker") < cutover.index("activate-worker.sh")
     assert "remote_worker_inactive" in failback
     assert "Retorno interrompido" in failback

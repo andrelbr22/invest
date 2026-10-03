@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
 version = "1.23.5"
-description = "Formação do Investidor V1.23.5 with faster read-only panels and real browser performance metrics."
+description = "Formação do Investidor V1.23.5 with materialized navigation, progressive panels, and isolated background work."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

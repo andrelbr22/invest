@@ -14,6 +14,8 @@ deployment/secrets/app_secrets.toml
 deployment/second-instance/worker_secrets.toml
 deployment/second-instance/worker.env
 deployment/runtime/*.env
+deployment/runtime/*.state
+deployment/runtime/*.enabled
 deployment/secrets/app_secrets.staging.toml
 chaves_oracle/
 *.key
