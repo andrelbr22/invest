@@ -127,6 +127,21 @@ verify_exact_worker() {
       --expected-commit "${expected_commit}"
 }
 
+wait_exact_worker() {
+  local expected_node="${1:?Informe o nó esperado}"
+  local expected_environment="${2:?Informe o ambiente esperado}"
+  local expected_commit="${3:?Informe o commit esperado}"
+  local attempts="${4:-24}"
+  for _ in $(seq 1 "${attempts}"); do
+    if verify_exact_worker "${expected_node}" "${expected_environment}" "${expected_commit}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 5
+  done
+  # Preserve the actionable diagnostic on the final attempt.
+  verify_exact_worker "${expected_node}" "${expected_environment}" "${expected_commit}"
+}
+
 assert_local_worker_runtime_state() {
   local expected_location="${1:?Informe local ou remote}"
   local container_id running restart_policy
@@ -322,7 +337,7 @@ worker_set_restart_policy "${WORKER_CONTAINER_ID}" unless-stopped
 if ! wait_local_worker_ready "${WORKER_CONTAINER_ID}"; then
   promotion_failed "O worker local não publicou um heartbeat fresco no commit aprovado. A aplicação web permanece online."
 fi
-if ! verify_exact_worker primary-worker production "${TARGET_COMMIT}" >/dev/null; then
+if ! wait_exact_worker primary-worker production "${TARGET_COMMIT}" 24; then
   promotion_failed "A verificação final encontrou mais de um worker ou lideranças divergentes."
 fi
 

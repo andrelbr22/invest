@@ -72,11 +72,19 @@ exato homologado:
 STAGING_COMMIT="$(cat .git/investment-staging-commit)"; printf 'Commit do staging: %s\n' "$STAGING_COMMIT"
 ```
 
-O resultado deve ser um identificador hexadecimal com 40 caracteres. Consulte
-somente os trabalhos desse ciclo:
+O resultado deve ser um identificador hexadecimal com 40 caracteres. Valide o
+marcador antes de usá-lo na consulta:
 
 ```bash
-docker compose -f docker-compose.oracle-web.yml exec -T postgres psql -U investment -d investment_engine_staging -v cycle="release:$STAGING_COMMIT" -c "SELECT status, result_json->>'status' AS resultado, result_json->>'remaining' AS restantes, jsonb_array_length(COALESCE(result_json::jsonb #> '{navigation,errors}', '[]'::jsonb)) AS erros_navegacao, updated_at FROM background_jobs WHERE job_type='current_metrics_refresh' AND payload_json::jsonb->>'cycle'=:'cycle' ORDER BY created_at;"
+[[ "$STAGING_COMMIT" =~ ^[0-9a-f]{40}$ ]] && echo "Marcador válido." || { echo "Marcador inválido; não prossiga." >&2; false; }
+```
+
+Consulte somente os trabalhos desse ciclo. A interpolação direta abaixo é
+segura porque o comando anterior restringe o valor a exatamente 40 caracteres
+hexadecimais:
+
+```bash
+docker compose -f docker-compose.oracle-web.yml exec -T postgres psql -U investment -d investment_engine_staging -c "SELECT status, result_json->>'status' AS resultado, result_json->>'remaining' AS restantes, jsonb_array_length(COALESCE(result_json::jsonb #> '{navigation,errors}', '[]'::jsonb)) AS erros_navegacao, updated_at FROM background_jobs WHERE job_type='current_metrics_refresh' AND (payload_json::jsonb->>'cycle')='release:${STAGING_COMMIT}' ORDER BY created_at;"
 ```
 
 Espere a fila terminar. Todas as linhas do ciclo devem ficar `succeeded`; a
@@ -127,13 +135,18 @@ cd ~/invest
 ```
 
 ```bash
-nohup ./deployment/promote-staging-to-production.sh > /tmp/promocao-v1235-r2.log 2>&1 & echo "PID da promoção: $!"
+PROMOTION_LOG="$(mktemp /tmp/promocao-v1235-r2.XXXXXX.log)"; printf 'Log da promoção: %s\n' "$PROMOTION_LOG"
 ```
 
-Acompanhe sem depender da conexão SSH:
+```bash
+nohup ./deployment/promote-staging-to-production.sh >> "$PROMOTION_LOG" 2>&1 & echo "PID da promoção: $!"
+```
+
+Acompanhe sem depender da conexão SSH. O uso de `>>` é intencional: uma
+segunda tentativa recusada pela trava não apaga o log da promoção ativa.
 
 ```bash
-tail -f /tmp/promocao-v1235-r2.log
+tail -f "$PROMOTION_LOG"
 ```
 
 Saia do acompanhamento com `Ctrl+C` somente depois da mensagem final. O script

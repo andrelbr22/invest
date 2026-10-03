@@ -1,5 +1,23 @@
 # Formação do Investidor • V1.23.5
 
+## Correção operacional segura • V1.23.5 R2A
+
+A R2A corrige a validação final da promoção sem alterar telas, cálculos,
+permissões ou o esquema do banco. O scheduler continua identificado pelo
+serviço do worker, enquanto o monitor de alertas é validado pelo seu formato
+real `alerts:<ambiente>:<nó>:<pid>`. Ambos precisam pertencer ao único worker
+fresco, no ambiente, nó e commit aprovados; identificadores estrangeiros ou
+malformados continuam sendo rejeitados.
+
+A promoção aguarda por até dois minutos a convergência dos heartbeats e das
+duas lideranças. As instruções também validam o marcador de 40 caracteres antes
+da consulta do ciclo e usam um arquivo de log exclusivo, sem risco de uma nova
+tentativa apagar o acompanhamento já ativo.
+
+Não há nova migração nem mudança de versão da aplicação: permanecem
+`1.23.5` e `0030_v1_23_navigation_metrics`. Consulte `PATCH_V1235_R2A.md`,
+`INSTRUCOES_ORACLE_V1235_R2A.md` e `RELATORIO_VALIDACAO_V1235_R2A.md`.
+
 ## Navegação materializada e isolamento de recursos • V1.23.5 R2
 
 A R2 retira da navegação os dois cálculos mais caros que ainda dependiam de
@@ -18,7 +36,7 @@ sem remover filtros, colunas, permissões ou detalhes existentes.
 Na operação, o staging volta a ser iniciado sempre que uma homologação é
 solicitada e, após uma promoção concluída, pode ficar estacionado por padrão
 para devolver memória à produção. A segunda VM recebe verificações mais fortes
-de commit, processo e liderança única; o retorno para a VM principal continua
+de commit, identidade lógica e liderança única; o retorno para a VM principal continua
 disponível e exige que o worker remoto esteja comprovadamente parado.
 
 A migração `0030_v1_23_navigation_metrics` apenas amplia a tabela de métricas

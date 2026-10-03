@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import runpy
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -224,8 +227,197 @@ def test_private_database_is_explicit_scoped_recorded_and_reversible():
     assert "up -d --no-deps app staging worker" not in disable
 
 
-def test_leadership_verification_belongs_to_the_exact_worker_process():
+def test_leadership_verification_accepts_the_real_scheduler_and_alert_identities():
+    namespace = runpy.run_path(str(
+        ROOT / "deployment" / "second-instance" / "verify-worker-coordination.py"
+    ))
+    validate = namespace["validate_lease_owner"]
+    worker = {
+        "service_id": "worker:production:primary-worker",
+        "environment": "production",
+        "node_id": "primary-worker",
+    }
+
+    validate({
+        "lease_name": "background-scheduler",
+        "holder_id": "worker:production:primary-worker",
+        "metadata_json": {"node_id": "primary-worker"},
+    }, worker, "primary-worker")
+    validate({
+        "lease_name": "price-alert-monitor-leader",
+        "holder_id": "alerts:production:primary-worker:7",
+        "metadata_json": {"node_id": "primary-worker"},
+    }, worker, "primary-worker")
+
+    remote_worker = {
+        "service_id": "worker:production-worker:worker-02",
+        "environment": "production-worker",
+        "node_id": "worker-02",
+    }
+    validate({
+        "lease_name": "background-scheduler",
+        "holder_id": "worker:production-worker:worker-02",
+        "metadata_json": {"node_id": "worker-02"},
+    }, remote_worker, "worker-02")
+    validate({
+        "lease_name": "price-alert-monitor-leader",
+        "holder_id": "alerts:production-worker:worker-02:314",
+        "metadata_json": {"node_id": "worker-02"},
+    }, remote_worker, "worker-02")
+
+
+@pytest.mark.parametrize("holder", [
+    "worker:production:primary-worker",
+    "alerts:production:other-node:7",
+    "alerts:production:primary-worker:not-a-pid",
+    "alerts:production:primary-worker:0",
+    "alerts:production:primary-worker:-1",
+    "alerts:production:primary-worker:",
+    "alerts:production:primary-worker:7:extra",
+    "alerts:production:primary-worker:٧",
+])
+def test_alert_leadership_verification_rejects_a_foreign_or_invalid_holder(holder):
+    namespace = runpy.run_path(str(
+        ROOT / "deployment" / "second-instance" / "verify-worker-coordination.py"
+    ))
+    validate = namespace["validate_lease_owner"]
+    worker = {
+        "service_id": "worker:production:primary-worker",
+        "environment": "production",
+        "node_id": "primary-worker",
+    }
+    with pytest.raises(SystemExit, match="monitor do worker esperado"):
+        validate({
+            "lease_name": "price-alert-monitor-leader",
+            "holder_id": holder,
+            "metadata_json": {"node_id": "primary-worker"},
+        }, worker, "primary-worker")
+
+
+def test_scheduler_leadership_verification_requires_the_canonical_worker_id():
+    namespace = runpy.run_path(str(
+        ROOT / "deployment" / "second-instance" / "verify-worker-coordination.py"
+    ))
+    validate = namespace["validate_lease_owner"]
+    worker = {
+        "service_id": "worker:production:primary-worker",
+        "environment": "production",
+        "node_id": "primary-worker",
+    }
+    with pytest.raises(SystemExit, match="outro worker"):
+        validate({
+            "lease_name": "background-scheduler",
+            "holder_id": "worker:production:other-worker",
+            "metadata_json": {"node_id": "primary-worker"},
+        }, worker, "primary-worker")
+
+
+def test_leadership_verification_rejects_metadata_from_another_node():
+    namespace = runpy.run_path(str(
+        ROOT / "deployment" / "second-instance" / "verify-worker-coordination.py"
+    ))
+    validate = namespace["validate_lease_owner"]
+    worker = {
+        "service_id": "worker:production:primary-worker",
+        "environment": "production",
+        "node_id": "primary-worker",
+    }
+    with pytest.raises(SystemExit, match="outro nó"):
+        validate({
+            "lease_name": "background-scheduler",
+            "holder_id": "worker:production:primary-worker",
+            "metadata_json": {"node_id": "remote-worker"},
+        }, worker, "primary-worker")
+
+
+def test_local_promotion_retries_the_final_coordination_check():
+    promote = read("deployment/promote-staging-to-production.sh")
+    assert "wait_exact_worker()" in promote
+    assert 'wait_exact_worker primary-worker production "${TARGET_COMMIT}" 24' in promote
+    assert "Preserve the actionable diagnostic on the final attempt" in promote
+
+
+def test_worker_verifier_requires_the_canonical_service_identity():
     verifier = read("deployment/second-instance/verify-worker-coordination.py")
-    assert 'lease["holder_id"]' in verifier
+    assert 'expected_service_id = f"worker:{expected_environment}:{expected_node}"' in verifier
     assert 'worker["service_id"]' in verifier
+    assert "process_id.isascii()" in verifier
+
+
+def _valid_worker_topology():
+    worker = {
+        "service_id": "worker:production:primary-worker",
+        "node_id": "primary-worker",
+        "environment": "production",
+        "commit_sha": "a" * 40,
+        "scheduler_leader": True,
+        "alert_monitor_leader": True,
+    }
+    leases = [
+        {
+            "lease_name": "background-scheduler",
+            "holder_id": worker["service_id"],
+            "metadata_json": {"node_id": "primary-worker"},
+        },
+        {
+            "lease_name": "price-alert-monitor-leader",
+            "holder_id": "alerts:production:primary-worker:7",
+            "metadata_json": {"node_id": "primary-worker"},
+        },
+    ]
+    return worker, leases
+
+
+def test_complete_worker_topology_accepts_only_the_canonical_logical_worker():
+    namespace = runpy.run_path(str(
+        ROOT / "deployment" / "second-instance" / "verify-worker-coordination.py"
+    ))
+    validate = namespace["validate_worker_topology"]
+    worker, leases = _valid_worker_topology()
+    result = validate(
+        [worker], leases,
+        expected_node="primary-worker",
+        expected_environment="production",
+        expected_commit="a" * 40,
+    )
+    assert result is worker
+
+
+@pytest.mark.parametrize("mutation,match", [
+    (lambda worker, leases: worker.update(service_id="worker:production:alias"), "service_id"),
+    (lambda worker, leases: worker.update(commit_sha="b" * 40), "commit_sha"),
+    (lambda worker, leases: worker.update(scheduler_leader=False), "duas lideranças"),
+    (lambda worker, leases: leases.pop(), "leases ativas"),
+    (lambda worker, leases: leases.append(dict(leases[0])), "leases ativas"),
+])
+def test_complete_worker_topology_fails_closed(mutation, match):
+    namespace = runpy.run_path(str(
+        ROOT / "deployment" / "second-instance" / "verify-worker-coordination.py"
+    ))
+    validate = namespace["validate_worker_topology"]
+    worker, leases = _valid_worker_topology()
+    mutation(worker, leases)
+    with pytest.raises(SystemExit, match=match):
+        validate(
+            [worker], leases,
+            expected_node="primary-worker",
+            expected_environment="production",
+            expected_commit="a" * 40,
+        )
+
+
+@pytest.mark.parametrize("workers", [[], [{}, {}]])
+def test_complete_worker_topology_rejects_zero_or_multiple_workers(workers):
+    namespace = runpy.run_path(str(
+        ROOT / "deployment" / "second-instance" / "verify-worker-coordination.py"
+    ))
+    validate = namespace["validate_worker_topology"]
+    _, leases = _valid_worker_topology()
+    with pytest.raises(SystemExit, match="exatamente um worker"):
+        validate(
+            workers, leases,
+            expected_node="primary-worker",
+            expected_environment="production",
+            expected_commit="a" * 40,
+        )
 
