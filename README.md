@@ -1,4 +1,25 @@
-# Formação do Investidor • V1.23.5
+# Formação do Investidor • V1.23.6
+
+## R1 — velocidade conservadora sem perda funcional
+
+A V1.23.6 R1 reduz consultas e trabalho visual repetidos sem mudar fórmulas,
+permissões, filtros, contratos de API ou fontes de dados. A carteira passa a
+buscar os preços de todas as posições em lote, mantendo a mesma ordem de
+preferência e os mesmos fallbacks. A navegação multiativos usa projeções
+compactas onde é seguro, e a verificação de cobertura deixa de contar tabelas
+inteiras.
+
+No navegador, o carregamento secundário dos três melhores backtests atualiza
+somente suas células; a tabela já exibida não é reconstruída. Backtests,
+Finanças e Administração também passam a registrar o tempo real percebido no
+navegador. No Painel de Mercado, o antigo JSON monolítico permanece disponível
+como recuperação, mas deixa de ser consultado quando os sete snapshots atuais
+estão completos.
+
+Não há migração de banco nesta revisão. A revisão esperada continua sendo
+`0030_v1_23_navigation_metrics`. Consulte `V1_23_6.md`,
+`PATCH_V1236_R1.md`, `INSTRUCOES_ORACLE_V1236_R1.md` e
+`RELATORIO_VALIDACAO_V1236_R1.md`.
 
 ## Verificação de transição • V1.23.5 R2B
 

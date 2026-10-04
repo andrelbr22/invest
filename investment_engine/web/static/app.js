@@ -1200,7 +1200,7 @@ function enrichAnalysisRowsInBackground(rows,{type,analysisTab,cacheKey,requestS
     if(!navigationIsCurrent(navigationSerial,"analysis","analysis",analysisTab)||state.tabs.analysisMode!=="list"||type!==analysisType()||requestSerial!==state.analysisRequestSerial||cacheKey!==analysisResultCacheKey(type))return;
     state.analysisRows=enrichedRows;
     state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows:enrichedRows});
-    renderAnalysisRows(enrichedRows);
+    if(!patchAnalysisBacktestCells(enrichedRows))renderAnalysisRows(enrichedRows);
   }).catch(()=>{});
 }
 
@@ -1327,7 +1327,24 @@ function renderAnalysisRows(rows) {
   const allColumns=orderedAnalysisColumns(type,analysisColumns(type)), columns=visibleAnalysisColumns(type,allColumns);
   const active=new Set(columns.map(column=>column.id));
   const picker=`<details class="column-picker"><summary>Colunas visíveis</summary><div>${allColumns.filter(column=>!column.always).map(column=>`<label class="check"><input type="checkbox" data-column-id="${column.id}" ${active.has(column.id)?"checked":""}> ${esc(column.label)}</label>`).join("")}<button type="button" class="button ghost compact wide-action" data-reset-personal-columns="${esc(type)}">Usar padrão da plataforma</button></div></details>`;
-  $("#analysis-table").innerHTML = `<div class="table-toolbar">${picker}<span>Clique em um ativo para abrir todos os dados.</span></div><div class="table-scroll"><table><thead><tr>${columns.map(c=>`<th>${esc(c.label)}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr data-ticker="${esc(r.ticker)}">${columns.map(c=>`<td>${c.render(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  $("#analysis-table").innerHTML = `<div class="table-toolbar">${picker}<span>Clique em um ativo para abrir todos os dados.</span></div><div class="table-scroll"><table><thead><tr>${columns.map(c=>`<th>${esc(c.label)}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr data-ticker="${esc(r.ticker)}">${columns.map(c=>`<td data-column-id="${esc(c.id)}">${c.render(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+
+function patchAnalysisBacktestCells(rows) {
+  const body=$("#analysis-table tbody");
+  if(!body)return false;
+  const renderedRows=[...body.querySelectorAll("tr[data-ticker]")];
+  if(renderedRows.length!==rows.length)return false;
+  const byTicker=new Map(renderedRows.map(element=>[element.dataset.ticker,element]));
+  for(const row of rows){
+    const element=byTicker.get(String(row.ticker||""));
+    if(!element)return false;
+    ["backtest_1","backtest_2","backtest_3"].forEach((columnId,index)=>{
+      const cell=element.querySelector(`td[data-column-id="${columnId}"]`);
+      if(cell)cell.innerHTML=backtestLeaderCell(row,index);
+    });
+  }
+  return true;
 }
 
 async function applyAdvancedFilters(showToast=true) {
@@ -1348,7 +1365,7 @@ async function applyAdvancedFilters(showToast=true) {
     else if(showToast) toast(`${rows.length} ativo(s) após os ajustes.`,"success");
     if(state.session?.access?.can_view_backtests)enrichBacktestLeaders(rows).then(enrichedRows=>{
       if(!navigationIsCurrent(navigationSerial,"analysis","analysis",analysisTab)||type!==analysisType()||requestSerial!==state.analysisRequestSerial)return;
-      state.analysisRows=enrichedRows;renderAnalysisRows(enrichedRows);
+      state.analysisRows=enrichedRows;if(!patchAnalysisBacktestCells(enrichedRows))renderAnalysisRows(enrichedRows);
     }).catch(()=>{});
   } catch(error) { if(error.name!=="AbortError"&&state.view==="analysis"&&type===analysisType()&&requestSerial===state.analysisRequestSerial) $("#analysis-table").innerHTML=errorState(error,"analysis"); }
 }
@@ -1959,9 +1976,11 @@ function collectBacktestStrategyParameters(form,strategyIds){
 }
 
 async function loadBacktests() {
+  const panelStarted=performance.now();
   const root=$("#backtests-tab-content"),tab=state.tabs.backtests,navigationSerial=state.navigationSerial,requestSerial=++state.backtestRequestSerial,panelKey=tab;
   const isCurrent=()=>root.dataset.panelKey===panelKey&&requestSerial===state.backtestRequestSerial&&navigationIsCurrent(navigationSerial,"backtests","backtests",tab);
   const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;root.dataset.panelKey=panelKey;
+  let panelSucceeded=false;
   if(!samePanel)root.innerHTML=loadingCards(6);else root.classList.add("panel-refreshing");
   try {
     if(tab==="history") {
@@ -2014,8 +2033,9 @@ async function loadBacktests() {
       </form><div id="backtest-result" style="margin-top:16px"></div>`+((recentJobs||[]).length?`<div style="margin-top:18px">${sectionCard("Execuções recentes",marketTable(recentJobs,[{label:"Solicitado",render:r=>dateTime(r.created_at)},{label:"Progresso",render:r=>`${number(r.progress_current||0,0)} / ${number(r.progress_total||0,0)}`},{label:"Status",render:r=>`<span class="pill">${esc(r.status)}</span>`}]))}</div>`:""),`Cada envio conta como uma análise diária. Limite: ${access.backtest_daily_limit||0} por dia; até ${access.backtest_strategy_limit||0} estratégia(s); intervalo mínimo de ${access.backtest_cooldown_seconds||60} segundos. A tela permanece livre durante o processamento.`);
       renderBacktestStrategyParameters($("#backtest-form"));
     }
+    panelSucceeded=true;
   } catch(error) { if(error.name!=="AbortError"&&isCurrent())root.innerHTML=errorState(error,"backtests"); }
-  finally {if(isCurrent())root.classList.remove("panel-refreshing");}
+  finally {if(isCurrent()){root.classList.remove("panel-refreshing");reportPanelPerformance("backtests",panelStarted,{success:panelSucceeded,cacheState:samePanel?(panelSucceeded?"warm":"stale"):"cold"});}}
 }
 
 async function runBacktest(form) {
@@ -2098,11 +2118,13 @@ function financeTransactionTable(rows,canWrite) {
 }
 
 async function loadFinances() {
+  const panelStarted=performance.now();
   const root=$("#finances-tab-content"),monthInput=$("#finance-month");
   if(monthInput&&!monthInput.value)monthInput.value=state.financeMonth;
   const month=state.financeMonth,tab=state.tabs.finances,navigationSerial=state.navigationSerial,requestSerial=++state.financeRequestSerial,panelKey=`${month}:${tab}`;
   const isCurrent=()=>root.dataset.panelKey===panelKey&&requestSerial===state.financeRequestSerial&&navigationIsCurrent(navigationSerial,"finances","finances",tab)&&state.financeMonth===month;
   const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;root.dataset.panelKey=panelKey;
+  let panelSucceeded=false;
   if(!samePanel)root.innerHTML=loadingCards(5);else root.classList.add("panel-refreshing");
   try {
     const [data,catalog]=await Promise.all([
@@ -2123,8 +2145,9 @@ async function loadFinances() {
       const fields=(catalog.categories?.expense||[]).map(category=>`<div class="field"><label>${esc(category)}</label><input type="number" min="0" step="0.01" name="${esc(category)}" value="${current.get(category)||""}" placeholder="Sem limite"></div>`).join("");
       root.innerHTML=`${sectionCard("Acompanhamento",(data.budgets||[]).length?financeBudgetTable(data.budgets):'<div class="empty-state compact">Nenhum limite definido.</div>',"O consumo inclui despesas previstas e pagas")}${access.can_write_finances?`<form id="finance-budget-form" class="data-card filter-grid" style="margin-top:16px">${fields}<button class="button primary wide-action" type="submit">Salvar orçamento de ${esc(state.financeMonth)}</button></form>`:""}`;
     }
+    panelSucceeded=true;
   }catch(error){if(error.name!=="AbortError"&&isCurrent())root.innerHTML=errorState(error,"finances");}
-  finally {if(isCurrent())root.classList.remove("panel-refreshing");}
+  finally {if(isCurrent()){root.classList.remove("panel-refreshing");reportPanelPerformance("finances",panelStarted,{success:panelSucceeded,cacheState:samePanel?(panelSucceeded?"warm":"stale"):"cold"});}}
 }
 
 async function saveFinanceTransaction(form){
@@ -2512,9 +2535,11 @@ async function deletePortalBook(id){if(!window.confirm("Excluir este livro e seu
 async function movePortalBook(id,direction){const books=[...(state.portalAdmin?.books||[])],index=books.findIndex(book=>book.id===id),target=index+(direction==="up"?-1:1);if(index<0||target<0||target>=books.length)return;[books[index],books[target]]=[books[target],books[index]];try{await api("/admin/portal/books/order",{method:"PUT",body:JSON.stringify({ordered_ids:books.map(book=>book.id)})});toast("Ordem dos livros atualizada.","success");await loadAdmin();}catch(error){toast(error.message,"error");}}
 
 async function loadAdmin() {
+  const panelStarted=performance.now();
   const root=$("#admin-tab-content"),panelKey=state.tabs.admin;
   const context={panelKey,navigationSerial:state.navigationSerial,requestSerial:++state.adminRequestSerial};
   const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;root.dataset.panelKey=panelKey;
+  let panelSucceeded=false;
   if(!samePanel)root.innerHTML=loadingCards(6);else root.classList.add("panel-refreshing");
   try {
     if(panelKey==="portal")await loadAdminPortal(root,context);
@@ -2530,8 +2555,9 @@ async function loadAdmin() {
       if(!adminPanelIsCurrent(root,context))return;
       root.innerHTML=`<div class="metric-grid">${metricCard("Aplicação",health.status==="ok"?"Operacional":"Atenção",`Versão ${health.version}`)}${metricCard("Banco de dados",db.status==="ok"?"Conectado":"Indisponível",db.database||"")}${metricCard("Hospedagem","Oracle Cloud",health.environment||"Produção")}${metricCard("Domínio","HTTPS ativo","Conexão segura")}</div>${sectionCard("Registros principais",`<div class="detail-list">${Object.entries(counts).map(([key,value])=>`<div><span>${esc(key.replaceAll("_"," "))}</span><strong>${number(value,0)}</strong></div>`).join("")}</div>`,`Consulta somente leitura`)}`;
     }
+    panelSucceeded=true;
   } catch(error) { if(error.name!=="AbortError"&&adminPanelIsCurrent(root,context))root.innerHTML=errorState(error); }
-  finally {if(adminPanelIsCurrent(root,context))root.classList.remove("panel-refreshing");}
+  finally {if(adminPanelIsCurrent(root,context)){root.classList.remove("panel-refreshing");reportPanelPerformance("admin",panelStarted,{success:panelSucceeded,cacheState:samePanel?(panelSucceeded?"warm":"stale"):"cold"});}}
 }
 
 function dividendEventLabel(value){return ({dividend:"Dividendo",jcp:"Juros sobre capital próprio",income:"Rendimento",capital_return:"Restituição de capital",cash_distribution:"Provento em dinheiro"})[value]||value||"Provento";}

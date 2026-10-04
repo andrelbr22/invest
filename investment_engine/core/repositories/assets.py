@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from sqlalchemy import select, and_, or_, false, func, desc
+from sqlalchemy import select, and_, or_, false, func, desc, case
 from sqlalchemy.orm import Session, aliased
 from ...infrastructure.db.models import (
     AssetCurrentMetricsORM, AssetORM, FundamentalSnapshotORM, TechnicalSnapshotORM,
@@ -30,6 +30,14 @@ _CURRENT_SCORE_FIELDS = (
     "quality_score", "value_score", "growth_score", "technical_score",
     "risk_score", "liquidity_score", "alb_score", "coverage_pct",
     "data_quality_score",
+)
+
+# The ETF/BDR/future navigation table renders only these promoted fields.  Keep
+# this separate from ``_CURRENT_TECHNICAL_FIELDS``: advanced screening and the
+# worker still need the complete current snapshot, including its audited raw
+# inputs, while a normal tab change must not transfer those large JSON mirrors.
+_NAVIGATION_TECHNICAL_FIELDS = (
+    "daily_liquidity", "signal_tv", "rsi14", "sma20", "sma50", "sma200",
 )
 
 
@@ -587,23 +595,22 @@ class AssetRepository:
         # null component.  Requiring a non-null fundamental or technical id
         # here would keep the fast path disabled forever whenever the catalog
         # legitimately contains one asset without data.
-        total, covered = self.session.execute(
-            select(
-                func.count(AssetORM.id),
-                func.count(AssetCurrentMetricsORM.asset_id),
-            )
-            .select_from(AssetORM)
-            .outerjoin(
-                AssetCurrentMetricsORM,
-                AssetCurrentMetricsORM.asset_id == AssetORM.id,
-            )
+        current_row_exists = (
+            select(AssetCurrentMetricsORM.asset_id)
+            .where(AssetCurrentMetricsORM.asset_id == AssetORM.id)
+            .exists()
+        )
+        missing_asset_id = self.session.scalar(
+            select(AssetORM.id)
             .where(
                 AssetORM.asset_type.in_(accepted),
                 AssetORM.is_active.is_(True),
                 self._supported_catalog_clause(accepted),
+                ~current_row_exists,
             )
-        ).one()
-        return int(total or 0) == int(covered or 0)
+            .limit(1)
+        )
+        return missing_asset_id is None
 
     @staticmethod
     def _current_universe_tuple(asset, metrics):
@@ -699,6 +706,74 @@ class AssetRepository:
             })
             score = SimpleNamespace(**score_values)
         return asset, fundamental, technical, score
+
+    @staticmethod
+    def _navigation_projection_columns(metrics):
+        """Typed ETF/BDR/future fields needed by the normal navigation list.
+
+        A technical snapshot's close historically wins over a newer price-bar
+        fallback in ``_current_component``.  Extracting that one JSON scalar
+        preserves the public value exactly without selecting the full technical
+        document.  When there is no technical snapshot, the promoted current
+        price retains the existing price-bar fallback semantics.
+        """
+        return [
+            metrics.asset_id.label("cm_nav_asset_id"),
+            metrics.technical_snapshot_id.label("cm_nav_technical_id"),
+            metrics.price_bar_id.label("cm_nav_price_bar_id"),
+            metrics.score_snapshot_id.label("cm_nav_score_id"),
+            case(
+                (
+                    metrics.technical_snapshot_id.is_not(None),
+                    metrics.technical_json["close"].as_float(),
+                ),
+                else_=metrics.price,
+            ).label("cm_nav_close"),
+            *[
+                getattr(metrics, field).label(f"cm_nav_technical_{field}")
+                for field in _NAVIGATION_TECHNICAL_FIELDS
+            ],
+            *[
+                getattr(metrics, field).label(f"cm_nav_score_{field}")
+                for field in _CURRENT_SCORE_FIELDS
+            ],
+        ]
+
+    @staticmethod
+    def _navigation_projection_tuple(row):
+        """Rebuild the established four-item universe tuple from narrow rows."""
+        asset = row[0]
+        values = row._mapping
+        asset_id = values["cm_nav_asset_id"]
+
+        technical = None
+        if (
+            values["cm_nav_technical_id"] is not None
+            or values["cm_nav_price_bar_id"] is not None
+        ):
+            technical = SimpleNamespace(**{
+                "id": values["cm_nav_technical_id"] or values["cm_nav_price_bar_id"],
+                "asset_id": asset_id,
+                "close": values["cm_nav_close"],
+                "raw_payload": {},
+                **{
+                    field: values[f"cm_nav_technical_{field}"]
+                    for field in _NAVIGATION_TECHNICAL_FIELDS
+                },
+            })
+
+        score = None
+        if values["cm_nav_score_id"] is not None:
+            score = SimpleNamespace(**{
+                "id": values["cm_nav_score_id"],
+                "asset_id": asset_id,
+                "details_json": {},
+                **{
+                    field: values[f"cm_nav_score_{field}"]
+                    for field in _CURRENT_SCORE_FIELDS
+                },
+            })
+        return asset, None, technical, score
 
     def current_technical_features(self, asset_ids) -> dict:
         ids = list(dict.fromkeys(asset_ids or []))
@@ -1024,6 +1099,45 @@ class AssetRepository:
             .limit(limit)
         )
         return list(self.session.execute(stmt).all())
+
+    def latest_navigation_universe(self, asset_type: str, limit: int = 1200):
+        """Return the normal list contract without loading wide current JSON.
+
+        Only ETF/BDR/future navigation uses this narrower representation.  The
+        advanced screener and current-metrics worker intentionally continue to
+        call ``latest_universe`` so class-specific raw valuation inputs remain
+        available.  An incomplete materialized catalog also delegates to that
+        method, preserving the historical-snapshot fallback unchanged.
+        """
+        accepted_types = (
+            {"etf", "bdr", "future"}
+            if asset_type == "other_b3"
+            else {asset_type}
+        )
+        if not accepted_types <= {"etf", "bdr", "future"}:
+            return self.latest_universe(asset_type=asset_type, limit=limit)
+        if not self._current_coverage_complete(
+            accepted_types, component="technical",
+        ):
+            return self.latest_universe(asset_type=asset_type, limit=limit)
+
+        metrics = AssetCurrentMetricsORM
+        projected = self.session.execute(
+            select(
+                AssetORM,
+                *self._navigation_projection_columns(metrics),
+            )
+            .select_from(AssetORM)
+            .join(metrics, metrics.asset_id == AssetORM.id)
+            .where(
+                AssetORM.asset_type.in_(accepted_types),
+                AssetORM.is_active.is_(True),
+                self._supported_catalog_clause(accepted_types),
+            )
+            .order_by(AssetORM.ticker)
+            .limit(limit)
+        )
+        return [self._navigation_projection_tuple(row) for row in projected]
 
     def latest_market_references_by_ticker(self, tickers) -> dict[str, dict]:
         """Load current spot and income references for many tickers at once."""

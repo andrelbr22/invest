@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from ..instruments import is_supported_ticker
 
@@ -169,6 +170,86 @@ class PortfolioRepository:
         if fund is not None and fund.price is not None:
             return {"price": float(fund.price), "as_of": fund.reference_date, "source": fund.source}
         return {"price": None, "as_of": None, "source": None}
+
+    def latest_price_infos(self, asset_ids: Iterable) -> dict:
+        """Load the effective latest price for every asset with at most two queries.
+
+        This intentionally mirrors ``latest_price_info`` instead of searching for
+        the newest non-null value: only the newest daily bar is considered, and a
+        fundamental is consulted only when that bar has neither adjusted nor raw
+        close data.
+        """
+        requested_ids = tuple(dict.fromkeys(asset_ids))
+        if not requested_ids:
+            return {}
+
+        missing = {"price": None, "as_of": None, "source": None}
+        result = {asset_id: dict(missing) for asset_id in requested_ids}
+        fallback_ids = set(requested_ids)
+
+        ranked_bars = (
+            select(
+                PriceBarORM.id.label("price_bar_id"),
+                func.row_number().over(
+                    partition_by=PriceBarORM.asset_id,
+                    order_by=PriceBarORM.timestamp.desc(),
+                ).label("price_bar_rank"),
+            )
+            .where(
+                PriceBarORM.asset_id.in_(requested_ids),
+                PriceBarORM.timeframe == "1D",
+            )
+            .subquery()
+        )
+        latest_bars = self.session.scalars(
+            select(PriceBarORM)
+            .join(ranked_bars, ranked_bars.c.price_bar_id == PriceBarORM.id)
+            .where(ranked_bars.c.price_bar_rank == 1)
+        )
+        for bar in latest_bars:
+            value = bar.adjusted_close if bar.adjusted_close is not None else bar.close
+            if value is None:
+                continue
+            result[bar.asset_id] = {
+                "price": float(value),
+                "as_of": bar.timestamp,
+                "source": bar.source,
+            }
+            fallback_ids.discard(bar.asset_id)
+
+        if not fallback_ids:
+            return result
+
+        ranked_fundamentals = (
+            select(
+                FundamentalSnapshotORM.id.label("fundamental_id"),
+                func.row_number().over(
+                    partition_by=FundamentalSnapshotORM.asset_id,
+                    order_by=(
+                        FundamentalSnapshotORM.reference_date.desc(),
+                        FundamentalSnapshotORM.retrieved_at.desc(),
+                    ),
+                ).label("fundamental_rank"),
+            )
+            .where(FundamentalSnapshotORM.asset_id.in_(tuple(fallback_ids)))
+            .subquery()
+        )
+        latest_fundamentals = self.session.scalars(
+            select(FundamentalSnapshotORM)
+            .join(
+                ranked_fundamentals,
+                ranked_fundamentals.c.fundamental_id == FundamentalSnapshotORM.id,
+            )
+            .where(ranked_fundamentals.c.fundamental_rank == 1)
+        )
+        for fundamental in latest_fundamentals:
+            if fundamental.price is not None:
+                result[fundamental.asset_id] = {
+                    "price": float(fundamental.price),
+                    "as_of": fundamental.reference_date,
+                    "source": fundamental.source,
+                }
+        return result
 
     def latest_price(self, asset_id) -> float | None:
         return self.latest_price_info(asset_id)["price"]

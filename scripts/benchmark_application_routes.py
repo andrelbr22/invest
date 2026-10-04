@@ -15,7 +15,12 @@ from time import perf_counter
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from investment_engine.api.app import _request_email, app
+from investment_engine.api.app import (
+    _request_email,
+    _SCREENER_RESPONSE_CACHE,
+    _SHARED_RESPONSE_CACHE,
+    app,
+)
 from investment_engine.infrastructure.config import settings
 from investment_engine.infrastructure.db.models import AssetORM
 from investment_engine.infrastructure.db.session import get_session_factory
@@ -27,6 +32,10 @@ TARGETS_MS = {
     "screener_50": 2000,
     "screener_100": 3000,
     "asset_detail": 2000,
+    # Extended journeys are opt-in and do not make an otherwise safe
+    # promotion fail merely because an administrator did not request them.
+    "universe_etf_100": 3000,
+    "advanced_stock_50": 5000,
 }
 
 
@@ -55,27 +64,48 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples", type=int, default=20)
     parser.add_argument("--warmup", type=int, default=2)
+    parser.add_argument(
+        "--cold",
+        action="store_true",
+        help="invalidate process-local response caches before each request",
+    )
+    parser.add_argument(
+        "--extended",
+        action="store_true",
+        help="also measure representative multi-asset and advanced journeys",
+    )
     args = parser.parse_args()
     samples = max(5, min(100, args.samples))
     warmup = max(0, min(10, args.warmup))
     ticker = sample_ticker()
     operator = next(iter(settings.owner_emails), "benchmark@system.local")
     app.dependency_overrides[_request_email] = lambda: operator
-    routes = {
-        "health": "/health",
-        "dashboard": "/market-dashboard",
-        "screener_50": "/screen/db/stocks/default?limit=50",
-        "screener_100": "/screen/db/stocks/default?limit=100",
-        "asset_detail": f"/assets/{ticker}/intelligence",
-    }
+    routes = [
+        ("health", "GET", "/health", None),
+        ("dashboard", "GET", "/market-dashboard", None),
+        ("screener_50", "GET", "/screen/db/stocks/default?limit=50", None),
+        ("screener_100", "GET", "/screen/db/stocks/default?limit=100", None),
+        ("asset_detail", "GET", f"/assets/{ticker}/intelligence", None),
+    ]
+    if args.extended:
+        routes.extend([
+            ("universe_etf_100", "GET", "/screen/db/universe/etf?limit=100", None),
+            (
+                "advanced_stock_50", "POST", "/screen/advanced",
+                {"asset_type": "stock", "limit": 50},
+            ),
+        ])
     try:
         client = TestClient(app, base_url="http://localhost")
         failed = False
-        for label, path in routes.items():
+        for label, method, path, json_body in routes:
             timings = []
             for number in range(samples + warmup):
+                if args.cold:
+                    _SHARED_RESPONSE_CACHE.invalidate()
+                    _SCREENER_RESPONSE_CACHE.invalidate()
                 started = perf_counter()
-                response = client.get(path)
+                response = client.request(method, path, json=json_body)
                 elapsed = (perf_counter() - started) * 1000
                 if response.status_code != 200:
                     raise SystemExit(f"{label}: HTTP {response.status_code} em {path}")
@@ -87,7 +117,8 @@ def main() -> None:
             status = "OK" if p95 <= target else "ACIMA_DA_META"
             failed = failed or status != "OK"
             print(
-                f"{label}: amostras={len(timings)} p50={p50:.2f}ms "
+                f"{label}: modo={'frio' if args.cold else 'aquecido'} "
+                f"amostras={len(timings)} p50={p50:.2f}ms "
                 f"p95={p95:.2f}ms máximo={max(timings):.2f}ms meta={target}ms {status}"
             )
         if failed:

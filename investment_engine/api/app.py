@@ -3182,7 +3182,13 @@ def screen_db_universe(
     if asset_type not in {"stock", "fii", "etf", "bdr", "future", "other_b3"}:
         raise HTTPException(422, "invalid_asset_type")
     repo = AssetRepository(db)
-    rows = repo.latest_universe(asset_type=asset_type, limit=limit)
+    # Older injected repositories used by integrations expose only the broad
+    # method.  Keep that compatibility while production navigation selects the
+    # compact ETF/BDR/future projection.
+    navigation_loader = getattr(
+        repo, "latest_navigation_universe", repo.latest_universe,
+    )
+    rows = navigation_loader(asset_type=asset_type, limit=limit)
     result = _universe_screen_result(rows, asset_type, access)
     if asset_type in {"stock", "fii", "etf", "bdr"}:
         result = _enrich_listing_valuations(
@@ -3360,9 +3366,11 @@ def _portfolio_snapshot(db: Session, portfolio):
     repo = PortfolioRepository(db)
     intraday_row = SharedSnapshotRepository(db).get(REFRESH_SCHEDULES["technical_intraday"].snapshot_key)
     intraday_quotes = dict((intraday_row.payload_json or {}).get("quotes") or {}) if intraday_row else {}
+    positions = repo.positions(portfolio.id)
+    price_infos = repo.latest_price_infos(asset.id for _, asset in positions)
     raw = []
-    for pos, asset in repo.positions(portfolio.id):
-        price_info = repo.latest_price_info(asset.id)
+    for pos, asset in positions:
+        price_info = price_infos[asset.id]
         live_quote = dict(intraday_quotes.get(asset.ticker) or {})
         if live_quote.get("price") is not None:
             price_info = {
@@ -3977,12 +3985,15 @@ def _build_market_dashboard_payload(db: Session) -> dict:
     updates = all_refresh_statuses(db, snapshots_by_key=snapshot_rows)
     grouped: dict = {}
     generated = []
-    for key in (
+    visible_keys = (
         "selic_current", "selic_focus", "macro", "global_markets",
         "rates_calendar", "crypto", "fx",
-    ):
+    )
+    missing_visible_snapshot = False
+    for key in visible_keys:
         row = snapshot_rows.get(REFRESH_SCHEDULES[key].snapshot_key)
         if row is None or not row.payload_json:
+            missing_visible_snapshot = True
             continue
         generated.append(row.as_of)
         for field, value in dict(row.payload_json or {}).items():
@@ -3993,18 +4004,29 @@ def _build_market_dashboard_payload(db: Session) -> dict:
             else:
                 grouped[field] = value
 
-    # Compatibility during the first rollout: preserve the last complete V1.20
-    # payload until every independent group has produced its first snapshot.
-    repo = NewsCacheRepository(db)
-    current = repo.get(
-        owner_email=_MARKET_DASHBOARD_OWNER,
-        cache_kind="market_dashboard", cache_key=_MARKET_DASHBOARD_CACHE_KEY,
-    )
-    displayed = current if current is not None and current.result_json else repo.latest_completed(
-        owner_email=_MARKET_DASHBOARD_OWNER,
-        cache_kind="market_dashboard", cache_key=_MARKET_DASHBOARD_CACHE_KEY,
-    )
-    payload = news_cache_dict(displayed)
+    # Compatibility during rollout: consult the former monolithic payload only
+    # while at least one independent visible snapshot is still unavailable.
+    # Once coverage is complete, avoiding that large legacy JSON saves a query
+    # and deserialization on every dashboard cache miss without removing the
+    # safety net used during recovery or first installation.
+    if missing_visible_snapshot:
+        repo = NewsCacheRepository(db)
+        current = repo.get(
+            owner_email=_MARKET_DASHBOARD_OWNER,
+            cache_kind="market_dashboard", cache_key=_MARKET_DASHBOARD_CACHE_KEY,
+        )
+        displayed = current if current is not None and current.result_json else repo.latest_completed(
+            owner_email=_MARKET_DASHBOARD_OWNER,
+            cache_kind="market_dashboard", cache_key=_MARKET_DASHBOARD_CACHE_KEY,
+        )
+        payload = news_cache_dict(displayed)
+    else:
+        payload = {
+            "status": "completed",
+            "has_data": bool(grouped),
+            "market_date": news_market_date(),
+            "data": {},
+        }
     legacy = dict(payload.get("data") or {})
     data = {**legacy, **grouped}
     if legacy.get("selic") or grouped.get("selic"):
@@ -4012,9 +4034,7 @@ def _build_market_dashboard_payload(db: Session) -> dict:
     if generated:
         data["generated_at"] = max(generated).isoformat()
     payload["data"] = data
-    visible_updates = [updates[key] for key in (
-        "selic_current", "selic_focus", "macro", "global_markets", "rates_calendar", "crypto", "fx",
-    )]
+    visible_updates = [updates[key] for key in visible_keys]
     payload.update({
         "refresh_status": (
             "running" if any(item["status"] == "running" for item in visible_updates)

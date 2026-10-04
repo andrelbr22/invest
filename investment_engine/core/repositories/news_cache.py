@@ -47,7 +47,10 @@ class NewsCacheRepository:
                 UserNewsCacheORM.owner_email == owner_email.strip().lower(),
                 UserNewsCacheORM.cache_kind == cache_kind,
                 UserNewsCacheORM.cache_key == str(cache_key),
-            ).order_by(UserNewsCacheORM.market_date.desc(), UserNewsCacheORM.updated_at.desc())
+            ).order_by(
+                UserNewsCacheORM.market_date.desc(),
+                UserNewsCacheORM.updated_at.desc(),
+            ).limit(1)
         )
 
     def latest_completed(self, *, owner_email: str, cache_kind: str,
@@ -58,7 +61,10 @@ class NewsCacheRepository:
                 UserNewsCacheORM.cache_kind == cache_kind,
                 UserNewsCacheORM.cache_key == str(cache_key),
                 UserNewsCacheORM.status == "completed",
-            ).order_by(UserNewsCacheORM.market_date.desc(), UserNewsCacheORM.updated_at.desc())
+            ).order_by(
+                UserNewsCacheORM.market_date.desc(),
+                UserNewsCacheORM.updated_at.desc(),
+            ).limit(1)
         )
 
     def request_refresh(self, *, owner_email: str, cache_kind: str, cache_key: str,
