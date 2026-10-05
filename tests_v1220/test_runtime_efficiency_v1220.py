@@ -36,8 +36,10 @@ def test_primary_runtime_prioritizes_the_site_and_bounds_auxiliary_services():
     assert 'BACKGROUND_WORKER_POLL_SECONDS: "5"' in worker
     assert 'DATABASE_POOL_SIZE: "4"' in app
     assert 'DATABASE_MAX_OVERFLOW: "1"' in app
-    assert 'DATABASE_POOL_SIZE: "2"' in staging
-    assert 'DATABASE_MAX_OVERFLOW: "0"' in staging
+    assert 'DATABASE_POOL_SIZE: "4"' in staging
+    assert 'DATABASE_MAX_OVERFLOW: "1"' in staging
+    assert 'DATABASE_POOL_TIMEOUT_SECONDS: "20"' in staging
+    assert 'OPERATIONAL_NOTIFICATIONS_ENABLED: "false"' in staging
     assert 'DATABASE_POOL_SIZE: "4"' in worker
     assert 'DATABASE_MAX_OVERFLOW: "1"' in worker
     assert 'DATABASE_POOL_TIMEOUT_SECONDS: "20"' in worker

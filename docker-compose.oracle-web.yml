@@ -112,9 +112,13 @@ services:
       CURRENT_METRICS_BACKFILL_MAX_BATCH_SIZE: "100"
       CURRENT_METRICS_CONTINUATION_DELAY_SECONDS: "3"
       CURRENT_METRICS_CONTINUATION_PRIORITY: "180"
-      DATABASE_POOL_SIZE: "2"
-      DATABASE_MAX_OVERFLOW: "0"
-      DATABASE_POOL_TIMEOUT_SECONDS: "10"
+      # API, consumidor, renovação de lease e heartbeat operacional podem
+      # coincidir durante a homologação. Quatro conexões evitam que uma tarefa
+      # longa bloqueie a navegação ou invalide sua própria transação.
+      DATABASE_POOL_SIZE: "4"
+      DATABASE_MAX_OVERFLOW: "1"
+      DATABASE_POOL_TIMEOUT_SECONDS: "20"
+      OPERATIONAL_NOTIFICATIONS_ENABLED: "false"
       DATABASE_NAME_OVERRIDE: investment_engine_staging
       SERVICE_NODE_ID: primary-staging
       APP_COMMIT_SHA: "${FDI_RELEASE_COMMIT:-unknown}"

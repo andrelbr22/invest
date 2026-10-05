@@ -36,7 +36,7 @@ def test_release_publication_and_browser_assets_point_to_r2():
     platform = read("investment_engine/web/index.html")
 
     assert "Evita recargas e preserva caches na V1.23.6 R2 em teste" in publisher
-    assert "valide a V1.23.6 R2" in publisher
+    assert "valide a V1.23.6 R2A" in publisher
     assert "../ui-assets/app.css?v=1.23.6-r2" in platform
     assert "../ui-assets/app.js?v=1.23.6-r2" in platform
 

@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     smtp_from_email: str = ""
     smtp_from_name: str = "Formação do Investidor"
     smtp_starttls: bool = True
+    smtp_timeout_seconds: int = 10
     anbima_client_id: str = ""
     anbima_client_secret: str = ""
     anbima_ima_history_start_date: str = "2004-04-30"
@@ -137,6 +138,7 @@ class Settings(BaseSettings):
     operational_failure_window_hours: int = 6
     operational_failure_count: int = 3
     operational_notification_cooldown_hours: int = 6
+    operational_notifications_enabled: bool = True
     operational_memory_warning_pct: float = 85.0
     operational_memory_critical_pct: float = 95.0
     operational_swap_warning_pct: float = 60.0

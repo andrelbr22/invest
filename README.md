@@ -1,5 +1,20 @@
 # Formação do Investidor • V1.23.6
 
+## R2A — estabilidade do processamento em homologação
+
+A V1.23.6 R2A mantém integralmente as melhorias da R2 e corrige a disputa por
+conexões observada durante a homologação completa. O staging passa a dispor de
+conexões suficientes para API, consumidor, lease e heartbeat; notificações
+operacionais externas ficam desativadas nesse ambiente isolado.
+
+As projeções de valuation e pódios agora usam pontos de restauração próprios.
+Uma falha transitória deixa de invalidar toda a transação e o último resultado
+válido permanece disponível. O envio SMTP possui timeout menor e sua falha não
+derruba o ciclo de saúde do worker. Não há migração nova: a revisão esperada
+continua sendo `0030_v1_23_navigation_metrics`. Consulte
+`PATCH_V1236_R2A.md`, `INSTRUCOES_ORACLE_V1236_R2A.md` e
+`RELATORIO_VALIDACAO_V1236_R2A.md`.
+
 ## R2 — alternância de painéis sem recarga desnecessária
 
 A V1.23.6 R2 atua diretamente no atraso percebido ao trocar de área. Clicar

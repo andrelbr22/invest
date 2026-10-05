@@ -291,58 +291,66 @@ class AssetCurrentMetricsService:
                 selected_by_type.setdefault(str(asset.asset_type), []).append(asset)
             for asset_type, targets in selected_by_type.items():
                 try:
-                    universe = list(self.assets.latest_universe(
-                        asset_type=asset_type,
-                        limit=5000,
-                    ))
-                    peer_entries = []
-                    entries_by_id = {}
-                    for asset, fundamental, technical, score in universe:
-                        entry = (asset, row_from_orm(asset, fundamental, technical, score))
-                        peer_entries.append(entry)
-                        entries_by_id[asset.id] = entry
-                    # Assets without a usable provider snapshot still receive
-                    # an explicit N/D projection.  This marks the read model as
-                    # covered and prevents an expensive historical fallback on
-                    # every page view while keeping every value fail-closed.
-                    entries = []
-                    for target in targets:
-                        entry = entries_by_id.get(target.id)
-                        if entry is None:
-                            entry = (target, row_from_orm(target, None, None, None))
-                        entries.append(entry)
-                    _enrich_valuation_rows(
-                        entries,
-                        peer_entries=peer_entries,
-                        valuation_assumptions=None,
-                    )
-                    calculated_at = datetime.now(timezone.utc)
-                    payload_by_id = {
-                        asset.id: self._valuation_payload(row["fundamentals"])
-                        for asset, row in entries
-                    }
-                    for target in targets:
-                        payload = payload_by_id.get(target.id)
-                        if not self._valuation_payload_is_covered(payload):
-                            # Preserve last-known-good valuation when the
-                            # current provider cohort is temporarily incomplete.
-                            result["errors"].append({
-                                "component": "valuation",
-                                "ticker": target.ticker,
-                                "error": "valuation_inputs_unavailable",
-                            })
-                            continue
-                        current_row = rows.get(target.id)
-                        if current_row is None:
-                            current_row, _created = self.current.ensure(target.id)
-                            rows[target.id] = current_row
-                        changed = self.current.sync_valuation(
-                            target.id,
-                            payload,
-                            calculated_at=calculated_at,
-                            row=current_row,
+                    valuations_updated = 0
+                    # A provider/SQL failure for one asset class must roll back
+                    # to a savepoint before the next class or the backtest
+                    # projection is attempted.  Merely catching a PostgreSQL
+                    # exception leaves the outer transaction unusable.
+                    with self.session.begin_nested():
+                        universe = list(self.assets.latest_universe(
+                            asset_type=asset_type,
+                            limit=5000,
+                        ))
+                        peer_entries = []
+                        entries_by_id = {}
+                        for asset, fundamental, technical, score in universe:
+                            entry = (asset, row_from_orm(asset, fundamental, technical, score))
+                            peer_entries.append(entry)
+                            entries_by_id[asset.id] = entry
+                        # Assets without a usable provider snapshot still receive
+                        # an explicit N/D projection.  This marks the read model as
+                        # covered and prevents an expensive historical fallback on
+                        # every page view while keeping every value fail-closed.
+                        entries = []
+                        for target in targets:
+                            entry = entries_by_id.get(target.id)
+                            if entry is None:
+                                entry = (target, row_from_orm(target, None, None, None))
+                            entries.append(entry)
+                        _enrich_valuation_rows(
+                            entries,
+                            peer_entries=peer_entries,
+                            valuation_assumptions=None,
                         )
-                        result["valuations_updated"] += int(changed)
+                        calculated_at = datetime.now(timezone.utc)
+                        payload_by_id = {
+                            asset.id: self._valuation_payload(row["fundamentals"])
+                            for asset, row in entries
+                        }
+                        for target in targets:
+                            payload = payload_by_id.get(target.id)
+                            if not self._valuation_payload_is_covered(payload):
+                                # Preserve last-known-good valuation when the
+                                # current provider cohort is temporarily incomplete.
+                                result["errors"].append({
+                                    "component": "valuation",
+                                    "ticker": target.ticker,
+                                    "error": "valuation_inputs_unavailable",
+                                })
+                                continue
+                            current_row = rows.get(target.id)
+                            if current_row is None:
+                                current_row, _created = self.current.ensure(target.id)
+                                rows[target.id] = current_row
+                            changed = self.current.sync_valuation(
+                                target.id,
+                                payload,
+                                calculated_at=calculated_at,
+                                row=current_row,
+                            )
+                            valuations_updated += int(changed)
+                        self.session.flush()
+                    result["valuations_updated"] += valuations_updated
                 except Exception as exc:
                     result["errors"].append({
                         "component": "valuation",
@@ -352,40 +360,44 @@ class AssetCurrentMetricsService:
 
         if include_backtests:
             try:
-                tickers = [asset.ticker for asset in selected]
-                grouped = self.backtests.leaderboard(
-                    tickers=tickers,
-                    per_asset=3,
-                    limit=max(3, len(tickers) * 3),
-                )
-                calculated_at = datetime.now(timezone.utc)
-                for asset in selected:
-                    current_row = rows.get(asset.id)
-                    if current_row is None:
-                        current_row, _created = self.current.ensure(asset.id)
-                        rows[asset.id] = current_row
-                    leaders = [
-                        run_summary(run, leader_asset)
-                        for run, leader_asset in grouped.get(asset.ticker, [])
-                    ]
-                    if not leaders and list(current_row.backtest_leaders_json or []):
-                        # A successfully materialized podium cannot disappear
-                        # because of a transient read problem.  Preserve it and
-                        # let the next worker pass retry from authoritative
-                        # history.
-                        result["errors"].append({
-                            "component": "backtest_leaders",
-                            "ticker": asset.ticker,
-                            "error": "empty_result_preserved_last_known_good",
-                        })
-                        continue
-                    changed = self.current.sync_backtest_leaders(
-                        asset.id,
-                        leaders,
-                        calculated_at=calculated_at,
-                        row=current_row,
+                podiums_updated = 0
+                with self.session.begin_nested():
+                    tickers = [asset.ticker for asset in selected]
+                    grouped = self.backtests.leaderboard(
+                        tickers=tickers,
+                        per_asset=3,
+                        limit=max(3, len(tickers) * 3),
                     )
-                    result["backtest_podiums_updated"] += int(changed)
+                    calculated_at = datetime.now(timezone.utc)
+                    for asset in selected:
+                        current_row = rows.get(asset.id)
+                        if current_row is None:
+                            current_row, _created = self.current.ensure(asset.id)
+                            rows[asset.id] = current_row
+                        leaders = [
+                            run_summary(run, leader_asset)
+                            for run, leader_asset in grouped.get(asset.ticker, [])
+                        ]
+                        if not leaders and list(current_row.backtest_leaders_json or []):
+                            # A successfully materialized podium cannot disappear
+                            # because of a transient read problem.  Preserve it and
+                            # let the next worker pass retry from authoritative
+                            # history.
+                            result["errors"].append({
+                                "component": "backtest_leaders",
+                                "ticker": asset.ticker,
+                                "error": "empty_result_preserved_last_known_good",
+                            })
+                            continue
+                        changed = self.current.sync_backtest_leaders(
+                            asset.id,
+                            leaders,
+                            calculated_at=calculated_at,
+                            row=current_row,
+                        )
+                        podiums_updated += int(changed)
+                    self.session.flush()
+                result["backtest_podiums_updated"] += podiums_updated
             except Exception as exc:
                 result["errors"].append({
                     "component": "backtest_leaders",

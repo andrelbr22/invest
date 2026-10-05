@@ -20,7 +20,7 @@ def test_r2_release_identity_schema_assets_and_operator_documents():
     workflow = read(".github/workflows/tests.yml")
     html = read("investment_engine/web/index.html")
     assert "Evita recargas e preserva caches na V1.23.6 R2 em teste" in publisher
-    assert "valide a V1.23.6 R2" in publisher
+    assert "valide a V1.23.6 R2A" in publisher
     assert "SEGURANCA DA PRIMEIRA MIGRACAO" not in publisher
     assert "stagingConfirmation" not in publisher
     assert "0030_v1_23_navigation_metrics" in workflow

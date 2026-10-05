@@ -11,6 +11,7 @@ from ...infrastructure.db.session import get_session_factory
 from ...infrastructure.config import settings
 from ... import __version__
 from ..observability import OperationalHealthService, collect_resource_metrics
+from ...integrations.email_delivery import EmailDeliveryError
 from ..repositories.background_jobs import BackgroundJobRepository
 from ..repositories.operations import OperationsRepository
 from .handlers import DEFAULT_JOB_HANDLERS
@@ -236,8 +237,16 @@ class BackgroundWorker:
                         sync_incidents=True,
                         local_label=self.node_id,
                     )
-                    operations.notify_open_incidents()
                     session.commit()
+                    if settings.operational_notifications_enabled:
+                        try:
+                            operations.notify_open_incidents()
+                            session.commit()
+                        except EmailDeliveryError as exc:
+                            session.rollback()
+                            # A temporary mail-provider outage must not turn a
+                            # healthy worker heartbeat into a database incident.
+                            LOGGER.warning("operational_notification_failed error=%s", exc)
                 except Exception:
                     session.rollback()
                     LOGGER.exception("operational_health_cycle_failed")

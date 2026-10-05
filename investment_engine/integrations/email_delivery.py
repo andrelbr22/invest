@@ -33,7 +33,8 @@ class AlertEmailSender:
         if html_body:
             message.add_alternative(html_body, subtype="html")
         try:
-            with smtplib.SMTP(self.configuration.smtp_host, self.configuration.smtp_port, timeout=25) as client:
+            timeout = max(3, min(60, int(self.configuration.smtp_timeout_seconds)))
+            with smtplib.SMTP(self.configuration.smtp_host, self.configuration.smtp_port, timeout=timeout) as client:
                 if self.configuration.smtp_starttls:
                     client.starttls()
                 if self.configuration.smtp_username:
