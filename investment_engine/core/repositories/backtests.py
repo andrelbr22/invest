@@ -7,7 +7,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from ...infrastructure.db.models import (
     AssetCurrentMetricsORM,
@@ -276,7 +276,39 @@ class BacktestRepository:
         self, *, owner_email: str, is_owner: bool = False, ticker: str | None = None,
         sector: str | None = None, scope: str | None = None, limit: int = 100,
     ):
-        stmt = select(BacktestRunORM, AssetORM).join(AssetORM, AssetORM.id == BacktestRunORM.asset_id)
+        # The history panel needs only ``run_summary``.  Keep the ORM result
+        # shape for compatibility, but do not transfer the equity curve or the
+        # complete saved result merely to render a list row.
+        stmt = (
+            select(BacktestRunORM, AssetORM)
+            .join(AssetORM, AssetORM.id == BacktestRunORM.asset_id)
+            .options(
+                load_only(
+                    BacktestRunORM.id,
+                    BacktestRunORM.owner_email,
+                    BacktestRunORM.scope,
+                    BacktestRunORM.config_hash,
+                    BacktestRunORM.market_date,
+                    BacktestRunORM.engine_version,
+                    BacktestRunORM.strategy_id,
+                    BacktestRunORM.strategy_name,
+                    BacktestRunORM.requested_start,
+                    BacktestRunORM.requested_end,
+                    BacktestRunORM.actual_start,
+                    BacktestRunORM.actual_end,
+                    BacktestRunORM.parameters_json,
+                    BacktestRunORM.metrics_json,
+                    BacktestRunORM.ranking_score,
+                    BacktestRunORM.sample_status,
+                    BacktestRunORM.current_signal,
+                    BacktestRunORM.signal_as_of,
+                    BacktestRunORM.sector_label,
+                    BacktestRunORM.status,
+                    BacktestRunORM.created_at,
+                ),
+                load_only(AssetORM.id, AssetORM.ticker, AssetORM.name),
+            )
+        )
         if not is_owner:
             stmt = stmt.where(or_(BacktestRunORM.owner_email == owner_email.strip().lower(), BacktestRunORM.scope == "official"))
         if ticker:

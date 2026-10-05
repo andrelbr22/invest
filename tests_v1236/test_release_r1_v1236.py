@@ -24,26 +24,29 @@ def test_release_identity_documents_and_no_new_migration():
         "PATCH_V1236_R1.md",
         "RELATORIO_VALIDACAO_V1236_R1.md",
         "INSTRUCOES_ORACLE_V1236_R1.md",
+        "PATCH_V1236_R2.md",
+        "RELATORIO_VALIDACAO_V1236_R2.md",
+        "INSTRUCOES_ORACLE_V1236_R2.md",
     ):
         assert (ROOT / relative).is_file(), relative
 
 
-def test_release_publication_and_browser_assets_point_to_r1():
+def test_release_publication_and_browser_assets_point_to_r2():
     publisher = read("PUBLICAR_GITHUB.ps1")
     platform = read("investment_engine/web/index.html")
 
-    assert "Acelera paineis preservando fallbacks na V1.23.6 R1 em teste" in publisher
-    assert "valide a V1.23.6 R1" in publisher
-    assert "../ui-assets/app.css?v=1.23.6-r1" in platform
-    assert "../ui-assets/app.js?v=1.23.6-r1" in platform
+    assert "Evita recargas e preserva caches na V1.23.6 R2 em teste" in publisher
+    assert "valide a V1.23.6 R2" in publisher
+    assert "../ui-assets/app.css?v=1.23.6-r2" in platform
+    assert "../ui-assets/app.js?v=1.23.6-r2" in platform
 
 
 def test_operator_document_keeps_promotion_manual_and_separates_shells():
-    instructions = read("INSTRUCOES_ORACLE_V1236_R1.md")
+    instructions = read("INSTRUCOES_ORACLE_V1236_R2.md")
 
     assert "Windows PowerShell" in instructions
     assert "Ubuntu" in instructions
     assert "-ValidateOnly" in instructions
     assert "testefdi/ready" in instructions
-    assert "--cold --extended" in instructions
-    assert "Somente após" in instructions
+    assert "scripts.check_navigation_coverage" in instructions
+    assert "Somente depois" in instructions

@@ -4,6 +4,8 @@ const BASE_PATH = location.pathname === "/testefdi" || location.pathname.startsW
 const LANDING_PATH = `${BASE_PATH}/`;
 const PLATFORM_PATH = `${BASE_PATH}/plataforma/`;
 const ANALYSIS_CACHE_TTL_MS = 300000;
+const NEWS_NAVIGATION_CACHE_TTL_MS = 15000;
+const ADMIN_NAVIGATION_CACHE_TTL_MS = 15000;
 
 const state = {
   session: null,
@@ -351,7 +353,10 @@ async function verifyEmailLogin(form){
   }catch(error){button.disabled=false;emailLoginMessage(error.message,"error");$("#email-login-code")?.select();}
 }
 
-function setView(view, tab = null) {
+function setView(view, tab = null, {force=false} = {}) {
+  const sameView=state.view===view;
+  const sameTab=!tab||state.tabs[view]===tab;
+  if(sameView&&sameTab&&!force){document.body.classList.remove("mobile-nav-open");return false;}
   const previousView=state.view;
   beginNavigation(previousView,view);
   state.view = view;
@@ -361,13 +366,16 @@ function setView(view, tab = null) {
   document.body.classList.remove("mobile-nav-open");
   if (tab) activateTab(view, tab, false);
   loadCurrentView();
+  return true;
 }
 
-function activateTab(group, tab, load = true) {
+function activateTab(group, tab, load = true, {force=false} = {}) {
+  if(load&&state.tabs[group]===tab&&!force)return false;
   if(load)beginNavigation(state.view,state.view);
   state.tabs[group] = tab;
   $$(`.tabs[data-tabs="${group}"] .tab`).forEach(node => node.classList.toggle("active", node.dataset.tab === tab));
   if (load) loadCurrentView();
+  return true;
 }
 
 function loadingCards(count = 4) {
@@ -1168,15 +1176,16 @@ async function loadAnalysisResults(force=false) {
     const presetItem=state.analysisCatalog[type]?.[state.analysisPreset];
     if (state.currentCustomFilter) {
       const payload=await api(`/screen/db/custom/${state.currentCustomFilter.id}?limit=${state.analysisLimit}`,{requestKey:"analysis"});rows=payload.rows||payload;warnings=payload?.meta?.warnings||[];
-    } else if(presetItem?.active_variant==="owner") {
-      const configuration={...(presetItem.configuration||{}),asset_type:type,limit:state.analysisLimit};
-      const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify(configuration)});rows=payload.rows||payload;warnings=payload?.meta?.warnings||[];
     } else if (type === "stock") rows = await api(`/screen/db/stocks/${state.analysisPreset}?limit=${state.analysisLimit}`, {requestKey:"analysis"});
     else if (type === "fii") rows = await api(`/screen/db/fiis/${state.analysisPreset}?limit=${state.analysisLimit}`, {requestKey:"analysis"});
+    else if(presetItem?.active_variant==="owner") {
+      const configuration={...(presetItem.configuration||{}),asset_type:type,limit:state.analysisLimit};
+      const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify(configuration),invalidateCache:false});rows=payload.rows||payload;warnings=payload?.meta?.warnings||[];
+    }
     else if(state.analysisPreset==="default") rows=await api(`/screen/db/universe/${type}?limit=${state.analysisLimit}`,{requestKey:"analysis"});
     else {
       const configuration={...(state.analysisCatalog[type]?.[state.analysisPreset]?.configuration||{}),asset_type:type,limit:state.analysisLimit};
-      const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify(configuration)});rows=payload.rows||payload;warnings=payload?.meta?.warnings||[];
+      const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify(configuration),invalidateCache:false});rows=payload.rows||payload;warnings=payload?.meta?.warnings||[];
     }
     if (type === "stock") rows.sort((a,b)=>(Number(b.graham_upside_pct)||-Infinity)-(Number(a.graham_upside_pct)||-Infinity));
     else rows.sort((a,b)=>String(a.ticker).localeCompare(String(b.ticker)));
@@ -1355,7 +1364,7 @@ async function applyAdvancedFilters(showToast=true) {
   if(!state.currentCustomFilter){const label=state.analysisCatalog[analysisType()]?.[state.analysisPreset]?.name||"Análise";$("#active-analysis-summary").textContent=`${label} • ajustes temporários`;}
   $("#analysis-table").innerHTML=loadingCards(6);
   try {
-    const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify(request)});
+    const payload=await api("/screen/advanced",{method:"POST",requestKey:"analysis",body:JSON.stringify(request),invalidateCache:false});
     const rows=payload.rows||payload;
     if(!navigationIsCurrent(navigationSerial,"analysis","analysis",analysisTab)||type!==analysisType()||requestSerial!==state.analysisRequestSerial)return;
     const primaryRows=state.session?.access?.can_view_backtests?rows.map(row=>({...row,backtest_leaders_pending:true})):rows;
@@ -1537,17 +1546,17 @@ function queueNewsPanelReload(cache) {
   const navigationSerial=state.navigationSerial,portfolioId=state.portfolioId,newsMode=state.portfolioNewsMode;
   state.newsRefreshTimer=setTimeout(()=>{
     state.newsRefreshTimer=null;
-    if(navigationIsCurrent(navigationSerial,"portfolio","portfolio","news")&&state.portfolioId===portfolioId&&state.portfolioNewsMode===newsMode)renderPortfolioTab();
+    if(navigationIsCurrent(navigationSerial,"portfolio","portfolio","news")&&state.portfolioId===portfolioId&&state.portfolioNewsMode===newsMode)renderPortfolioTab({forceNews:true});
   },4500);
 }
 
-async function renderPortfolioNews(root) {
+async function renderPortfolioNews(root,{force=false}={}) {
   const panelKey=root.dataset.panelKey;
   if(!state.portfolioId) {
     root.innerHTML='<div class="data-card empty-state"><strong>Nenhuma carteira cadastrada</strong>Crie uma carteira para receber notícias relacionadas aos ativos. As notícias de recomendações continuam disponíveis acima.</div>';
     return;
   }
-  const cache=await api(`/insights/news/cache/portfolios/${state.portfolioId}`,{requestKey:"portfolio-news",cacheTtlMs:15000,bypassCache:true});
+  const cache=await api(`/insights/news/cache/portfolios/${state.portfolioId}`,{requestKey:"portfolio-news",cacheTtlMs:NEWS_NAVIGATION_CACHE_TTL_MS,bypassCache:force});
   if(root.dataset.panelKey!==panelKey||state.view!=="portfolio"||state.tabs.portfolio!=="news")return;
   const data=cache.data||{},groups=data.assets||data.items||[];
   const update=`<div class="update-panel"><div class="update-summary"><span><strong>Notícias dos ativos da carteira</strong><small>${cache.finished_at?`Última atualização: ${dateTime(cache.finished_at)}`:"A atualização diária será iniciada no primeiro acesso autenticado."}</small></span><span><span class="pill ${cache.status==="failed"?"danger":""}">${esc(newsCacheStatus(cache))}</span><button class="button secondary compact" data-portfolio-news-refresh="${esc(state.portfolioId)}" ${["pending","queued","running"].includes(cache.status)?"disabled":""}>Atualizar novamente hoje</button></span></div>${cache.error?`<div class="notice danger">A última tentativa não foi concluída. Os dados anteriores foram preservados.</div>`:""}</div>`;
@@ -1556,10 +1565,10 @@ async function renderPortfolioNews(root) {
   queueNewsPanelReload(cache);
 }
 
-async function renderRecommendationNews(root) {
+async function renderRecommendationNews(root,{force=false}={}) {
   const panelKey=root.dataset.panelKey;
   const category=state.recommendationCategory;
-  const cache=await api(`/insights/news/cache/recommendations?category=${encodeURIComponent(category)}`,{requestKey:"portfolio-news",cacheTtlMs:15000,bypassCache:true});
+  const cache=await api(`/insights/news/cache/recommendations?category=${encodeURIComponent(category)}`,{requestKey:"portfolio-news",cacheTtlMs:NEWS_NAVIGATION_CACHE_TTL_MS,bypassCache:force});
   if(root.dataset.panelKey!==panelKey||state.view!=="portfolio"||state.tabs.portfolio!=="news"||category!==state.recommendationCategory)return;
   const data=cache.data||{},items=data.items||[];
   const categories=[{id:"all",label:"Todas"},{id:"brazil",label:"Instituições brasileiras"},{id:"global",label:"Instituições globais"}];
@@ -1570,16 +1579,21 @@ async function renderRecommendationNews(root) {
   queueNewsPanelReload(cache);
 }
 
-async function renderNewsWorkspace(root) {
+async function renderNewsWorkspace(root,{force=false}={}) {
   const allowed=state.session.access.can_view_news_insights;
   if(!allowed){root.innerHTML='<div class="data-card empty-state"><strong>Notícias não liberadas para esta conta</strong>O administrador pode liberar este módulo no nível de acesso do usuário.</div>';return;}
-  root.innerHTML=`<div class="subtabs"><button class="tab ${state.portfolioNewsMode==="portfolio"?"active":""}" data-portfolio-news-mode="portfolio">Ativos da carteira</button><button class="tab ${state.portfolioNewsMode==="recommendations"?"active":""}" data-portfolio-news-mode="recommendations">Recomendações</button></div><div id="portfolio-news-content">${loadingCards(4)}</div>`;
-  const content=$("#portfolio-news-content",root);
-  if(state.portfolioNewsMode==="recommendations")await renderRecommendationNews(content);
-  else await renderPortfolioNews(content);
+  let content=$("#portfolio-news-content",root);
+  if(!content){
+    root.innerHTML=`<div class="subtabs"><button class="tab ${state.portfolioNewsMode==="portfolio"?"active":""}" data-portfolio-news-mode="portfolio">Ativos da carteira</button><button class="tab ${state.portfolioNewsMode==="recommendations"?"active":""}" data-portfolio-news-mode="recommendations">Recomendações</button></div><div id="portfolio-news-content">${loadingCards(4)}</div>`;
+    content=$("#portfolio-news-content",root);
+  }else{
+    $$('[data-portfolio-news-mode]',root).forEach(button=>button.classList.toggle("active",button.dataset.portfolioNewsMode===state.portfolioNewsMode));
+  }
+  if(state.portfolioNewsMode==="recommendations")await renderRecommendationNews(content,{force});
+  else await renderPortfolioNews(content,{force});
 }
 
-async function renderPortfolioTab() {
+async function renderPortfolioTab({forceNews=false}={}) {
   const root=$("#portfolio-tab-content"), tab=state.tabs.portfolio;
   clearTimeout(state.newsRefreshTimer);state.newsRefreshTimer=null;
   const portfolioId=state.portfolioId,navigationSerial=state.navigationSerial,requestSerial=++state.portfolioRequestSerial,panelKey=`${portfolioId||"none"}:${tab}`;
@@ -1610,7 +1624,7 @@ async function renderPortfolioTab() {
     } else if (tab==="dividends") {
       await renderPortfolioDividends(root);
     } else if (tab==="news") {
-      await renderNewsWorkspace(root);
+      await renderNewsWorkspace(root,{force:forceNews});
     } else {
       await renderAlerts(root);
     }
@@ -1719,7 +1733,7 @@ function editPriceAlert(alertId){
 }
 
 async function refreshRecommendationNews(category){
-  try{const result=await api(`/insights/news/cache/recommendations/refresh?category=${encodeURIComponent(category)}`,{method:"POST"});toast(result.scheduled===false?"As recomendações já estão sendo atualizadas.":"Atualização das recomendações solicitada.",result.scheduled===false?"info":"success");scheduleNavigationTask(()=>renderPortfolioTab(),2500);}
+  try{const result=await api(`/insights/news/cache/recommendations/refresh?category=${encodeURIComponent(category)}`,{method:"POST"});toast(result.scheduled===false?"As recomendações já estão sendo atualizadas.":"Atualização das recomendações solicitada.",result.scheduled===false?"info":"success");scheduleNavigationTask(()=>renderPortfolioTab({forceNews:true}),2500);}
   catch(error){toast(error.message,"error");}
 }
 
@@ -1727,7 +1741,7 @@ async function refreshPortfolioNews(portfolioId) {
   try {
     const result=await api(`/insights/news/cache/portfolios/${encodeURIComponent(portfolioId)}/refresh`,{method:"POST"});
     toast(result.scheduled===false?"As notícias já estão sendo atualizadas.":"Atualização das notícias solicitada.",result.scheduled===false?"info":"success");
-    scheduleNavigationTask(()=>renderPortfolioTab(),2500);
+    scheduleNavigationTask(()=>renderPortfolioTab({forceNews:true}),2500);
   } catch(error) { toast(error.message,"error"); }
 }
 
@@ -2215,7 +2229,7 @@ function adminPanelIsCurrent(root,context){
 }
 
 async function loadAccessLevels(root,context){
-  const levels=await api("/access/levels",{requestKey:"admin-levels",cacheTtlMs:10000,bypassCache:true});
+  const levels=await api("/access/levels",{requestKey:"admin-levels",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force});
   if(!adminPanelIsCurrent(root,context))return;
   root.innerHTML=`<div class="notice info"><strong>Permissões por nível:</strong> altere uma vez aqui e a mudança será aplicada imediatamente a todos os usuários vinculados. Contas antigas só mudam quando você atribuir um nível.</div><div class="access-level-list">${levels.map(accessLevelCard).join("")}</div><details class="data-card create-level-card"><summary><strong>Criar nível adicional</strong></summary><form id="create-access-level-form" class="filter-grid"><div class="field"><label>Identificador interno</label><input name="slug" required pattern="[a-z][a-z0-9_-]{1,31}" placeholder="ex.: parceiro"></div><div class="field"><label>Nome exibido</label><input name="name" required maxlength="80" placeholder="Ex.: Parceiro"></div><div class="field wide-action"><label>Descrição</label><input name="description" maxlength="500"></div><button class="button primary wide-action" type="submit">Criar nível sem permissões</button></form></details>`;
 }
@@ -2223,7 +2237,7 @@ async function loadAccessLevels(root,context){
 function userStatusLabel(status){return ({pending:"Pendente",approved:"Aprovado",blocked:"Bloqueado"})[status]||status;}
 async function loadAdminUsers(root,context){
   const params=new URLSearchParams({limit:"100",offset:String(state.adminUsersOffset)});if(state.adminUsersQuery)params.set("q",state.adminUsersQuery);if(state.adminUsersStatus)params.set("status",state.adminUsersStatus);if(state.adminUsersLevel)params.set("level",state.adminUsersLevel);
-  const [payload,levels]=await Promise.all([api(`/access/users/manage?${params}`,{requestKey:"admin-users",bypassCache:true}),api("/access/levels?include_inactive=true",{requestKey:"admin-levels",cacheTtlMs:10000})]);
+  const [payload,levels]=await Promise.all([api(`/access/users/manage?${params}`,{requestKey:"admin-users",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}),api("/access/levels?include_inactive=true",{requestKey:"admin-levels",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force})]);
   if(!adminPanelIsCurrent(root,context))return;
   const users=payload.items||[],activeLevels=levels.filter(level=>level.slug!=="owner"&&level.is_active),from=payload.total?payload.offset+1:0,to=Math.min(payload.offset+payload.limit,payload.total);
   const levelOptions=user=>{
@@ -2250,9 +2264,9 @@ function adminUpdateTable(updates){
 async function loadAdminUpdates(root,context){
   const owner=Boolean(state.session?.access?.is_owner);
   const [summary,updatePayload,officialLaunch]=await Promise.all([
-    api("/data/catalog-summary",{requestKey:"admin-catalog-summary"}),
-    api("/market-dashboard/updates",{requestKey:"admin-updates",bypassCache:true}),
-    owner?api("/backtests/batch/official-launch",{requestKey:"admin-official-launch",bypassCache:true}):Promise.resolve(null),
+    api("/data/catalog-summary",{requestKey:"admin-catalog-summary",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}),
+    api("/market-dashboard/updates",{requestKey:"admin-updates",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}),
+    owner?api("/backtests/batch/official-launch",{requestKey:"admin-official-launch",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}):Promise.resolve(null),
   ]);
   if(!adminPanelIsCurrent(root,context))return;
   const updates=updatePayload.updates||{};state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),...updates};
@@ -2271,7 +2285,7 @@ async function loadAdminUpdates(root,context){
 const jobTypeLabels={market_group_refresh:"Mercado e economia",economy_headlines_refresh:"Manchetes",historical_comparison_refresh:"Comparador histórico",market_catalog_refresh:"Catálogo",market_fundamentals_refresh:"Fundamentos",market_technicals_refresh:"Indicadores técnicos",market_intraday_refresh:"Cotações intradiárias",market_full_sync:"Sincronização completa de mercado",current_metrics_refresh:"Métricas atuais pré-calculadas",asset_price_ingest:"Histórico de preços do ativo",b3_index_portfolio_refresh:"Composição do Ibovespa",portfolio_prices_refresh:"Preços de carteira",user_news_refresh:"Notícias do usuário",personal_backtest_matrix:"Backtest pessoal",investor_dividends_refresh:"Proventos oficiais",cvm_relevant_facts_refresh:"Fatos relevantes CVM",official_calendar_refresh:"Agenda oficial",anbima_ima_history_refresh:"Histórico IMA-B/IRF-M",alb_universe_monitor:"Monitor do filtro ALB",data_quality_refresh:"Qualidade dos dados",operational_retention:"Retenção operacional",noop:"Verificação interna"};
 function jobStatusLabel(status){return ({queued:"Na fila",running:"Executando",succeeded:"Concluído",failed:"Falhou",cancelled:"Cancelado"})[status]||status;}
 async function loadAdminJobs(root,context){
-  const jobs=await api("/admin/jobs?limit=100",{requestKey:"admin-jobs",bypassCache:true});
+  const jobs=await api("/admin/jobs?limit=100",{requestKey:"admin-jobs",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force});
   if(!adminPanelIsCurrent(root,context))return;
   const table=marketTable(jobs,[{label:"Trabalho",render:r=>`<strong>${esc(jobTypeLabels[r.job_type]||r.job_type)}</strong><br><small>${esc(r.id)}</small>`},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":r.status==="running"?"warning":""}">${esc(jobStatusLabel(r.status))}</span>`},{label:"Progresso",render:r=>r.progress_total?`${number(r.progress_current||0,0)} / ${number(r.progress_total,0)}`:"—"},{label:"Tentativas",render:r=>`${number(r.attempts||0,0)} / ${number(r.max_attempts||0,0)}`},{label:"Solicitado por",render:r=>esc(r.requested_by||"Sistema")},{label:"Atualização",render:r=>dateTime(r.updated_at)},{label:"Mensagem",render:r=>`${esc(r.message||"—")}${r.last_error_code?`<br><small>${esc(r.last_error_code)}</small>`:""}`},{label:"",render:r=>["failed","cancelled"].includes(r.status)?`<button class="button secondary compact" data-retry-admin-job="${esc(r.id)}">Reprocessar</button>`:""}]);
   root.innerHTML=`<div class="admin-monitor-row"><span><strong>Fila de trabalhos em segundo plano</strong><small>Atualizações de mercado, notícias, carteiras e backtests sem travar a navegação.</small></span><button class="button secondary" data-reload-admin-jobs>Atualizar lista</button></div>${sectionCard("100 trabalhos mais recentes",table,"Falhas podem ser reprocessadas; trabalhos ativos nunca são duplicados")}`;
@@ -2290,7 +2304,7 @@ function operationsResourceCards(resources){
 }
 
 async function loadAdminOperations(root,context){
-  const payload=await api("/admin/operations",{requestKey:"admin-operations",bypassCache:true});
+  const payload=await api("/admin/operations",{requestKey:"admin-operations",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force});
   if(!adminPanelIsCurrent(root,context))return;
   const severityLabel={healthy:"Operacional",warning:"Atenção",critical:"Crítico"};
   const serviceRoleLabel={worker:"Processamento em segundo plano",web:"Aplicação web"};
@@ -2328,7 +2342,7 @@ function dataQualityStatus(value){return ({updated:"Atualizado",partial:"Cobertu
 function dataQualityClass(value){return ["failed","unavailable"].includes(value)?"danger":["partial","stale"].includes(value)?"warning":"";}
 
 async function loadAdminQuality(root,context){
-  const payload=await api("/admin/data-quality",{requestKey:"admin-quality",bypassCache:true});
+  const payload=await api("/admin/data-quality",{requestKey:"admin-quality",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force});
   if(!adminPanelIsCurrent(root,context))return;
   const summary=payload.summary||{},alb=payload.alb||null,rows=payload.sources||[];
   const sourceRows=marketTable(rows,[
@@ -2400,7 +2414,7 @@ function renderAdminAnalysisSettings(root){
 }
 
 async function loadAdminAnalysisSettings(root,context=null){
-  const payload=await api("/admin/analysis-settings",{requestKey:"admin-analysis-settings",bypassCache:true});
+  const payload=await api("/admin/analysis-settings",{requestKey:"admin-analysis-settings",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:Boolean(context?.force)});
   if(context&&!adminPanelIsCurrent(root,context))return;
   state.adminAnalysisSettings=payload;
   renderAdminAnalysisSettings(root);
@@ -2500,7 +2514,7 @@ function portalBookForm(book,index,total){
 }
 
 async function loadAdminPortal(root,context){
-  const payload=await api("/admin/portal",{requestKey:"admin-portal",bypassCache:true});
+  const payload=await api("/admin/portal",{requestKey:"admin-portal",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force});
   if(!adminPanelIsCurrent(root,context))return;
   state.portalAdmin=payload;
   const books=payload.books||[];
@@ -2534,10 +2548,10 @@ async function savePortalBook(form){
 async function deletePortalBook(id){if(!window.confirm("Excluir este livro e seus links da página inicial? A capa será removida apenas se nenhum outro livro a utilizar."))return;try{await api(`/admin/portal/books/${encodeURIComponent(id)}`,{method:"DELETE"});toast("Livro excluído.","success");await loadAdmin();}catch(error){toast(error.message,"error");}}
 async function movePortalBook(id,direction){const books=[...(state.portalAdmin?.books||[])],index=books.findIndex(book=>book.id===id),target=index+(direction==="up"?-1:1);if(index<0||target<0||target>=books.length)return;[books[index],books[target]]=[books[target],books[index]];try{await api("/admin/portal/books/order",{method:"PUT",body:JSON.stringify({ordered_ids:books.map(book=>book.id)})});toast("Ordem dos livros atualizada.","success");await loadAdmin();}catch(error){toast(error.message,"error");}}
 
-async function loadAdmin() {
+async function loadAdmin(force=false) {
   const panelStarted=performance.now();
   const root=$("#admin-tab-content"),panelKey=state.tabs.admin;
-  const context={panelKey,navigationSerial:state.navigationSerial,requestSerial:++state.adminRequestSerial};
+  const context={panelKey,navigationSerial:state.navigationSerial,requestSerial:++state.adminRequestSerial,force:Boolean(force)};
   const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;root.dataset.panelKey=panelKey;
   let panelSucceeded=false;
   if(!samePanel)root.innerHTML=loadingCards(6);else root.classList.add("panel-refreshing");
@@ -2551,7 +2565,7 @@ async function loadAdmin() {
     else if(panelKey==="jobs")await loadAdminJobs(root,context);
     else if(panelKey==="operations")await loadAdminOperations(root,context);
     else {
-      const [health,db,counts]=await Promise.all([api("/health",{requestKey:"admin-health"}),api("/health/db",{requestKey:"admin-health-db"}),api("/debug/db-counts",{requestKey:"admin-db-counts"})]);
+      const [health,db,counts]=await Promise.all([api("/health",{requestKey:"admin-health",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}),api("/health/db",{requestKey:"admin-health-db",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}),api("/debug/db-counts",{requestKey:"admin-db-counts",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force})]);
       if(!adminPanelIsCurrent(root,context))return;
       root.innerHTML=`<div class="metric-grid">${metricCard("Aplicação",health.status==="ok"?"Operacional":"Atenção",`Versão ${health.version}`)}${metricCard("Banco de dados",db.status==="ok"?"Conectado":"Indisponível",db.database||"")}${metricCard("Hospedagem","Oracle Cloud",health.environment||"Produção")}${metricCard("Domínio","HTTPS ativo","Conexão segura")}</div>${sectionCard("Registros principais",`<div class="detail-list">${Object.entries(counts).map(([key,value])=>`<div><span>${esc(key.replaceAll("_"," "))}</span><strong>${number(value,0)}</strong></div>`).join("")}</div>`,`Consulta somente leitura`)}`;
     }
@@ -2632,7 +2646,7 @@ async function runAlertMonitorNow(button){
 
 async function retryAdminJob(button){
   button.disabled=true;
-  try{await api(`/admin/jobs/${encodeURIComponent(button.dataset.retryAdminJob)}/retry`,{method:"POST"});toast("Trabalho reenfileirado.","success");scheduleNavigationTask(()=>loadAdmin(),1200);}
+  try{await api(`/admin/jobs/${encodeURIComponent(button.dataset.retryAdminJob)}/retry`,{method:"POST"});toast("Trabalho reenfileirado.","success");scheduleNavigationTask(()=>loadAdmin(true),1200);}
   catch(error){toast(error.message,"error");button.disabled=false;}
 }
 
@@ -2662,7 +2676,7 @@ async function syncMarketCatalog(assetType, includeTechnicals) {
         const count=job.result?.catalog_count;
         state.analysisResultCache.clear();
         toast(nullable(count)?"Catálogo atualizado.":`Catálogo atualizado: ${number(count,0)} ativo(s).`,"success");
-        await loadAdmin();
+        await loadAdmin(true);
         return;
       }
       if(["failed","cancelled"].includes(job.status))throw new Error(job.last_error_message||job.last_error_code||"A atualização não foi concluída.");
@@ -2742,7 +2756,7 @@ function bindEvents() {
   $("#primary-nav").addEventListener("click", event=>{ const button=event.target.closest("[data-view]"); if(button) setView(button.dataset.view); });
   $("#collapse-sidebar").addEventListener("click",()=>document.body.classList.toggle("sidebar-collapsed"));
   $("#mobile-menu").addEventListener("click",()=>document.body.classList.toggle("mobile-nav-open"));
-  $$(".tabs").forEach(tabs=>tabs.addEventListener("click",event=>{const button=event.target.closest(".tab");if(button){activateTab(tabs.dataset.tabs,button.dataset.tab);if(tabs.dataset.tabs==="analysis")updateFilterAvailability();}}));
+  $$(".tabs").forEach(tabs=>tabs.addEventListener("click",event=>{const button=event.target.closest(".tab");if(button&&activateTab(tabs.dataset.tabs,button.dataset.tab)&&tabs.dataset.tabs==="analysis")updateFilterAvailability();}));
   $("#refresh-market").addEventListener("click",()=>loadMarket(true));
   $("#logout-button").addEventListener("click",async()=>{try{await api("/logout",{method:"POST"});location.href=LANDING_PATH;}catch(error){toast(error.message,"error");}});
   $("#global-search").addEventListener("input",event=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>runSearch(event.target.value),220);});
@@ -2750,8 +2764,8 @@ function bindEvents() {
   document.addEventListener("click",event=>{
     const refreshGroupsButton=event.target.closest("[data-refresh-groups]");if(refreshGroupsButton){if(refreshGroupsButton.hasAttribute("data-confirm-all-updates")&&!window.confirm(`Enfileirar agora as ${adminRefreshGroups.length} rotinas de atualização? Os dados atuais continuarão disponíveis durante o processamento.`))return;refreshMarketGroups(refreshGroupsButton.dataset.refreshGroups);return;}
     const portfolioNewsButton=event.target.closest("[data-portfolio-news-refresh]");if(portfolioNewsButton){refreshPortfolioNews(portfolioNewsButton.dataset.portfolioNewsRefresh);return;}
-    const newsMode=event.target.closest("[data-portfolio-news-mode]");if(newsMode){state.portfolioNewsMode=newsMode.dataset.portfolioNewsMode;renderPortfolioTab();return;}
-    const recommendationCategory=event.target.closest("[data-recommendation-category]");if(recommendationCategory){state.recommendationCategory=recommendationCategory.dataset.recommendationCategory;renderPortfolioTab();return;}
+    const newsMode=event.target.closest("[data-portfolio-news-mode]");if(newsMode){const mode=newsMode.dataset.portfolioNewsMode;if(state.portfolioNewsMode!==mode){state.portfolioNewsMode=mode;renderPortfolioTab();}return;}
+    const recommendationCategory=event.target.closest("[data-recommendation-category]");if(recommendationCategory){const category=recommendationCategory.dataset.recommendationCategory;if(state.recommendationCategory!==category){state.recommendationCategory=category;renderPortfolioTab();}return;}
     const recommendationRefresh=event.target.closest("[data-recommendation-news-refresh]");if(recommendationRefresh){refreshRecommendationNews(recommendationRefresh.dataset.recommendationNewsRefresh);return;}
     const alertSuggestion=event.target.closest("[data-alert-suggestion]");if(alertSuggestion){const input=$("#alert-symbol");if(input){input.value=alertSuggestion.dataset.alertSuggestion;$("#alert-symbol-suggestions")?.classList.add("hidden");}return;}
     const alertStatus=event.target.closest("[data-alert-status]");if(alertStatus){setAlertStatus(alertStatus);return;}
@@ -2766,9 +2780,9 @@ function bindEvents() {
     const resetAdminPresetButton=event.target.closest("[data-reset-admin-preset]");if(resetAdminPresetButton){resetAdminPreset(resetAdminPresetButton);return;}
     const resetAdminColumnsButton=event.target.closest("[data-reset-admin-columns]");if(resetAdminColumnsButton){resetAdminColumns(resetAdminColumnsButton.dataset.resetAdminColumns);return;}
     const moveAdminColumnButton=event.target.closest("[data-move-admin-column]");if(moveAdminColumnButton){moveAdminColumn(moveAdminColumnButton);return;}
-    if(event.target.closest("[data-reload-admin-jobs]")){loadAdmin();return;}
-    if(event.target.closest("[data-reload-admin-operations]")){loadAdmin();return;}
-    if(event.target.closest("[data-reload-admin-quality]")){loadAdmin();return;}
+    if(event.target.closest("[data-reload-admin-jobs]")){loadAdmin(true);return;}
+    if(event.target.closest("[data-reload-admin-operations]")){loadAdmin(true);return;}
+    if(event.target.closest("[data-reload-admin-quality]")){loadAdmin(true);return;}
     const deletePortal=event.target.closest("[data-portal-book-delete]");if(deletePortal){deletePortalBook(deletePortal.dataset.portalBookDelete);return;}
     const movePortal=event.target.closest("[data-portal-book-move]");if(movePortal){movePortalBook(movePortal.dataset.portalBookId,movePortal.dataset.portalBookMove);return;}
     const portfolioPricesButton=event.target.closest("[data-portfolio-prices-refresh]");if(portfolioPricesButton){refreshPortfolioPrices(portfolioPricesButton.dataset.portfolioPricesRefresh);return;}

@@ -1,5 +1,24 @@
 # Formação do Investidor • V1.23.6
 
+## R2 — alternância de painéis sem recarga desnecessária
+
+A V1.23.6 R2 atua diretamente no atraso percebido ao trocar de área. Clicar
+novamente no painel ou na aba já ativa deixa de cancelar pedidos e reiniciar a
+renderização. Consultas avançadas de leitura deixam de apagar o cache das
+demais telas, enquanto Notícias e Administração reutilizam por alguns segundos
+uma resposta concluída; os botões explícitos de atualizar continuam buscando
+dados novos imediatamente.
+
+No servidor, a lista de backtests não transporta curvas e resultados completos,
+o Dashboard consulta somente pequenos metadados das rotinas que não exibe e a
+Carteira reaproveita o snapshot intradiário já carregado. Antes do benchmark, a
+promoção agora exige cobertura materializada de 100% dos ativos ativos para
+impedir que a navegação dependa dos fallbacks históricos mais caros.
+
+Não há migração nova. A revisão esperada continua sendo
+`0030_v1_23_navigation_metrics`. Consulte `PATCH_V1236_R2.md`,
+`INSTRUCOES_ORACLE_V1236_R2.md` e `RELATORIO_VALIDACAO_V1236_R2.md`.
+
 ## R1 — velocidade conservadora sem perda funcional
 
 A V1.23.6 R1 reduz consultas e trabalho visual repetidos sem mudar fórmulas,

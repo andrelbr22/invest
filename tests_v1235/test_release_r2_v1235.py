@@ -19,14 +19,14 @@ def test_r2_release_identity_schema_assets_and_operator_documents():
     publisher = read("PUBLICAR_GITHUB.ps1")
     workflow = read(".github/workflows/tests.yml")
     html = read("investment_engine/web/index.html")
-    assert "Acelera paineis preservando fallbacks na V1.23.6 R1 em teste" in publisher
-    assert "valide a V1.23.6 R1" in publisher
+    assert "Evita recargas e preserva caches na V1.23.6 R2 em teste" in publisher
+    assert "valide a V1.23.6 R2" in publisher
     assert "SEGURANCA DA PRIMEIRA MIGRACAO" not in publisher
     assert "stagingConfirmation" not in publisher
     assert "0030_v1_23_navigation_metrics" in workflow
     assert "tests_v1235" in workflow
-    assert "app.css?v=1.23.6-r1" in html
-    assert "app.js?v=1.23.6-r1" in html
+    assert "app.css?v=1.23.6-r2" in html
+    assert "app.js?v=1.23.6-r2" in html
 
     for relative in (
         "PATCH_V1235_R2B.md",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -24,6 +25,17 @@ def utcnow() -> datetime:
 def payload_hash(payload: dict) -> str:
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True)
+class SharedSnapshotStatus:
+    """Small snapshot projection used when only refresh metadata is needed."""
+
+    snapshot_key: str
+    as_of: datetime
+    last_error_code: str | None
+    last_error_at: datetime | None
+    payload_json: dict
 
 
 class EconomicSeriesRepository:
@@ -138,6 +150,69 @@ class SharedSnapshotRepository:
             select(SharedSnapshotORM).where(SharedSnapshotORM.snapshot_key.in_(clean_keys))
         )
         return {row.snapshot_key: row for row in rows}
+
+    def get_status(self, snapshot_key: str) -> SharedSnapshotStatus | None:
+        clean_key = str(snapshot_key or "").strip().lower()
+        if not clean_key:
+            return None
+        return self.get_status_many((clean_key,)).get(clean_key)
+
+    def get_status_many(self, snapshot_keys: Iterable[str]) -> dict[str, SharedSnapshotStatus]:
+        """Read status fields and small JSON fragments without the full payload.
+
+        Refresh status uses only ``refresh``, ``status``, ``reason``,
+        ``error_code`` and ``warnings`` from the payload.  Projecting those
+        paths in SQL avoids transferring comparison series, quote maps and
+        other large documents that are unrelated to the status response.
+        """
+        clean_keys = {
+            str(snapshot_key or "").strip().lower()
+            for snapshot_key in snapshot_keys
+            if str(snapshot_key or "").strip()
+        }
+        if not clean_keys:
+            return {}
+        payload = SharedSnapshotORM.payload_json
+        rows = self.session.execute(
+            select(
+                SharedSnapshotORM.snapshot_key,
+                SharedSnapshotORM.as_of,
+                SharedSnapshotORM.last_error_code,
+                SharedSnapshotORM.last_error_at,
+                payload["refresh"].label("refresh_meta"),
+                payload["status"].as_string().label("payload_status"),
+                payload["reason"].as_string().label("payload_reason"),
+                payload["error_code"].as_string().label("payload_error_code"),
+                payload["warnings"].label("payload_warnings"),
+            ).where(SharedSnapshotORM.snapshot_key.in_(clean_keys))
+        )
+        result: dict[str, SharedSnapshotStatus] = {}
+        for row in rows:
+            values = row._mapping
+            status_payload = {}
+            refresh_meta = values["refresh_meta"]
+            if isinstance(refresh_meta, dict):
+                status_payload["refresh"] = dict(refresh_meta)
+            for source, target in (
+                ("payload_status", "status"),
+                ("payload_reason", "reason"),
+                ("payload_error_code", "error_code"),
+            ):
+                value = values[source]
+                if value not in (None, ""):
+                    status_payload[target] = value
+            warnings = values["payload_warnings"]
+            if isinstance(warnings, list):
+                status_payload["warnings"] = list(warnings)
+            snapshot_key = str(values["snapshot_key"])
+            result[snapshot_key] = SharedSnapshotStatus(
+                snapshot_key=snapshot_key,
+                as_of=values["as_of"],
+                last_error_code=values["last_error_code"],
+                last_error_at=values["last_error_at"],
+                payload_json=status_payload,
+            )
+        return result
 
     def save_valid(
         self,

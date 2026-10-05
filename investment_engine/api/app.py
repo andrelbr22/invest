@@ -3423,7 +3423,9 @@ def _portfolio_snapshot(db: Session, portfolio):
     snap["consolidated_allocation_hierarchy"] = build_consolidated_allocation_hierarchy(snap, custom)
     return {
         "portfolio": _portfolio_header(portfolio), **snap,
-        "price_update": refresh_status(db, "technical_intraday"),
+        "price_update": refresh_status(
+            db, "technical_intraday", None, intraday_row,
+        ),
     }
 
 
@@ -3979,16 +3981,26 @@ def refresh_portfolio_prices(portfolio_id: UUID, access=Depends(require_permissi
 
 def _build_market_dashboard_payload(db: Session) -> dict:
     snapshots = SharedSnapshotRepository(db)
-    snapshot_rows = snapshots.get_many(
-        spec.snapshot_key for spec in REFRESH_SCHEDULES.values()
-    )
-    updates = all_refresh_statuses(db, snapshots_by_key=snapshot_rows)
-    grouped: dict = {}
-    generated = []
     visible_keys = (
         "selic_current", "selic_focus", "macro", "global_markets",
         "rates_calendar", "crypto", "fx",
     )
+    visible_snapshot_keys = {
+        REFRESH_SCHEDULES[key].snapshot_key for key in visible_keys
+    }
+    snapshot_rows = snapshots.get_many(visible_snapshot_keys)
+    status_snapshot_keys = {
+        spec.snapshot_key for spec in REFRESH_SCHEDULES.values()
+    } - visible_snapshot_keys
+    # Some focused tests and downstream adapters provide the pre-R2 repository
+    # surface. Keep them compatible while production uses the narrow projection.
+    status_loader = getattr(snapshots, "get_status_many", snapshots.get_many)
+    status_rows = status_loader(status_snapshot_keys)
+    updates = all_refresh_statuses(
+        db, snapshots_by_key={**status_rows, **snapshot_rows},
+    )
+    grouped: dict = {}
+    generated = []
     missing_visible_snapshot = False
     for key in visible_keys:
         row = snapshot_rows.get(REFRESH_SCHEDULES[key].snapshot_key)

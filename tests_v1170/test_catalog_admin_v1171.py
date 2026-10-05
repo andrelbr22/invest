@@ -42,7 +42,7 @@ def test_owner_interface_exposes_catalog_counts_and_actions():
     index = (ROOT / "investment_engine" / "web" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
     assert 'data-tab="data">Dados de mercado' in index
-    assert 'api("/data/catalog-summary",{requestKey:"admin-catalog-summary"})' in script
+    assert 'api("/data/catalog-summary",{requestKey:"admin-catalog-summary",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force})' in script
     assert 'data-refresh-groups="catalog">Atualizar catálogo' in script
     assert 'data-refresh-groups="fundamentals">Atualizar fundamentos e notas' in script
 

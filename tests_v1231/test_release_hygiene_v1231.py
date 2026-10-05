@@ -63,7 +63,7 @@ def test_release_identity_is_v1234():
     publisher = (ROOT / "PUBLICAR_GITHUB.ps1").read_text(encoding="utf-8")
     assert '__version__ = "1.23.6"' in version
     assert 'version = "1.23.6"' in project
-    assert "V1.23.6 R1" in publisher
+    assert "V1.23.6 R2" in publisher
 
 
 def test_promotion_runs_performance_gate_before_any_production_mutation():

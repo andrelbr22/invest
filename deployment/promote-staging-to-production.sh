@@ -252,6 +252,16 @@ if ! docker image inspect "${STAGING_IMAGE}" >/dev/null 2>&1; then
   exit 1
 fi
 
+# A API preserva fallbacks históricos para segurança, mas eles são muito mais
+# caros que a leitura materializada. Uma promoção só pode avançar quando todos
+# os ativos ativos possuem valuation e pódio prontos no banco homologado.
+echo "Validando a cobertura das métricas usadas pela navegação..."
+if ! docker compose -f "${COMPOSE_FILE}" exec -T staging \
+  python -m scripts.check_navigation_coverage; then
+  echo "Promoção interrompida: conclua a materialização das métricas atuais no ambiente de teste."
+  exit 1
+fi
+
 # O candidato deve cumprir as metas de resposta antes de qualquer backup,
 # troca de tag ou recriação de produção. O comando retorna código 2 se ao
 # menos uma rota ultrapassar a meta de p95 e também falha em qualquer HTTP

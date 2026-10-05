@@ -67,7 +67,7 @@ def test_search_and_news_timers_cannot_restore_obsolete_interface_state():
     assert 'state.requestControllers.get("search")?.abort()' in javascript
     assert 'String($("#global-search")?.value||"").trim()!==normalized' in javascript
     assert 'state.portfolioNewsMode===newsMode' in javascript
-    assert "scheduleNavigationTask(()=>renderPortfolioTab(),2500)" in javascript
+    assert "scheduleNavigationTask(()=>renderPortfolioTab({forceNews:true}),2500)" in javascript
 
 
 def test_aborted_market_navigation_does_not_show_a_false_error():

@@ -12,6 +12,7 @@ from ..repositories.economic_series import SharedSnapshotRepository
 
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 MANUAL_COOLDOWN = timedelta(minutes=5)
+_NOT_LOADED = object()
 
 
 @dataclass(frozen=True)
@@ -205,7 +206,7 @@ def next_scheduled_slot(spec: RefreshSchedule, now: datetime | None = None) -> d
 
 def snapshot_is_stale(session: Session, spec: RefreshSchedule, now: datetime | None = None) -> bool:
     current = _aware(now or datetime.now(timezone.utc))
-    snapshot = SharedSnapshotRepository(session).get(spec.snapshot_key)
+    snapshot = SharedSnapshotRepository(session).get_status(spec.snapshot_key)
     return snapshot is None or _aware(snapshot.as_of) < current - spec.stale_after
 
 
@@ -324,12 +325,20 @@ def _refresh_status_payload(*, key: str, current: datetime, snapshot, job) -> di
     }
 
 
-def refresh_status(session: Session, key: str, now: datetime | None = None) -> dict:
-    """Return one refresh status while preserving the original public API."""
+def refresh_status(
+    session: Session,
+    key: str,
+    now: datetime | None = None,
+    snapshot=_NOT_LOADED,
+    job=_NOT_LOADED,
+) -> dict:
+    """Return one refresh status, optionally reusing rows loaded by the caller."""
     spec = REFRESH_SCHEDULES[key]
     current = _aware(now or datetime.now(timezone.utc))
-    snapshot = SharedSnapshotRepository(session).get(spec.snapshot_key)
-    job = BackgroundJobRepository(session).latest_for_deduplication(f"refresh:{key}")
+    if snapshot is _NOT_LOADED:
+        snapshot = SharedSnapshotRepository(session).get_status(spec.snapshot_key)
+    if job is _NOT_LOADED:
+        job = BackgroundJobRepository(session).latest_for_deduplication(f"refresh:{key}")
     return _refresh_status_payload(
         key=key,
         current=current,
@@ -353,7 +362,7 @@ def all_refresh_statuses(
     current = _aware(now or datetime.now(timezone.utc))
     snapshots = snapshots_by_key
     if snapshots is None:
-        snapshots = SharedSnapshotRepository(session).get_many(
+        snapshots = SharedSnapshotRepository(session).get_status_many(
             spec.snapshot_key for spec in REFRESH_SCHEDULES.values()
         )
     jobs = jobs_by_deduplication
