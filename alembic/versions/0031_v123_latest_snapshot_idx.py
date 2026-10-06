@@ -1,6 +1,6 @@
 """V1.23.6 R2B indexes for bounded latest-snapshot lookups.
 
-Revision ID: 0031_v1_23_latest_snapshot_indexes
+Revision ID: 0031_v123_latest_snapshot_idx
 Revises: 0030_v1_23_navigation_metrics
 
 The indexes are additive.  Historical snapshots and the previous indexes are
@@ -12,7 +12,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0031_v1_23_latest_snapshot_indexes"
+revision = "0031_v123_latest_snapshot_idx"
 down_revision = "0030_v1_23_navigation_metrics"
 branch_labels = None
 depends_on = None

@@ -21,6 +21,6 @@ avançava depois de duas ou três tentativas.
 ## Compatibilidade
 
 - versão pública permanece `1.23.6`;
-- revisão de banco esperada: `0031_v1_23_latest_snapshot_indexes`;
+- revisão de banco esperada: `0031_v123_latest_snapshot_idx`;
 - nenhuma tela, fórmula, permissão, fonte ou dado existente foi removido;
 - todas as melhorias da R2 e R2A permanecem ativas.

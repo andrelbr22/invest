@@ -11,7 +11,7 @@
 
 ## Critérios obrigatórios
 
-1. migração final `0031_v1_23_latest_snapshot_indexes`;
+1. migração final `0031_v123_latest_snapshot_idx`;
 2. quatro índices R2B válidos no PostgreSQL;
 3. ciclo novo concluído sem retentativa e sem erro de navegação;
 4. cobertura integral das métricas, valorações e pódios;

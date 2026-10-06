@@ -73,7 +73,7 @@ def test_postgres_latest_technical_keeps_timeframe_and_descending_priority():
 
 
 def test_r2b_adds_concurrent_descending_indexes_and_updates_release_identity():
-    migration = (ROOT / "alembic/versions/0031_v1_23_latest_snapshot_indexes.py").read_text(
+    migration = (ROOT / "alembic/versions/0031_v123_latest_snapshot_idx.py").read_text(
         encoding="utf-8",
     )
     publisher = (ROOT / "PUBLICAR_GITHUB.ps1").read_text(encoding="utf-8")
@@ -83,5 +83,5 @@ def test_r2b_adds_concurrent_descending_indexes_and_updates_release_identity():
     assert "reference_date DESC" in migration
     assert "as_of DESC" in migration
     assert "timestamp DESC" in migration
-    assert "V1.23.6 R2C" in publisher
-    assert '0031_v1_23_latest_snapshot_indexes' in workflow
+    assert "V1.23.6 R2D" in publisher
+    assert '0031_v123_latest_snapshot_idx' in workflow

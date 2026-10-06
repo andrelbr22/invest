@@ -19,7 +19,7 @@ V1.23.6 R2B em `/testefdi`.
 3. Aguarde o processo terminar. A migração pode demorar enquanto constrói os
    quatro índices concorrentes.
 4. Confirme que `/testefdi/ready` informa versão `1.23.6`, ambiente `staging`,
-   banco acessível e migração `0031_v1_23_latest_snapshot_indexes`.
+   banco acessível e migração `0031_v123_latest_snapshot_idx`.
 
 ## Homologação obrigatória
 

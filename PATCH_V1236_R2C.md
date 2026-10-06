@@ -16,4 +16,4 @@ mantido parado e a produção não foi alterada.
 - a migração R2B permanece repetível após a tentativa interrompida.
 
 Não há nova migração. A revisão esperada continua
-`0031_v1_23_latest_snapshot_indexes`.
+`0031_v123_latest_snapshot_idx`.

@@ -12,7 +12,7 @@
 ## Critérios da R2C
 
 1. trava consultiva adquirida em conexão `AUTOCOMMIT`;
-2. migração concluída em `0031_v1_23_latest_snapshot_indexes`;
+2. migração concluída em `0031_v123_latest_snapshot_idx`;
 3. quatro índices prontos e válidos;
 4. ciclo de métricas completo com uma tentativa por lote;
 5. cobertura integral, testes e benchmark aprovados;

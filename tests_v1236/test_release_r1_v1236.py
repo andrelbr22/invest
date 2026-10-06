@@ -13,7 +13,7 @@ def read(relative: str) -> str:
 def test_release_identity_documents_and_latest_lookup_migration():
     assert __version__ == "1.23.6"
     assert sorted((ROOT / "alembic" / "versions").glob("[0-9]*.py"))[-1].name == (
-        "0031_v1_23_latest_snapshot_indexes.py"
+        "0031_v123_latest_snapshot_idx.py"
     )
     assert read("README.md").startswith("# Formação do Investidor • V1.23.6")
     assert "tests_v1236" in read("pyproject.toml")
@@ -33,6 +33,9 @@ def test_release_identity_documents_and_latest_lookup_migration():
         "PATCH_V1236_R2C.md",
         "RELATORIO_VALIDACAO_V1236_R2C.md",
         "INSTRUCOES_ORACLE_V1236_R2C.md",
+        "PATCH_V1236_R2D.md",
+        "RELATORIO_VALIDACAO_V1236_R2D.md",
+        "INSTRUCOES_ORACLE_V1236_R2D.md",
     ):
         assert (ROOT / relative).is_file(), relative
 
@@ -41,8 +44,8 @@ def test_release_publication_and_browser_assets_point_to_r2():
     publisher = read("PUBLICAR_GITHUB.ps1")
     platform = read("investment_engine/web/index.html")
 
-    assert "Libera migracao concorrente na V1.23.6 R2C em teste" in publisher
-    assert "valide a V1.23.6 R2C" in publisher
+    assert "Compatibiliza revisao Alembic na V1.23.6 R2D em teste" in publisher
+    assert "valide a V1.23.6 R2D" in publisher
     assert "../ui-assets/app.css?v=1.23.6-r2" in platform
     assert "../ui-assets/app.js?v=1.23.6-r2" in platform
 

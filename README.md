@@ -1,5 +1,16 @@
 # Formação do Investidor • V1.23.6
 
+## R2D — identificador compatível com o Alembic histórico
+
+A V1.23.6 R2D preserva as correções da R2B e R2C e encurta somente o
+identificador da revisão 0031 para caber no limite de 32 caracteres existente
+desde a primeira migração. A revisão final é
+`0031_v123_latest_snapshot_idx`.
+
+Um novo teste verifica todos os identificadores de migração e impede que uma
+revisão futura ultrapasse esse limite. Consulte `PATCH_V1236_R2D.md`,
+`INSTRUCOES_ORACLE_V1236_R2D.md` e `RELATORIO_VALIDACAO_V1236_R2D.md`.
+
 ## R2C — coordenação sem bloquear o índice concorrente
 
 A V1.23.6 R2C corrige a espera circular observada na primeira instalação da
@@ -8,7 +19,7 @@ conexão passa a operar em autocommit e deixa de manter um snapshot de transaç�
 aberto. Assim, o `CREATE INDEX CONCURRENTLY` pode concluir normalmente.
 
 A versão, os quatro índices e a revisão esperada permanecem os mesmos da R2B:
-`1.23.6` e `0031_v1_23_latest_snapshot_indexes`. Consulte
+`1.23.6` e `0031_v123_latest_snapshot_idx`. Consulte
 `PATCH_V1236_R2C.md`, `INSTRUCOES_ORACLE_V1236_R2C.md` e
 `RELATORIO_VALIDACAO_V1236_R2C.md`.
 
@@ -20,7 +31,7 @@ histórico de cada lote para localizar o registro mais recente. No PostgreSQL,
 ela passa a usar `DISTINCT ON` sobre índices descendentes específicos para
 fundamentos, técnicos, scores e preços.
 
-A migração `0031_v1_23_latest_snapshot_indexes` é somente aditiva, mantém
+A migração `0031_v123_latest_snapshot_idx` é somente aditiva, mantém
 todos os históricos e cria os novos índices de forma concorrente. Consulte
 `PATCH_V1236_R2B.md`, `INSTRUCOES_ORACLE_V1236_R2B.md` e
 `RELATORIO_VALIDACAO_V1236_R2B.md`.

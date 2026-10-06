@@ -21,7 +21,7 @@ def test_release_identity_docs_ci_and_schema_are_v1234():
     assert '"tests_v1235"' in project
     assert '"tests_v1236"' in project
     assert workflow.count("tests_v1232 tests_v1233 tests_v1234 tests_v1235") == 2
-    assert '0031_v1_23_latest_snapshot_indexes' in workflow
+    assert '0031_v123_latest_snapshot_idx' in workflow
     assert "V1.23.6 R2" in publisher
     assert readme.startswith("# Formação do Investidor • V1.23.6")
     assert "Otimização estrutural V1.23.2" in readme
@@ -37,7 +37,7 @@ def test_release_identity_docs_ci_and_schema_are_v1234():
 
 def test_v1233_has_no_new_schema_migration_and_preserves_all_history():
     migrations = sorted((ROOT / "alembic" / "versions").glob("[0-9]*.py"))
-    assert migrations[-1].name == "0031_v1_23_latest_snapshot_indexes.py"
+    assert migrations[-1].name == "0031_v123_latest_snapshot_idx.py"
     current_metrics = (ROOT / "investment_engine" / "core" / "current_metrics.py").read_text(
         encoding="utf-8",
     )

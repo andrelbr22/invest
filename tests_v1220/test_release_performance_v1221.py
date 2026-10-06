@@ -19,8 +19,8 @@ def test_publication_and_readme_point_to_current_v1233_staging_validation():
     publisher = (ROOT / "PUBLICAR_GITHUB.ps1").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "Libera migracao concorrente na V1.23.6 R2C em teste" in publisher
-    assert "valide a V1.23.6 R2C" in publisher
+    assert "Compatibiliza revisao Alembic na V1.23.6 R2D em teste" in publisher
+    assert "valide a V1.23.6 R2D" in publisher
     assert readme.startswith("# Formação do Investidor • V1.23.6")
     assert "INSTRUCOES_ORACLE_V1221.md" in readme
     assert "INSTRUCOES_ORACLE_V1231_R2.md" in readme

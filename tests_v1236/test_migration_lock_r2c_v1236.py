@@ -68,10 +68,10 @@ def test_migration_advisory_lock_uses_autocommit_without_open_snapshot():
 def test_r2c_documents_the_fail_closed_recovery_without_new_schema_revision():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     patch = (ROOT / "PATCH_V1236_R2C.md").read_text(encoding="utf-8")
-    migration = (ROOT / "alembic/versions/0031_v1_23_latest_snapshot_indexes.py").read_text(
+    migration = (ROOT / "alembic/versions/0031_v123_latest_snapshot_idx.py").read_text(
         encoding="utf-8",
     )
 
     assert "R2C" in readme
     assert "AUTOCOMMIT" in patch
-    assert 'revision = "0031_v1_23_latest_snapshot_indexes"' in migration
+    assert 'revision = "0031_v123_latest_snapshot_idx"' in migration

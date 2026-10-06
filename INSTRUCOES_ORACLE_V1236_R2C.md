@@ -8,7 +8,7 @@ banco isolado e aplicar novamente a migração 0031 com a coordenação corrigid
 Resultados obrigatórios:
 
 - `/testefdi/ready` em HTTP 200, versão `1.23.6`, ambiente `staging` e revisão
-  `0031_v1_23_latest_snapshot_indexes`;
+  `0031_v123_latest_snapshot_idx`;
 - quatro índices `ix_*_latest_desc` prontos e válidos;
 - ciclo R2C completo com `MAX(attempts)=1`;
 - cobertura integral, suíte oficial e benchmark aprovados;
