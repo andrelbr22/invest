@@ -1,5 +1,17 @@
 # Formação do Investidor • V1.23.6
 
+## R2C — coordenação sem bloquear o índice concorrente
+
+A V1.23.6 R2C corrige a espera circular observada na primeira instalação da
+R2B. A trava que impede duas migrações simultâneas continua ativa, mas sua
+conexão passa a operar em autocommit e deixa de manter um snapshot de transação
+aberto. Assim, o `CREATE INDEX CONCURRENTLY` pode concluir normalmente.
+
+A versão, os quatro índices e a revisão esperada permanecem os mesmos da R2B:
+`1.23.6` e `0031_v1_23_latest_snapshot_indexes`. Consulte
+`PATCH_V1236_R2C.md`, `INSTRUCOES_ORACLE_V1236_R2C.md` e
+`RELATORIO_VALIDACAO_V1236_R2C.md`.
+
 ## R2B — leitura rápida do último snapshot
 
 A V1.23.6 R2B preserva integralmente a R2A e corrige o gargalo identificado

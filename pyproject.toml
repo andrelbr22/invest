@@ -1,7 +1,7 @@
 [project]
 name = "investment-engine"
 version = "1.23.6"
-description = "Formação do Investidor V1.23.6 R2B with indexed latest-snapshot reads and guarded materialized navigation."
+description = "Formação do Investidor V1.23.6 R2C with nonblocking migration coordination and indexed latest-snapshot reads."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

@@ -30,6 +30,9 @@ def test_release_identity_documents_and_latest_lookup_migration():
         "PATCH_V1236_R2B.md",
         "RELATORIO_VALIDACAO_V1236_R2B.md",
         "INSTRUCOES_ORACLE_V1236_R2B.md",
+        "PATCH_V1236_R2C.md",
+        "RELATORIO_VALIDACAO_V1236_R2C.md",
+        "INSTRUCOES_ORACLE_V1236_R2C.md",
     ):
         assert (ROOT / relative).is_file(), relative
 
@@ -38,8 +41,8 @@ def test_release_publication_and_browser_assets_point_to_r2():
     publisher = read("PUBLICAR_GITHUB.ps1")
     platform = read("investment_engine/web/index.html")
 
-    assert "Acelera consultas de snapshots na V1.23.6 R2B em teste" in publisher
-    assert "valide a V1.23.6 R2B" in publisher
+    assert "Libera migracao concorrente na V1.23.6 R2C em teste" in publisher
+    assert "valide a V1.23.6 R2C" in publisher
     assert "../ui-assets/app.css?v=1.23.6-r2" in platform
     assert "../ui-assets/app.js?v=1.23.6-r2" in platform
 

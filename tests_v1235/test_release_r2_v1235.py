@@ -19,8 +19,8 @@ def test_r2_release_identity_schema_assets_and_operator_documents():
     publisher = read("PUBLICAR_GITHUB.ps1")
     workflow = read(".github/workflows/tests.yml")
     html = read("investment_engine/web/index.html")
-    assert "Acelera consultas de snapshots na V1.23.6 R2B em teste" in publisher
-    assert "valide a V1.23.6 R2B" in publisher
+    assert "Libera migracao concorrente na V1.23.6 R2C em teste" in publisher
+    assert "valide a V1.23.6 R2C" in publisher
     assert "SEGURANCA DA PRIMEIRA MIGRACAO" not in publisher
     assert "stagingConfirmation" not in publisher
     assert "0031_v1_23_latest_snapshot_indexes" in workflow

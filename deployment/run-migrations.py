@@ -56,10 +56,20 @@ def _current_heads(connection: Connection) -> tuple[str, ...]:
 
 @contextmanager
 def _migration_lock(engine: Engine, timeout_seconds: int) -> Iterator[Connection]:
-    with engine.connect() as connection:
-        if connection.dialect.name != "postgresql":
-            yield connection
+    with engine.connect() as raw_connection:
+        if raw_connection.dialect.name != "postgresql":
+            yield raw_connection
             return
+
+        # The advisory lock is session-scoped, so it does not need a database
+        # transaction.  Keeping the coordinator SELECT inside an open
+        # transaction creates an old snapshot which CREATE INDEX CONCURRENTLY
+        # must wait for, causing a self-inflicted lock timeout.  AUTOCOMMIT
+        # preserves the session lock while leaving no transaction snapshot
+        # behind during Alembic's separate migration connection.
+        connection = raw_connection.execution_options(
+            isolation_level="AUTOCOMMIT",
+        )
 
         deadline = time.monotonic() + max(1, timeout_seconds)
         acquired = False
