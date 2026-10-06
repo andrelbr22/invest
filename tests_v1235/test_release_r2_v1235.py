@@ -13,17 +13,17 @@ def read(relative: str) -> str:
 def test_r2_release_identity_schema_assets_and_operator_documents():
     assert __version__ == "1.23.6"
     assert sorted((ROOT / "alembic" / "versions").glob("[0-9]*.py"))[-1].name == (
-        "0030_v1_23_navigation_metrics.py"
+        "0031_v1_23_latest_snapshot_indexes.py"
     )
 
     publisher = read("PUBLICAR_GITHUB.ps1")
     workflow = read(".github/workflows/tests.yml")
     html = read("investment_engine/web/index.html")
-    assert "Evita recargas e preserva caches na V1.23.6 R2 em teste" in publisher
-    assert "valide a V1.23.6 R2A" in publisher
+    assert "Acelera consultas de snapshots na V1.23.6 R2B em teste" in publisher
+    assert "valide a V1.23.6 R2B" in publisher
     assert "SEGURANCA DA PRIMEIRA MIGRACAO" not in publisher
     assert "stagingConfirmation" not in publisher
-    assert "0030_v1_23_navigation_metrics" in workflow
+    assert "0031_v1_23_latest_snapshot_indexes" in workflow
     assert "tests_v1235" in workflow
     assert "app.css?v=1.23.6-r2" in html
     assert "app.js?v=1.23.6-r2" in html

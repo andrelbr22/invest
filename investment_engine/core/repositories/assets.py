@@ -452,22 +452,40 @@ class AssetRepository:
         ids = list(dict.fromkeys(asset_ids or []))
         if not ids:
             return {}
-        ranked = (
-            select(
-                model.id.label("row_id"),
-                func.row_number().over(
-                    partition_by=model.asset_id,
-                    order_by=order_by,
-                ).label("row_rank"),
+        bind = self.session.get_bind()
+        if bind.dialect.name == "postgresql":
+            # DISTINCT ON can stop at the first indexed row for each asset.
+            # The previous window function had to rank every historical row
+            # in the requested assets and repeatedly exceeded the production
+            # statement timeout while the current view was rebuilt.
+            latest = (
+                select(model.id.label("row_id"))
+                .where(model.asset_id.in_(ids), *filters)
+                .distinct(model.asset_id)
+                .order_by(model.asset_id, *order_by)
+                .subquery()
             )
-            .where(model.asset_id.in_(ids), *filters)
-            .subquery()
-        )
-        rows = self.session.scalars(
-            select(model)
-            .join(ranked, ranked.c.row_id == model.id)
-            .where(ranked.c.row_rank == 1)
-        )
+            statement = select(model).join(latest, latest.c.row_id == model.id)
+        else:
+            # SQLite is used by the deterministic repository tests and does
+            # not implement PostgreSQL's DISTINCT ON extension.
+            ranked = (
+                select(
+                    model.id.label("row_id"),
+                    func.row_number().over(
+                        partition_by=model.asset_id,
+                        order_by=order_by,
+                    ).label("row_rank"),
+                )
+                .where(model.asset_id.in_(ids), *filters)
+                .subquery()
+            )
+            statement = (
+                select(model)
+                .join(ranked, ranked.c.row_id == model.id)
+                .where(ranked.c.row_rank == 1)
+            )
+        rows = self.session.scalars(statement)
         return {row.asset_id: row for row in rows}
 
     def latest_current_sources_batch(self, asset_ids, *, timeframe: str = "1D") -> dict:

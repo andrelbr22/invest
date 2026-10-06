@@ -10,10 +10,10 @@ def read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
-def test_release_identity_documents_and_no_new_migration():
+def test_release_identity_documents_and_latest_lookup_migration():
     assert __version__ == "1.23.6"
     assert sorted((ROOT / "alembic" / "versions").glob("[0-9]*.py"))[-1].name == (
-        "0030_v1_23_navigation_metrics.py"
+        "0031_v1_23_latest_snapshot_indexes.py"
     )
     assert read("README.md").startswith("# Formação do Investidor • V1.23.6")
     assert "tests_v1236" in read("pyproject.toml")
@@ -27,6 +27,9 @@ def test_release_identity_documents_and_no_new_migration():
         "PATCH_V1236_R2.md",
         "RELATORIO_VALIDACAO_V1236_R2.md",
         "INSTRUCOES_ORACLE_V1236_R2.md",
+        "PATCH_V1236_R2B.md",
+        "RELATORIO_VALIDACAO_V1236_R2B.md",
+        "INSTRUCOES_ORACLE_V1236_R2B.md",
     ):
         assert (ROOT / relative).is_file(), relative
 
@@ -35,8 +38,8 @@ def test_release_publication_and_browser_assets_point_to_r2():
     publisher = read("PUBLICAR_GITHUB.ps1")
     platform = read("investment_engine/web/index.html")
 
-    assert "Evita recargas e preserva caches na V1.23.6 R2 em teste" in publisher
-    assert "valide a V1.23.6 R2A" in publisher
+    assert "Acelera consultas de snapshots na V1.23.6 R2B em teste" in publisher
+    assert "valide a V1.23.6 R2B" in publisher
     assert "../ui-assets/app.css?v=1.23.6-r2" in platform
     assert "../ui-assets/app.js?v=1.23.6-r2" in platform
 

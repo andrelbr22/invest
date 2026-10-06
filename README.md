@@ -1,5 +1,18 @@
 # Formação do Investidor • V1.23.6
 
+## R2B — leitura rápida do último snapshot
+
+A V1.23.6 R2B preserva integralmente a R2A e corrige o gargalo identificado
+na homologação real. A materialização deixa de ordenar e numerar todo o
+histórico de cada lote para localizar o registro mais recente. No PostgreSQL,
+ela passa a usar `DISTINCT ON` sobre índices descendentes específicos para
+fundamentos, técnicos, scores e preços.
+
+A migração `0031_v1_23_latest_snapshot_indexes` é somente aditiva, mantém
+todos os históricos e cria os novos índices de forma concorrente. Consulte
+`PATCH_V1236_R2B.md`, `INSTRUCOES_ORACLE_V1236_R2B.md` e
+`RELATORIO_VALIDACAO_V1236_R2B.md`.
+
 ## R2A — estabilidade do processamento em homologação
 
 A V1.23.6 R2A mantém integralmente as melhorias da R2 e corrige a disputa por
