@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import smtplib
+import time
 from email.message import EmailMessage
 
 from ..infrastructure.config import settings
@@ -32,16 +33,35 @@ class AlertEmailSender:
         message.set_content(text_body)
         if html_body:
             message.add_alternative(html_body, subtype="html")
-        try:
-            timeout = max(3, min(60, int(self.configuration.smtp_timeout_seconds)))
-            with smtplib.SMTP(self.configuration.smtp_host, self.configuration.smtp_port, timeout=timeout) as client:
-                if self.configuration.smtp_starttls:
-                    client.starttls()
-                if self.configuration.smtp_username:
-                    client.login(self.configuration.smtp_username, self.configuration.smtp_password)
-                client.send_message(message)
-        except Exception as exc:
-            raise EmailDeliveryError(f"{type(exc).__name__}: {str(exc)[:300]}") from exc
+        timeout = max(3, min(60, int(self.configuration.smtp_timeout_seconds)))
+        transient_errors = (smtplib.SMTPServerDisconnected, TimeoutError, OSError)
+        for attempt in range(2):
+            try:
+                with smtplib.SMTP(
+                    self.configuration.smtp_host,
+                    self.configuration.smtp_port,
+                    timeout=timeout,
+                ) as client:
+                    if self.configuration.smtp_starttls:
+                        client.starttls()
+                    if self.configuration.smtp_username:
+                        client.login(
+                            self.configuration.smtp_username,
+                            self.configuration.smtp_password,
+                        )
+                    client.send_message(message)
+                return
+            except transient_errors as exc:
+                if attempt == 0:
+                    time.sleep(1)
+                    continue
+                raise EmailDeliveryError(
+                    f"{type(exc).__name__}: {str(exc)[:300]}"
+                ) from exc
+            except Exception as exc:
+                raise EmailDeliveryError(
+                    f"{type(exc).__name__}: {str(exc)[:300]}"
+                ) from exc
 
     def send_alert(self, event: dict) -> None:
         labels = {

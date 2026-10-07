@@ -204,10 +204,30 @@ def next_scheduled_slot(spec: RefreshSchedule, now: datetime | None = None) -> d
     return None
 
 
+def _snapshot_is_stale_at(
+    spec: RefreshSchedule,
+    as_of: datetime | None,
+    current: datetime,
+) -> bool:
+    """Evaluate freshness against the schedule that can actually refresh it.
+
+    A once-per-day source must not become operationally stale six hours after
+    a successful run when its next legitimate slot is still in the future.
+    Interval feeds retain their age-based tolerance.
+    """
+    normalized = _aware(as_of)
+    if normalized is None:
+        return True
+    if spec.fixed_times and spec.interval_minutes is None:
+        latest_slot = latest_scheduled_slot(spec, current)
+        return latest_slot is not None and normalized < latest_slot
+    return normalized < current - spec.stale_after
+
+
 def snapshot_is_stale(session: Session, spec: RefreshSchedule, now: datetime | None = None) -> bool:
     current = _aware(now or datetime.now(timezone.utc))
     snapshot = SharedSnapshotRepository(session).get_status(spec.snapshot_key)
-    return snapshot is None or _aware(snapshot.as_of) < current - spec.stale_after
+    return snapshot is None or _snapshot_is_stale_at(spec, snapshot.as_of, current)
 
 
 def enqueue_refresh(
@@ -276,7 +296,7 @@ def enqueue_due_refreshes(session: Session, now: datetime | None = None) -> list
 def _refresh_status_payload(*, key: str, current: datetime, snapshot, job) -> dict:
     spec = REFRESH_SCHEDULES[key]
     as_of = _aware(snapshot.as_of) if snapshot is not None else None
-    stale = as_of is None or as_of < current - spec.stale_after
+    stale = _snapshot_is_stale_at(spec, as_of, current)
     status = "unavailable" if snapshot is None else ("stale" if stale else "updated")
     snapshot_payload = dict(snapshot.payload_json or {}) if snapshot is not None else {}
     refresh_meta = dict(snapshot_payload.get("refresh") or {})

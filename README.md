@@ -1,5 +1,16 @@
 # Formação do Investidor • V1.23.6
 
+## R2E — confiabilidade operacional e retenção segura
+
+A V1.23.6 R2E preserva integralmente o desempenho e a migração da R2D,
+corrige o falso fracasso do monitor ALB, reforça a entrega SMTP e impede que
+backups locais confirmados no Object Storage voltem a ocupar o disco. A
+qualidade dos dados passa a respeitar o horário real das fontes e a
+aplicabilidade por tipo de ativo.
+
+Não há migração nova. Consulte `PATCH_V1236_R2E.md`,
+`INSTRUCOES_ORACLE_V1236_R2E.md` e `RELATORIO_VALIDACAO_V1236_R2E.md`.
+
 ## R2D — identificador compatível com o Alembic histórico
 
 A V1.23.6 R2D preserva as correções da R2B e R2C e encurta somente o

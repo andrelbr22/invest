@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+from enum import Enum
+import math
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -20,6 +23,33 @@ def utcnow() -> datetime:
 
 def _safe_message(value: object, limit: int = 500) -> str:
     return str(value or "").replace("\r", " ").replace("\n", " ")[:limit]
+
+
+def json_safe_job_result(value):
+    """Normalize a worker result before it reaches a database JSON column.
+
+    Job handlers legitimately work with dates, UUIDs, decimals and sets.  A
+    completed operation must not be reported as failed merely because its
+    diagnostic result still contains one of those Python-native values.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Enum):
+        return json_safe_job_result(value.value)
+    if isinstance(value, dict):
+        return {str(key): json_safe_job_result(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [json_safe_job_result(item) for item in value]
+    return str(value)
 
 
 def background_job_dict(row: BackgroundJobORM, *, include_payload: bool = False) -> dict:
@@ -182,7 +212,7 @@ class BackgroundJobRepository:
     def complete(self, row: BackgroundJobORM, result: dict | None = None) -> None:
         now = utcnow()
         row.status = "succeeded"
-        row.result_json = dict(result or {})
+        row.result_json = json_safe_job_result(dict(result or {}))
         row.progress_current = max(row.progress_current, row.progress_total)
         row.message = "Trabalho concluído."
         row.finished_at = now

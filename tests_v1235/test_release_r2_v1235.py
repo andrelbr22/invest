@@ -19,8 +19,8 @@ def test_r2_release_identity_schema_assets_and_operator_documents():
     publisher = read("PUBLICAR_GITHUB.ps1")
     workflow = read(".github/workflows/tests.yml")
     html = read("investment_engine/web/index.html")
-    assert "Compatibiliza revisao Alembic na V1.23.6 R2D em teste" in publisher
-    assert "valide a V1.23.6 R2D" in publisher
+    assert "Reforca operacao e retencao segura na V1.23.6 R2E em teste" in publisher
+    assert "valide a V1.23.6 R2E" in publisher
     assert "SEGURANCA DA PRIMEIRA MIGRACAO" not in publisher
     assert "stagingConfirmation" not in publisher
     assert "0031_v123_latest_snapshot_idx" in workflow

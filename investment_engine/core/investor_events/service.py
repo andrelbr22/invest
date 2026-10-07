@@ -38,9 +38,27 @@ class DataQualityService:
     """Build one transparent coverage/freshness report without live HTTP calls."""
 
     COVERAGE_RULES = {
-        "fundamentals": (FundamentalSnapshotORM, FundamentalSnapshotORM.reference_date, timedelta(days=8)),
-        "technicals_daily": (TechnicalSnapshotORM, TechnicalSnapshotORM.as_of, timedelta(days=4)),
-        "scores": (ScoreSnapshotORM, ScoreSnapshotORM.as_of, timedelta(days=8)),
+        # Fundamentals and intelligence scores are produced by the official
+        # stock/FII ingestion.  ETF, BDR and futures must not be reported as
+        # unhealthy for records that this pipeline deliberately never emits.
+        "fundamentals": (
+            FundamentalSnapshotORM,
+            FundamentalSnapshotORM.reference_date,
+            timedelta(days=8),
+            {"stock", "fii"},
+        ),
+        "technicals_daily": (
+            TechnicalSnapshotORM,
+            TechnicalSnapshotORM.as_of,
+            timedelta(days=4),
+            {"stock", "fii", "etf", "bdr", "future"},
+        ),
+        "scores": (
+            ScoreSnapshotORM,
+            ScoreSnapshotORM.as_of,
+            timedelta(days=8),
+            {"stock", "fii"},
+        ),
     }
 
     def __init__(self, session: Session):
@@ -82,7 +100,9 @@ class DataQualityService:
             total = self.session.scalar(select(func.count(AssetORM.id)).where(
                 AssetORM.asset_type == asset_type, AssetORM.is_active.is_(True),
             )) or 0
-            for key, (model, timestamp, max_age) in self.COVERAGE_RULES.items():
+            for key, (model, timestamp, max_age, applicable_types) in self.COVERAGE_RULES.items():
+                if asset_type not in applicable_types:
+                    continue
                 conditions = [
                     AssetORM.asset_type == asset_type, AssetORM.is_active.is_(True),
                     timestamp >= now - max_age,

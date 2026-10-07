@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     smtp_from_email: str = ""
     smtp_from_name: str = "Formação do Investidor"
     smtp_starttls: bool = True
-    smtp_timeout_seconds: int = 10
+    smtp_timeout_seconds: int = 30
     anbima_client_id: str = ""
     anbima_client_secret: str = ""
     anbima_ima_history_start_date: str = "2004-04-30"

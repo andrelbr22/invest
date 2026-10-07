@@ -340,7 +340,7 @@ def handle_market_fundamentals_refresh(payload: dict) -> dict:
             source="Fundamentus", as_of=utcnow(), valid_until=utcnow() + timedelta(hours=24),
         )
         session.commit()
-        return result
+        return _json_safe(result)
     except Exception as exc:
         session.rollback()
         _record_refresh_failure(snapshot_key, exc)
@@ -844,7 +844,7 @@ def handle_alb_universe_monitor(payload: dict) -> dict:
             as_of=utcnow(), valid_until=utcnow() + timedelta(hours=30),
         )
         session.commit()
-        return result
+        return _json_safe(result)
     except Exception as exc:
         session.rollback()
         _record_refresh_failure(snapshot_key, exc)

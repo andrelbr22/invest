@@ -83,5 +83,5 @@ def test_r2b_adds_concurrent_descending_indexes_and_updates_release_identity():
     assert "reference_date DESC" in migration
     assert "as_of DESC" in migration
     assert "timestamp DESC" in migration
-    assert "V1.23.6 R2D" in publisher
+    assert "V1.23.6 R2E" in publisher
     assert '0031_v123_latest_snapshot_idx' in workflow
