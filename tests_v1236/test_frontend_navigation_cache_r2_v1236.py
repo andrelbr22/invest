@@ -20,10 +20,10 @@ def test_same_view_and_tab_are_noops_before_navigation_is_cancelled():
     set_view = function_body(javascript, "function setView(", "\nfunction activateTab(")
     activate_tab = function_body(javascript, "function activateTab(", "\nfunction loadingCards(")
 
-    assert "{force=false}" in set_view
+    assert "force=false" in set_view
     assert "sameView&&sameTab&&!force" in set_view
     assert set_view.index("sameView&&sameTab&&!force") < set_view.index("beginNavigation(")
-    assert "{force=false}" in activate_tab
+    assert "force=false" in activate_tab
     assert "state.tabs[group]===tab&&!force" in activate_tab
     assert activate_tab.index("state.tabs[group]===tab&&!force") < activate_tab.index("beginNavigation(")
     assert "button&&activateTab(" in javascript
@@ -35,8 +35,9 @@ def test_read_only_advanced_screen_does_not_purge_navigation_caches():
 
     assert len(advanced_calls) == 3
     assert all("invalidateCache:false" in call.split(");", 1)[0] for call in advanced_calls)
-    # Real mutations retain the conservative global invalidation fallback.
-    assert "else if (method !== \"GET\" && invalidateCache) state.readCache.clear();" in javascript
+    # Real mutations now invalidate only the affected domains.
+    assert "else if (method !== \"GET\" && invalidateCache) invalidateApplicationCache(invalidateTags);" in javascript
+    assert "function cacheTagsForPath(" in javascript
 
 
 def test_stock_and_fii_presets_use_cached_get_routes_before_owner_fallback():

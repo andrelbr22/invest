@@ -23,9 +23,9 @@ jobs:
       - name: Instalar dependências
         run: python -m pip install -r requirements.txt
       - name: Validar sintaxe
-        run: python -m compileall -q app.py investment_engine scripts tests_v1160 tests_v1170 tests_v1200 tests_v1202 tests_v1203 tests_v1204 tests_v1205 tests_v1206 tests_v1207 tests_v1210 tests_v1220 tests_v1230 tests_v1231 tests_v1232 tests_v1233 tests_v1234 tests_v1235 tests_v1236
+        run: python -m compileall -q app.py investment_engine scripts tests_v1160 tests_v1170 tests_v1200 tests_v1202 tests_v1203 tests_v1204 tests_v1205 tests_v1206 tests_v1207 tests_v1210 tests_v1220 tests_v1230 tests_v1231 tests_v1232 tests_v1233 tests_v1234 tests_v1235 tests_v1236 tests_v1237
       - name: Executar testes
-        run: python -m pytest -q tests_v1160 tests_v1170 tests_v1200 tests_v1202 tests_v1203 tests_v1204 tests_v1205 tests_v1206 tests_v1207 tests_v1210 tests_v1220 tests_v1230 tests_v1231 tests_v1232 tests_v1233 tests_v1234 tests_v1235 tests_v1236
+        run: python -m pytest -q tests_v1160 tests_v1170 tests_v1200 tests_v1202 tests_v1203 tests_v1204 tests_v1205 tests_v1206 tests_v1207 tests_v1210 tests_v1220 tests_v1230 tests_v1231 tests_v1232 tests_v1233 tests_v1234 tests_v1235 tests_v1236 tests_v1237
 
   migrations-postgres:
     runs-on: ubuntu-latest
@@ -65,6 +65,6 @@ jobs:
 
           with create_engine(settings.database_url).connect() as connection:
               revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-          assert revision == "0031_v123_latest_snapshot_idx", revision
+          assert revision == "0032_v1237_browser_perf", revision
           print("Migrações validadas até", revision)
           PY

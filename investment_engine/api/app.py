@@ -92,6 +92,12 @@ from ..core.observability import (
     request_metric_category,
     screener_metric_category,
 )
+from ..core.client_performance import (
+    CLIENT_PERFORMANCE,
+    maybe_flush_client_performance,
+    persist_client_performance,
+    recent_client_performance,
+)
 from ..core.portfolio.service import (
     build_consolidated_allocation_hierarchy,
     build_portfolio_snapshot,
@@ -183,6 +189,10 @@ async def _application_lifespan(_application: FastAPI):
         if _IN_PROCESS_WORKER_THREAD and _IN_PROCESS_WORKER_THREAD.is_alive():
             _IN_PROCESS_WORKER_THREAD.join(timeout=5)
         _IN_PROCESS_WORKER_THREAD = None
+        try:
+            persist_client_performance()
+        except Exception:
+            logging.getLogger(__name__).warning("client_performance_shutdown_flush_failed", exc_info=True)
 
 
 app = FastAPI(
@@ -1177,6 +1187,12 @@ class ClientPanelMetricRequest(BaseModel):
     duration_ms: float = Field(ge=0, le=120_000)
     success: bool = True
     cache_state: Literal["cold", "warm", "stale"] | None = None
+    device_class: Literal["mobile", "tablet", "desktop"] = "desktop"
+    navigation_kind: Literal["initial", "switch", "return", "history", "refresh"] | None = None
+    tab: str | None = Field(default=None, max_length=40)
+    lcp_ms: float | None = Field(default=None, ge=0, le=120_000)
+    inp_ms: float | None = Field(default=None, ge=0, le=120_000)
+    cls: float | None = Field(default=None, ge=0, le=100)
 
 
 _PLATFORM_DESTINATIONS = frozenset({"/plataforma/", "/testefdi/plataforma/"})
@@ -1495,12 +1511,21 @@ def record_client_panel_performance(
     metric: ClientPanelMetricRequest,
     _email: str = Depends(_request_email),
 ):
-    """Record real time-to-usable panel latency without a database write."""
+    """Record real time-to-usable latency and periodically flush hourly summaries."""
     ROUTE_LATENCIES.observe(
         f"panel_{metric.panel}",
         metric.duration_ms,
         200 if metric.success else 500,
     )
+    CLIENT_PERFORMANCE.observe(
+        panel=metric.panel,
+        duration_ms=metric.duration_ms,
+        success=metric.success,
+        cache_state=metric.cache_state or "cold",
+        device_class=metric.device_class,
+        web_vitals={"lcp_ms": metric.lcp_ms, "inp_ms": metric.inp_ms, "cls": metric.cls},
+    )
+    maybe_flush_client_performance()
     return Response(status_code=204)
 
 
@@ -1514,6 +1539,7 @@ def admin_operations(
         include_route_metrics=True,
         sync_incidents=True,
     )
+    payload["browser_performance"] = recent_client_performance(db, hours=24)
     db.commit()
     return payload
 

@@ -1,4 +1,22 @@
-# Formação do Investidor • V1.23.6
+# Formação do Investidor • V1.23.7
+
+## R1 — navegação instantânea e experiência aprimorada
+
+A V1.23.7 R1 preserva filtros, cálculos, permissões, históricos e rotinas da
+V1.23.6 R2E. Painéis visitados permanecem renderizados com rolagem, filtros,
+ativo, mês e aba selecionados; ao retornar, aparecem imediatamente e são
+revalidados em segundo plano. Mutações invalidam somente os domínios afetados,
+sem esfriar toda a plataforma.
+
+A navegação passa a ser representada na URL e respeita voltar/avançar. Mercado
+e Análises recebe ticker fixo, ordenação, densidade, frescor e estados distintos
+para carregamento, ausência e não aplicabilidade. A Administração ganha grupos
+laterais e exibe resumos horários da experiência real no navegador, sem gravar
+cada clique individualmente.
+
+A migração aditiva `0032_v1237_browser_perf` cria somente o resumo horário de
+desempenho. Consulte `PATCH_V1237_R1.md`, `INSTRUCOES_ORACLE_V1237_R1.md` e
+`RELATORIO_VALIDACAO_V1237_R1.md`.
 
 ## R2E — confiabilidade operacional e retenção segura
 

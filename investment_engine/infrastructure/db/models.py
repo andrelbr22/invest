@@ -1041,6 +1041,36 @@ class OperationalIncidentORM(Base):
     last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ClientPerformanceHourlyORM(Base):
+    """Hourly browser experience aggregates without one database row per click."""
+
+    __tablename__ = "client_performance_hourly"
+    __table_args__ = (
+        UniqueConstraint(
+            "bucket_hour", "panel", "cache_state", "device_class",
+            name="uq_client_performance_hour_panel_context",
+        ),
+        Index("ix_client_performance_hourly_bucket", "bucket_hour"),
+        Index("ix_client_performance_hourly_panel", "panel", "bucket_hour"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    bucket_hour: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    panel: Mapped[str] = mapped_column(String(32), nullable=False)
+    cache_state: Mapped[str] = mapped_column(String(16), nullable=False, default="cold")
+    device_class: Mapped[str] = mapped_column(String(16), nullable=False, default="desktop")
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    success_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_duration_ms: Mapped[float] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    max_duration_ms: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    histogram_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    web_vitals_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow,
+    )
+
+
 class InterestCurveSnapshotORM(Base):
     """One official daily interest-curve snapshot for historical overlays."""
 

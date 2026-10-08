@@ -36,8 +36,8 @@ def test_static_references_are_versioned_and_receive_immutable_cache_headers():
     portal_script = (WEB_ROOT / "portal-assets" / "portal.js").read_text(encoding="utf-8")
     app_script = (WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
-    assert "../ui-assets/app.css?v=1.23.6-r2" in platform
-    assert "../ui-assets/app.js?v=1.23.6-r2" in platform
+    assert "../ui-assets/app.css?v=1.23.7-r1" in platform
+    assert "../ui-assets/app.js?v=1.23.7-r1" in platform
     assert "./portal-assets/portal.css?v=1.23.2-r1" in portal
     assert "./portal-assets/portal.js?v=1.23.2-r1" in portal
     portal_asset_references = [
@@ -51,8 +51,8 @@ def test_static_references_are_versioned_and_receive_immutable_cache_headers():
 
     client = TestClient(app, base_url="http://localhost")
     for path in (
-        "/ui-assets/app.css?v=1.23.6-r2",
-        "/ui-assets/app.js?v=1.23.6-r2",
+        "/ui-assets/app.css?v=1.23.7-r1",
+        "/ui-assets/app.js?v=1.23.7-r1",
         "/portal-assets/portal.css?v=1.23.2-r1",
         "/portal-assets/books/formacao-investidor-fundamentos.webp?v=1.23.2-r1",
     ):

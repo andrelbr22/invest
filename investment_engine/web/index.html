@@ -7,7 +7,7 @@
   <meta name="description" content="Formação do Investidor — análise de ativos, carteira, mercado e backtests.">
   <title>Formação do Investidor</title>
   <link rel="icon" href="../favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="../ui-assets/app.css?v=1.23.6-r2">
+  <link rel="stylesheet" href="../ui-assets/app.css?v=1.23.7-r1">
 </head>
 <body>
   <div id="login-view" class="login-view hidden">
@@ -192,18 +192,30 @@
 
         <section id="view-admin" class="view">
           <div class="page-heading"><div><p class="eyebrow">Controle de acesso</p><h1>Administração</h1><p>Usuários, permissões e situação dos serviços.</p></div></div>
-          <div class="tabs" data-tabs="admin">
-            <button class="tab" data-tab="portal">Página inicial e livros</button>
-            <button class="tab active" data-tab="levels">Níveis e permissões</button>
-            <button class="tab" data-tab="users">Usuários</button>
-            <button class="tab owner-only hidden" data-tab="analysis-settings">Filtros e colunas</button>
-            <button class="tab" data-tab="data">Dados de mercado</button>
-            <button class="tab" data-tab="quality">Qualidade dos dados</button>
-            <button class="tab" data-tab="jobs">Fila de trabalhos</button>
-            <button class="tab" data-tab="operations">Operação</button>
-            <button class="tab" data-tab="system">Sistema</button>
+          <div class="admin-workspace">
+          <nav class="tabs admin-section-nav" data-tabs="admin" aria-label="Seções da administração">
+            <div class="admin-nav-group"><span class="admin-nav-label">Usuários e acessos</span>
+              <button class="tab active" data-tab="levels">Níveis e permissões</button>
+              <button class="tab" data-tab="users">Usuários</button>
+            </div>
+            <div class="admin-nav-group"><span class="admin-nav-label">Conteúdo</span>
+              <button class="tab" data-tab="portal">Página inicial e livros</button>
+              <button class="tab owner-only hidden" data-tab="analysis-settings">Filtros e colunas</button>
+            </div>
+            <div class="admin-nav-group"><span class="admin-nav-label">Dados</span>
+              <button class="tab" data-tab="data">Dados de mercado</button>
+              <button class="tab" data-tab="quality">Qualidade dos dados</button>
+            </div>
+            <div class="admin-nav-group"><span class="admin-nav-label">Operação</span>
+              <button class="tab" data-tab="jobs">Fila de trabalhos</button>
+              <button class="tab" data-tab="operations">Operação e desempenho</button>
+              <button class="tab" data-tab="system">Sistema</button>
+            </div>
+          </nav>
+          <div class="admin-panel-stage">
+            <div id="admin-tab-content" class="tab-content"></div>
           </div>
-          <div id="admin-tab-content" class="tab-content"></div>
+          </div>
         </section>
       </main>
     </div>
@@ -218,6 +230,7 @@
       <div class="filter-grid"><div class="field"><label>Valor atual</label><input type="number" name="current_value" min="0" step="0.01" required></div><div class="field"><label>Data de referência</label><input type="date" name="current_value_as_of" required></div><button class="button primary wide-action" type="submit">Salvar no histórico</button></div>
     </form>
   </dialog>
-  <script src="../ui-assets/app.js?v=1.23.6-r2" defer></script>
+  <script type="module" src="../ui-assets/web-vitals.js?v=1.23.7-r1"></script>
+  <script src="../ui-assets/app.js?v=1.23.7-r1" defer></script>
 </body>
 </html>

@@ -24,6 +24,8 @@ chaves_oracle/
 *.sqlite
 *.sqlite3
 *.log
+storage-state*.json
+browser-performance-report*.json
 gcm-diagnose*
 backups/
 .idea/

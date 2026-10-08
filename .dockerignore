@@ -11,6 +11,8 @@ __pycache__
 .mypy_cache
 .ruff_cache
 *.log
+storage-state*.json
+browser-performance-report*.json
 gcm-diagnose*
 outputs
 work

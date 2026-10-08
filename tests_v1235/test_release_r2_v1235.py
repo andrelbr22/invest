@@ -11,22 +11,22 @@ def read(relative: str) -> str:
 
 
 def test_r2_release_identity_schema_assets_and_operator_documents():
-    assert __version__ == "1.23.6"
+    assert __version__ == "1.23.7"
     assert sorted((ROOT / "alembic" / "versions").glob("[0-9]*.py"))[-1].name == (
-        "0031_v123_latest_snapshot_idx.py"
+        "0032_v1237_browser_perf.py"
     )
 
     publisher = read("PUBLICAR_GITHUB.ps1")
     workflow = read(".github/workflows/tests.yml")
     html = read("investment_engine/web/index.html")
-    assert "Reforca operacao e retencao segura na V1.23.6 R2E em teste" in publisher
-    assert "valide a V1.23.6 R2E" in publisher
+    assert "Torna a navegacao instantanea na V1.23.7 R1 em teste" in publisher
+    assert "valide a V1.23.7 R1" in publisher
     assert "SEGURANCA DA PRIMEIRA MIGRACAO" not in publisher
     assert "stagingConfirmation" not in publisher
-    assert "0031_v123_latest_snapshot_idx" in workflow
+    assert "0032_v1237_browser_perf" in workflow
     assert "tests_v1235" in workflow
-    assert "app.css?v=1.23.6-r2" in html
-    assert "app.js?v=1.23.6-r2" in html
+    assert "app.css?v=1.23.7-r1" in html
+    assert "app.js?v=1.23.7-r1" in html
 
     for relative in (
         "PATCH_V1235_R2B.md",

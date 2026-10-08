@@ -6,6 +6,8 @@ const PLATFORM_PATH = `${BASE_PATH}/plataforma/`;
 const ANALYSIS_CACHE_TTL_MS = 300000;
 const NEWS_NAVIGATION_CACHE_TTL_MS = 15000;
 const ADMIN_NAVIGATION_CACHE_TTL_MS = 15000;
+const PANEL_REVALIDATE_DELAY_MS = 80;
+const PANEL_SURFACE_LIMIT = 36;
 
 const state = {
   session: null,
@@ -75,6 +77,17 @@ const state = {
   portalAdmin: null,
   adminAnalysisSettings: null,
   adminAnalysisType: "stock",
+  panelSurfaceCache: new Map(),
+  viewScroll: new Map(),
+  analysisFormState: new Map(),
+  analysisLastUpdatedAt: {},
+  analysisSort: {},
+  analysisDensity: localStorage.getItem("fdi-analysis-density") === "compact" ? "compact" : "comfortable",
+  navigationStorageKey: "fdi-last-navigation",
+  currentAssetTicker: null,
+  applyingHistory: false,
+  lastNavigationKind: "initial",
+  dashboardCheckedAt: 0,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -87,6 +100,86 @@ const pct = (value, signed = false) => nullable(value) ? "—" : `${signed && Nu
 const dateTime = (value) => nullable(value) ? "—" : new Date(value).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
 const dateOnly = (value) => nullable(value) ? "—" : new Date(`${String(value).slice(0,10)}T12:00:00`).toLocaleDateString("pt-BR");
 const variationClass = (value) => nullable(value) ? "" : Number(value) >= 0 ? "positive" : "negative";
+
+const CACHE_TAG_PREFIXES = [
+  ["/portfolios",["portfolio"]],["/alerts",["portfolio"]],["/investor-events/dividends",["portfolio"]],
+  ["/finances",["finances"]],["/backtests",["backtests","analysis"]],
+  ["/screen",["analysis"]],["/assets",["analysis"]],["/search",["analysis"]],
+  ["/market-dashboard",["dashboard","analysis"]],["/prices",["dashboard","portfolio","analysis"]],
+  ["/access",["admin","session"]],["/admin/portal",["admin","portal"]],["/admin",["admin"]],
+  ["/news",["portfolio"]],["/insights",["portfolio"]],["/session",["session"]],
+];
+
+function cacheTagsForPath(path){
+  const clean=String(path||"").split("?",1)[0];
+  const matched=CACHE_TAG_PREFIXES.filter(([prefix])=>clean.startsWith(prefix)).flatMap(([,tags])=>tags);
+  return [...new Set(matched.length?matched:["shared"])];
+}
+
+function invalidateApplicationCache(tags){
+  const requested=new Set((Array.isArray(tags)?tags:[tags]).filter(Boolean));
+  if(!requested.size)return;
+  for(const [path,item] of state.readCache.entries()){
+    const itemTags=item.tags||cacheTagsForPath(path);
+    if(itemTags.some(tag=>requested.has(tag)||requested.has("all")))state.readCache.delete(path);
+  }
+  const groupTags={dashboard:"dashboard",analysis:"analysis",portfolio:"portfolio",finances:"finances",backtests:"backtests",admin:"admin"};
+  for(const key of state.panelSurfaceCache.keys()){
+    const group=String(key).split(":",1)[0];
+    if(requested.has("all")||requested.has(groupTags[group]))state.panelSurfaceCache.delete(key);
+  }
+  if(requested.has("all")||requested.has("analysis")||requested.has("backtests"))state.analysisResultCache.clear();
+  if(requested.has("all")||requested.has("admin")){state.adminAnalysisSettings=null;state.portalAdmin=null;}
+}
+
+const panelSurfaceRoots={
+  dashboard:"#dashboard-tab-content",analysis:"#analysis-table",portfolio:"#portfolio-tab-content",
+  finances:"#finances-tab-content",backtests:"#backtests-tab-content",admin:"#admin-tab-content",
+};
+
+function panelSurfaceKey(group,tab=state.tabs[group]){
+  if(group==="portfolio")return `${group}:${state.portfolioId||"none"}:${tab}`;
+  if(group==="finances")return `${group}:${state.financeMonth}:${tab}`;
+  return `${group}:${tab}`;
+}
+
+function capturePanelSurface(group,tab=state.tabs[group]){
+  const root=$(panelSurfaceRoots[group]);
+  if(!root?.childElementCount)return false;
+  const fragment=document.createDocumentFragment();
+  const scrollPositions=[...root.querySelectorAll(".table-scroll")].map(node=>({top:node.scrollTop,left:node.scrollLeft}));
+  while(root.firstChild)fragment.append(root.firstChild);
+  const dataset={...root.dataset};
+  state.panelSurfaceCache.set(panelSurfaceKey(group,tab),{fragment,dataset,scrollPositions,savedAt:Date.now()});
+  while(state.panelSurfaceCache.size>PANEL_SURFACE_LIMIT)state.panelSurfaceCache.delete(state.panelSurfaceCache.keys().next().value);
+  return true;
+}
+
+function restorePanelSurface(group,tab=state.tabs[group]){
+  const root=$(panelSurfaceRoots[group]),key=panelSurfaceKey(group,tab),saved=state.panelSurfaceCache.get(key);
+  if(!root||!saved)return false;
+  state.panelSurfaceCache.delete(key);
+  root.replaceChildren(saved.fragment);
+  Object.keys(root.dataset).forEach(name=>delete root.dataset[name]);
+  Object.assign(root.dataset,saved.dataset||{});
+  root.classList.remove("panel-refreshing");
+  requestAnimationFrame(()=>[...root.querySelectorAll(".table-scroll")].forEach((node,index)=>{const position=saved.scrollPositions?.[index];if(position){node.scrollTop=position.top;node.scrollLeft=position.left;}}));
+  return true;
+}
+
+function viewHasRenderedContent(view){
+  if(view==="dashboard")return Boolean(state.market&&$(panelSurfaceRoots.dashboard)?.childElementCount);
+  return Boolean($(panelSurfaceRoots[view])?.childElementCount);
+}
+
+function relativeUpdateLabel(value){
+  if(!value)return "Atualização ainda não registrada";
+  const seconds=Math.max(0,Math.round((Date.now()-Number(value))/1000));
+  if(seconds<10)return "Atualizado agora";
+  if(seconds<60)return `Atualizado há ${seconds} s`;
+  const minutes=Math.round(seconds/60);if(minutes<60)return `Atualizado há ${minutes} min`;
+  const hours=Math.round(minutes/60);return `Atualizado há ${hours} h`;
+}
 
 function toast(message, type = "") {
   const node = document.createElement("div");
@@ -200,9 +293,11 @@ async function api(path, options = {}) {
   const cacheTtlMs = Math.max(0, Number(requestOptions.cacheTtlMs || 0));
   const bypassCache = Boolean(requestOptions.bypassCache);
   const invalidateCache = requestOptions.invalidateCache !== false;
+  const invalidateTags = requestOptions.invalidateTags || cacheTagsForPath(path);
   delete requestOptions.cacheTtlMs;
   delete requestOptions.bypassCache;
   delete requestOptions.invalidateCache;
+  delete requestOptions.invalidateTags;
   const method = String(requestOptions.method || "GET").toUpperCase();
   if (method === "GET" && cacheTtlMs > 0 && !bypassCache) {
     const cached = state.readCache.get(path);
@@ -239,8 +334,8 @@ async function api(path, options = {}) {
       const readable = readableApiError(detail,response.status);
       throw new Error(readable);
     }
-    if (method === "GET" && cacheTtlMs > 0) state.readCache.set(path, {savedAt:Date.now(),body});
-    else if (method !== "GET" && invalidateCache) state.readCache.clear();
+    if (method === "GET" && cacheTtlMs > 0) state.readCache.set(path, {savedAt:Date.now(),body,tags:cacheTagsForPath(path)});
+    else if (method !== "GET" && invalidateCache) invalidateApplicationCache(invalidateTags);
     return body;
   })();
   if (coalesceKey) state.readRequests.set(coalesceKey,pending);
@@ -250,10 +345,17 @@ async function api(path, options = {}) {
 
 function reportPanelPerformance(panel,started,{success=true,cacheState="cold"}={}){
   const duration=Math.max(0,performance.now()-Number(started||performance.now()));
+  const vitals=window.FDIWebVitals?.snapshot?.()||{};
+  const width=Math.max(document.documentElement.clientWidth||0,window.innerWidth||0);
+  const deviceClass=width<760?"mobile":width<1100?"tablet":"desktop";
   fetch(`${BASE_PATH}/operations/client-performance`,{
     method:"POST",credentials:"same-origin",keepalive:true,
     headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({panel,duration_ms:Math.round(duration*100)/100,success,cache_state:cacheState}),
+    body:JSON.stringify({
+      panel,duration_ms:Math.round(duration*100)/100,success,cache_state:cacheState,
+      device_class:deviceClass,navigation_kind:state.lastNavigationKind,tab:state.tabs[panel]||null,
+      lcp_ms:vitals.lcp_ms??null,inp_ms:vitals.inp_ms??null,cls:vitals.cls??null,
+    }),
   }).catch(()=>{});
 }
 
@@ -280,6 +382,7 @@ function configureAccess() {
   avatar.textContent = (user.name || user.email || "U").slice(0, 1).toUpperCase();
   if (user.picture) avatar.innerHTML = `<img src="${esc(user.picture)}" alt="">`;
   state.visibleColumnsStorageKey=`fdi-visible-columns:${String(user.email||"anonymous").trim().toLowerCase()}`;
+  state.navigationStorageKey=`fdi-last-navigation:${String(user.email||"anonymous").trim().toLowerCase()}`;
   const personalColumns=localStorage.getItem(state.visibleColumnsStorageKey);
   if(personalColumns){try{state.visibleColumns=JSON.parse(personalColumns)||{};}catch(_){state.visibleColumns={};}}
   else {localStorage.setItem(state.visibleColumnsStorageKey,JSON.stringify(state.visibleColumns||{}));}
@@ -304,6 +407,7 @@ function configureAccess() {
   const portalTab=$('.tabs[data-tabs="admin"] [data-tab="portal"]');
   if(portalTab)portalTab.classList.toggle("hidden",!(access.is_owner||access.can_manage_portal));
   for(const tab of ["analysis-settings","jobs","operations","system"]){const node=$(`.tabs[data-tabs="admin"] [data-tab="${tab}"]`);if(node)node.classList.toggle("hidden",!access.is_owner);}
+  $$(".admin-nav-group").forEach(group=>group.classList.toggle("hidden",!group.querySelector(".tab:not(.hidden)")));
   if(!access.is_owner&&!access.can_manage_users){
     state.tabs.admin=access.can_manage_portal?"portal":"data";
     activateTab("admin",state.tabs.admin,false);
@@ -353,11 +457,82 @@ async function verifyEmailLogin(form){
   }catch(error){button.disabled=false;emailLoginMessage(error.message,"error");$("#email-login-code")?.select();}
 }
 
-function setView(view, tab = null, {force=false} = {}) {
+const analysisTypeTabs={stock:"stocks",fii:"fiis",etf:"etfs",bdr:"bdrs",future:"futures"};
+const analysisTabTypes=Object.fromEntries(Object.entries(analysisTypeTabs).map(([type,tab])=>[tab,type]));
+
+function navigationStateFromLocation(){
+  const params=new URLSearchParams(location.search),view=params.get("view")||null;
+  const result={view,tab:params.get("tab")||null,asset:params.get("asset")||null};
+  if(view==="analysis")result.tab=analysisTypeTabs[params.get("type")]||result.tab;
+  return result;
+}
+
+function navigationIsAllowed(view,tab=null){
+  const nav=$(`.nav-item[data-view="${CSS.escape(view||"")}"]`);
+  if(!nav||nav.classList.contains("hidden"))return false;
+  if(!tab)return true;
+  const button=$(`.tabs[data-tabs="${CSS.escape(view)}"] [data-tab="${CSS.escape(tab)}"]`);
+  return Boolean(button&&!button.classList.contains("hidden"));
+}
+
+function persistNavigationState(){
+  if(!state.session?.user)return;
+  const payload={view:state.view,tabs:state.tabs,financeMonth:state.financeMonth};
+  try{localStorage.setItem(state.navigationStorageKey,JSON.stringify(payload));}catch(_){/* armazenamento opcional */}
+}
+
+function syncNavigationUrl(mode="push"){
+  if(mode==="none"||state.applyingHistory)return;
+  const url=new URL(location.href),params=url.searchParams;
+  params.set("view",state.view);
+  params.delete("type");params.delete("tab");params.delete("mode");
+  if(state.view==="analysis"){
+    params.set("type",analysisTabTypes[state.tabs.analysis]||"stock");
+    if(state.tabs.analysisMode!=="list")params.set("mode",state.tabs.analysisMode);
+  }else if(state.tabs[state.view])params.set("tab",state.tabs[state.view]);
+  if(state.view==="finances")params.set("month",state.financeMonth);else params.delete("month");
+  if(state.currentAssetTicker)params.set("asset",state.currentAssetTicker);else params.delete("asset");
+  history[mode==="replace"?"replaceState":"pushState"]({view:state.view,tab:state.tabs[state.view]||null,asset:state.currentAssetTicker},"",url);
+  persistNavigationState();
+}
+
+function updateNavigationAccessibility(){
+  $$(".nav-item[data-view]").forEach(node=>node.setAttribute("aria-current",node.dataset.view===state.view?"page":"false"));
+  $$(".tabs[data-tabs]").forEach(container=>{
+    container.setAttribute("role","tablist");
+    container.querySelectorAll(".tab").forEach(node=>{
+      const selected=state.tabs[container.dataset.tabs]===node.dataset.tab;
+      node.setAttribute("role","tab");node.setAttribute("aria-selected",String(selected));node.tabIndex=selected?0:-1;
+    });
+  });
+}
+
+function captureAnalysisFormState(tab=state.tabs.analysis){
+  if(!$("#analysis-limit")||!state.session)return;
+  try{
+    state.analysisFormState.set(tab,{
+      configuration:analysisRequestFromForm(),preset:state.analysisPreset,
+      customFilterId:state.currentCustomFilter?.id||null,limit:state.analysisLimit,
+      drawerOpen:Boolean($(".filter-drawer")?.open),
+    });
+  }catch(_){/* o formulário pode estar sendo reconstruído */}
+}
+
+function restoreAnalysisFormState(tab=state.tabs.analysis){
+  const saved=state.analysisFormState.get(tab);if(!saved)return false;
+  const custom=state.analysisCustom.find(item=>item.id===saved.customFilterId)||null;
+  state.analysisLimit=Number(saved.limit||50);fillAnalysisForm(saved.configuration||{});
+  markActiveAnalysis(custom?{custom}:{presetId:saved.preset||"default"});
+  if($(".filter-drawer"))$(".filter-drawer").open=Boolean(saved.drawerOpen);
+  return true;
+}
+
+function setView(view, tab = null, {force=false,historyMode="push"} = {}) {
   const sameView=state.view===view;
   const sameTab=!tab||state.tabs[view]===tab;
   if(sameView&&sameTab&&!force){document.body.classList.remove("mobile-nav-open");return false;}
   const previousView=state.view;
+  state.viewScroll.set(previousView,window.scrollY);
   beginNavigation(previousView,view);
   state.view = view;
   if (tab) state.tabs[view] = tab;
@@ -365,21 +540,38 @@ function setView(view, tab = null, {force=false} = {}) {
   $$(".nav-item").forEach(node => node.classList.toggle("active", node.dataset.view === view));
   document.body.classList.remove("mobile-nav-open");
   if (tab) activateTab(view, tab, false);
-  loadCurrentView();
+  if(view==="analysis")activateTab("analysisMode",state.tabs.analysisMode,false);
+  const warm=viewHasRenderedContent(view);
+  state.lastNavigationKind=historyMode==="none"?"history":warm?"return":"switch";
+  updateNavigationAccessibility();syncNavigationUrl(historyMode);
+  requestAnimationFrame(()=>window.scrollTo({top:state.viewScroll.get(view)||0,behavior:"auto"}));
+  if(warm)scheduleNavigationTask(()=>loadCurrentView(),PANEL_REVALIDATE_DELAY_MS);
+  else loadCurrentView();
   return true;
 }
 
-function activateTab(group, tab, load = true, {force=false} = {}) {
+function activateTab(group, tab, load = true, {force=false,historyMode="push"} = {}) {
   if(load&&state.tabs[group]===tab&&!force)return false;
-  if(load)beginNavigation(state.view,state.view);
+  const previousTab=state.tabs[group];
+  if(load){
+    if(group==="analysis")captureAnalysisFormState(previousTab);
+    if(panelSurfaceRoots[group])capturePanelSurface(group,previousTab);
+    beginNavigation(state.view,state.view);
+  }
   state.tabs[group] = tab;
   $$(`.tabs[data-tabs="${group}"] .tab`).forEach(node => node.classList.toggle("active", node.dataset.tab === tab));
-  if (load) loadCurrentView();
+  const restored=load&&panelSurfaceRoots[group]?restorePanelSurface(group,tab):false;
+  if(load){
+    state.lastNavigationKind=historyMode==="none"?"history":restored?"return":"switch";
+    updateNavigationAccessibility();syncNavigationUrl(historyMode);
+    if(restored)scheduleNavigationTask(()=>loadCurrentView(),PANEL_REVALIDATE_DELAY_MS);
+    else loadCurrentView();
+  }
   return true;
 }
 
 function loadingCards(count = 4) {
-  return `<div class="loading-grid">${Array.from({length: count}, () => '<div class="skeleton"></div>').join("")}</div>`;
+  return `<div class="loading-grid" role="status" aria-live="polite"><span class="sr-only">Carregando dados do painel…</span>${Array.from({length: count}, () => '<div class="skeleton" aria-hidden="true"></div>').join("")}</div>`;
 }
 
 function errorState(error, retry = "") {
@@ -497,7 +689,7 @@ function renderDashboardTab() {
 }
 
 async function loadOfficialCalendar(){
-  const root=$("#dashboard-tab-content");root.innerHTML=loadingCards(5);
+  const root=$("#dashboard-tab-content"),hadContent=Boolean(root.childElementCount);if(!hadContent)root.innerHTML=loadingCards(5);else root.classList.add("panel-refreshing");
   try{
     const payload=await api("/investor-events/calendar",{requestKey:"official-calendar",cacheTtlMs:120000});
     ensureRefreshGroupIfNeeded("official_calendar",payload.update,!(payload.items||[]).length,()=>loadOfficialCalendar());
@@ -510,11 +702,12 @@ async function loadOfficialCalendar(){
       {label:"Fonte",render:r=>r.source_url?`<a href="${esc(safeExternalUrl(r.source_url))}" target="_blank" rel="noopener noreferrer">${esc(r.source||"Consultar")}</a>`:esc(r.source||"—")},
     ]):'<div class="empty-state"><strong>Agenda oficial sendo preparada</strong>A atualização ocorre em segundo plano e os dados anteriores nunca são apagados por uma falha de fonte.</div>';
     root.innerHTML=marketUpdatePanel(["official_calendar"])+sectionCard("Agenda oficial do investidor",table,"Eventos econômicos, feriados e eleições renovados anualmente");
-  }catch(error){root.innerHTML=errorState(error,"market");}
+  }catch(error){if(!hadContent)root.innerHTML=errorState(error,"market");}
+  finally{root.classList.remove("panel-refreshing");}
 }
 
 async function loadRelevantFacts(){
-  const root=$("#dashboard-tab-content");root.innerHTML=loadingCards(5);
+  const root=$("#dashboard-tab-content"),hadContent=Boolean(root.childElementCount);if(!hadContent)root.innerHTML=loadingCards(5);else root.classList.add("panel-refreshing");
   try{
     const payload=await api("/investor-events/relevant-facts?limit=100",{requestKey:"relevant-facts",cacheTtlMs:120000});
     ensureRefreshGroupIfNeeded("cvm_relevant_facts",payload.update,!(payload.items||[]).length,()=>loadRelevantFacts());
@@ -522,7 +715,8 @@ async function loadRelevantFacts(){
     const rows=payload.items||[];
     const content=rows.length?`<div class="headline-list"><div class="headline headline-header"><span>#</span><span>Companhia • assunto • ativos</span><span>Entrega</span></div>${rows.map((item,index)=>`<a class="headline" href="${esc(safeExternalUrl(item.document_url))}" target="_blank" rel="noopener noreferrer"><span class="headline-number">${String(index+1).padStart(2,"0")}</span><span><strong>${esc(item.issuer_name)}</strong><small>${esc(item.subject||"Fato relevante")}${(item.tickers||[]).length?` • ${item.tickers.map(esc).join(", ")}`:""}</small></span><small>${dateTime(item.delivered_at)}</small></a>`).join("")}</div>`:'<div class="empty-state"><strong>Fatos relevantes sendo sincronizados</strong>A fonte oficial da CVM será consultada em segundo plano.</div>';
     root.innerHTML=marketUpdatePanel(["cvm_relevant_facts"])+sectionCard("Fatos relevantes oficiais",content,"Metadados e documentos publicados no sistema IPE da CVM",{url:"https://dados.cvm.gov.br/dataset/cia_aberta-doc-ipe",label:"CVM • Dados Abertos"});
-  }catch(error){root.innerHTML=errorState(error,"market");}
+  }catch(error){if(!hadContent)root.innerHTML=errorState(error,"market");}
+  finally{root.classList.remove("panel-refreshing");}
 }
 
 function renderCurve(curve) {
@@ -713,6 +907,7 @@ async function loadMarket(force = false) {
     const envelope = await api("/market-dashboard", {requestKey:"market-get"});
     state.marketEnvelope = envelope;
     if (envelope?.data && Object.keys(envelope.data).length) state.market = envelope.data;
+    state.dashboardCheckedAt = Date.now();
     renderMarketSummary(); renderDashboardTab();
     if (!force) {
       // The scheduler owns routine refreshes. Access fallback remains active
@@ -751,7 +946,8 @@ function pollMarket(attempt = 0, navigationSerial = state.navigationSerial) {
 
 async function loadHeadlines() {
   const root = $("#dashboard-tab-content");
-  root.innerHTML = loadingCards(5);
+  const hadContent=Boolean(root.childElementCount);
+  if(!hadContent)root.innerHTML=loadingCards(5);else root.classList.add("panel-refreshing");
   try {
     let payload = await api("/market-dashboard/headlines", {requestKey:"headlines",cacheTtlMs:120000});
     ensureRefreshGroupIfNeeded("headlines",payload.update,!payload.data?.items?.length,()=>loadHeadlines());
@@ -760,7 +956,8 @@ async function loadHeadlines() {
       root.innerHTML = `${loadingCards(5)}<div class="notice info" style="margin-top:14px">Buscando as principais manchetes em segundo plano. O restante do site continua disponível.</div>`;
       scheduleNavigationTask(async () => { try { payload=await api("/market-dashboard/headlines"); renderHeadlines(payload); } catch (_) {} }, 2500);
     } else renderHeadlines(payload);
-  } catch (error) { root.innerHTML = errorState(error); }
+  } catch (error) { if(!hadContent)root.innerHTML = errorState(error); }
+  finally { root.classList.remove("panel-refreshing"); }
 }
 
 function renderHeadlines(payload) {
@@ -793,7 +990,7 @@ function ensureRefreshGroupIfNeeded(group,update,missing,onReady,endpoint=null){
   api(endpoint||`/market-dashboard/groups/${encodeURIComponent(group)}/ensure`,{method:"POST",invalidateCache:false})
     .then(result=>{
       if(result?.scheduled)scheduleNavigationTask(()=>{
-        state.readCache.clear();
+        invalidateApplicationCache(cacheTagsForPath(endpoint||`/market-dashboard/groups/${encodeURIComponent(group)}`));
         onReady?.();
       },3000);
     })
@@ -1146,7 +1343,10 @@ async function loadAnalysis() {
   try {
     await loadAnalysisCatalog(type);
     if(!navigationIsCurrent(navigationSerial,"analysis","analysis",analysisTab)||type!==analysisType())return;
-    if(state.analysisLoadedType!==type){state.analysisLoadedType=type;state.currentCustomFilter=null;state.analysisPreset="default";fillAnalysisForm(state.analysisCatalog[type]?.default?.configuration||{});markActiveAnalysis({presetId:"default"});}
+    if(state.analysisLoadedType!==type){
+      state.analysisLoadedType=type;state.currentCustomFilter=null;state.analysisPreset="default";
+      if(!restoreAnalysisFormState(analysisTab)){fillAnalysisForm(state.analysisCatalog[type]?.default?.configuration||{});markActiveAnalysis({presetId:"default"});}
+    }
   } catch(error){toast(`Configuração dos filtros: ${error.message}`,"error");}
   updateFilterAvailability();
   await loadAnalysisResults();
@@ -1193,6 +1393,7 @@ async function loadAnalysisResults(force=false) {
     const primaryRows=state.session?.access?.can_view_backtests?rows.map(row=>({...row,backtest_leaders_pending:true})):rows;
     state.analysisRows = primaryRows;
     state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows:primaryRows});
+    state.analysisLastUpdatedAt[type]=Date.now();
     renderAnalysisRows(primaryRows);
     if(warnings.length)toast(warnings.join(" "),"warning");
     enrichAnalysisRowsInBackground(rows,{type,analysisTab,cacheKey,requestSerial,navigationSerial});
@@ -1235,14 +1436,14 @@ function signalLabel(value) {
 function backtestLeadersCell(row) {
   if(row.backtest_leaders_pending)return '<span class="secondary-loading"><span class="loading-dot" aria-hidden="true"></span> Carregando sinais…</span>';
   const leaders=(row.backtest_leaders||[]).slice(0,3);
-  if(!leaders.length)return '<span class="muted">Sem dados</span>';
+  if(!leaders.length)return '<span class="status-chip status-empty" title="Nenhum resultado oficial distinto foi materializado para este ativo.">Sem resultado oficial</span>';
   return `<div class="backtest-leader-stack">${leaders.map((leader,index)=>`<div><span class="leader-rank">${index+1}</span><span><strong>${esc(leader.strategy_name||leader.strategy_id||"Estratégia")}</strong><small>${nullable(leader.ranking_score)?"":`Pontuação ${number(leader.ranking_score,1)}`}</small></span><span class="pill signal-${esc(leader.current_signal||"neutral")}">${signalLabel(leader.current_signal)}</span></div>`).join("")}</div>`;
 }
 
 function backtestLeaderCell(row,index) {
   if(row.backtest_leaders_pending)return '<span class="secondary-loading"><span class="loading-dot" aria-hidden="true"></span> Carregando…</span>';
   const leader=(row.backtest_leaders||[])[index];
-  if(!leader)return '<span class="muted">Sem dados</span>';
+  if(!leader)return '<span class="status-chip status-empty" title="Nenhum resultado oficial distinto foi materializado nesta posição.">Sem resultado oficial</span>';
   return `<div class="backtest-leader-single"><strong>${esc(leader.strategy_name||leader.strategy_id||"Estratégia")}</strong><span class="pill signal-${esc(leader.current_signal||"neutral")}">${signalLabel(leader.current_signal)}</span><small>${nullable(leader.ranking_score)?"Sem pontuação":`Pontuação ${number(leader.ranking_score,1)}`}</small></div>`;
 }
 
@@ -1276,7 +1477,7 @@ function analysisColumns(type) {
     {id:"backtest_3",label:"3º backtest",render:r=>backtestLeaderCell(r,2)},
   ];
   const access=state.session?.access||{},alb=Boolean(access.can_use_alb_analysis),canGraham=Boolean(access.can_use_graham_valuation||alb),canDividend=Boolean(access.can_use_dividend_ceiling||alb),canRelative=Boolean(access.can_use_relative_valuation||alb),canEconomic=Boolean(access.can_use_economic_valuation||alb);
-  const valuationCell=(row,family,valueField)=>{const result=row.valuation_methods?.[family]||{};if(result.status&&result.status!=="valid")return `<span class="pill muted" title="${esc(result.reason||"Dados insuficientes")}">N/D</span>`;const scenarios=result.scenarios||{},scenarioItems=[["conservative","C"],["base","B"],["optimistic","O"]].filter(([key])=>!nullable(scenarios[key]?.value));return `<span class="valuation-base-value">${money(result.value??row[valueField])}</span>${scenarioItems.length?`<small class="valuation-mini-scenarios">${scenarioItems.map(([key,label])=>`${label}: ${money(scenarios[key].value)}`).join(" • ")}</small>`:""}`;};
+  const valuationCell=(row,family,valueField)=>{const result=row.valuation_methods?.[family]||{};if(result.status&&result.status!=="valid")return `<span class="status-chip status-na" title="${esc(result.reason||"Esta metodologia não se aplica ou não possui dados suficientes.")}">N/D</span>`;const scenarios=result.scenarios||{},scenarioItems=[["conservative","C"],["base","B"],["optimistic","O"]].filter(([key])=>!nullable(scenarios[key]?.value));return `<span class="valuation-base-value">${money(result.value??row[valueField])}</span>${scenarioItems.length?`<small class="valuation-mini-scenarios">${scenarioItems.map(([key,label])=>`${label}: ${money(scenarios[key].value)}`).join(" • ")}</small>`:""}`;};
   const upsideCell=(row,family,valueField)=>{const result=row.valuation_methods?.[family]||{};if(result.status&&result.status!=="valid")return "—";const value=result.upside_pct??row[valueField];return `<span class="${variationClass(value)}">${pct(value,true)}</span>`;};
   if(type==="stock") {
     return [common[0],
@@ -1329,14 +1530,51 @@ function visibleAnalysisColumns(type, columns) {
   return ordered.filter(column=>column.always||active.has(column.id));
 }
 
+function analysisSortValue(row,columnId){
+  const direct={
+    ticker:row.ticker,sector:row.sector_label||row.classification||row.sector,segment:row.segment_label||row.classification,
+    company_size:row.company_size_label,in_ibov:row.in_ibov,price:row.price,pe:row.pe,pbv:row.pbv,
+    dy:row.dy??row.dividend_yield_pct,roe:row.roe??row.roe_pct,ffo:row.ffo_yield??row.ffo_yield_pct,
+    vacancy:row.vacancy??row.vacancy_pct,alb:row.alb_score,rsi:row.rsi14_screen,front:row.front_contract,
+    expiry:row.expiration_date,premium:row.nav_discount_premium_pct,expense:row.expense_ratio_pct,
+    volume_daily:row.volume_daily_ratio,volume_monthly:row.volume_monthly_ratio,trend_daily:row.trend_daily,
+  };
+  if(columnId.startsWith("backtest_"))return (row.backtest_leaders||[])[Number(columnId.slice(-1))-1]?.ranking_score??null;
+  const valuationMap={
+    graham:["graham_reference","graham_number"],graham_upside:["graham_reference","graham_upside_pct"],
+    barsi:["dividend_yield_ceiling","dividend_yield_ceiling_value"],barsi_upside:["dividend_yield_ceiling","dividend_yield_ceiling_upside_pct"],
+    relative:["relative_peers","relative_peers_value"],relative_upside:["relative_peers","relative_peers_upside_pct"],
+    economic:["economic_value","economic_value"],economic_upside:["economic_value","economic_value_upside_pct"],
+    nav:["economic_value","economic_value"],nav_upside:["economic_value","economic_value_upside_pct"],
+    parity:["economic_value","economic_value"],parity_upside:["economic_value","economic_value_upside_pct"],
+    carry:["economic_value","economic_value"],basis:["economic_value","economic_value_upside_pct"],
+  };
+  if(valuationMap[columnId]){const [family,fallback]=valuationMap[columnId];const result=row.valuation_methods?.[family]||{};return columnId.includes("upside")||columnId==="basis"||columnId==="nav_upside"||columnId==="parity_upside"?result.upside_pct??row[fallback]:result.value??row[fallback];}
+  return Object.hasOwn(direct,columnId)?direct[columnId]:row[columnId];
+}
+
+function sortedAnalysisRows(rows,type=analysisType()){
+  const sort=state.analysisSort[type];if(!sort?.column)return [...rows];
+  const direction=sort.direction==="desc"?-1:1;
+  return [...rows].sort((left,right)=>{
+    const a=analysisSortValue(left,sort.column),b=analysisSortValue(right,sort.column);
+    if(nullable(a)&&nullable(b))return String(left.ticker).localeCompare(String(right.ticker));
+    if(nullable(a))return 1;if(nullable(b))return -1;
+    const comparison=typeof a==="number"||typeof b==="number"?Number(a)-Number(b):String(a).localeCompare(String(b),"pt-BR",{numeric:true,sensitivity:"base"});
+    return comparison*direction;
+  });
+}
+
 function renderAnalysisRows(rows) {
   $("#analysis-count").textContent = `${rows.length} ativo${rows.length===1?"":"s"}`;
-  if (!rows.length) { $("#analysis-table").innerHTML='<div class="empty-state"><strong>Nenhum ativo passou pelos filtros</strong>Abra os ajustes para ampliar ou alterar os critérios.</div>'; return; }
+  if (!rows.length) { $("#analysis-table").innerHTML='<div class="empty-state"><strong>Nenhum ativo passou pelos filtros</strong><span class="status-chip status-empty">Sem resultado</span><p>Abra os ajustes para ampliar ou alterar os critérios.</p></div>'; return; }
   const type = analysisType();
+  const displayRows=sortedAnalysisRows(rows,type),sort=state.analysisSort[type]||{};
   const allColumns=orderedAnalysisColumns(type,analysisColumns(type)), columns=visibleAnalysisColumns(type,allColumns);
   const active=new Set(columns.map(column=>column.id));
   const picker=`<details class="column-picker"><summary>Colunas visíveis</summary><div>${allColumns.filter(column=>!column.always).map(column=>`<label class="check"><input type="checkbox" data-column-id="${column.id}" ${active.has(column.id)?"checked":""}> ${esc(column.label)}</label>`).join("")}<button type="button" class="button ghost compact wide-action" data-reset-personal-columns="${esc(type)}">Usar padrão da plataforma</button></div></details>`;
-  $("#analysis-table").innerHTML = `<div class="table-toolbar">${picker}<span>Clique em um ativo para abrir todos os dados.</span></div><div class="table-scroll"><table><thead><tr>${columns.map(c=>`<th>${esc(c.label)}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr data-ticker="${esc(r.ticker)}">${columns.map(c=>`<td data-column-id="${esc(c.id)}">${c.render(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  const density=`<div class="table-density" role="group" aria-label="Densidade da tabela"><button type="button" class="button ghost compact ${state.analysisDensity==="comfortable"?"active":""}" data-analysis-density="comfortable">Confortável</button><button type="button" class="button ghost compact ${state.analysisDensity==="compact"?"active":""}" data-analysis-density="compact">Compacta</button></div>`;
+  $("#analysis-table").innerHTML = `<div class="table-toolbar"><div class="table-toolbar-main">${picker}${density}</div><span class="table-freshness"><span class="status-chip status-updated">Atualizado</span> ${esc(relativeUpdateLabel(state.analysisLastUpdatedAt[type]||Date.now()))}</span><span>Clique em um ativo para abrir todos os dados.</span></div><div class="table-scroll"><table class="analysis-data-table density-${esc(state.analysisDensity)}"><thead><tr>${columns.map(c=>`<th data-column-id="${esc(c.id)}" aria-sort="${sort.column===c.id?(sort.direction==="desc"?"descending":"ascending"):"none"}"><button type="button" class="table-sort ${sort.column===c.id?"active":""}" data-analysis-sort="${esc(c.id)}" aria-label="Ordenar por ${esc(c.label)}">${esc(c.label)}<span aria-hidden="true">${sort.column===c.id?(sort.direction==="desc"?"↓":"↑"):"↕"}</span></button></th>`).join("")}</tr></thead><tbody>${displayRows.map(r=>`<tr data-ticker="${esc(r.ticker)}">${columns.map(c=>`<td data-column-id="${esc(c.id)}">${c.render(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function patchAnalysisBacktestCells(rows) {
@@ -1368,7 +1606,7 @@ async function applyAdvancedFilters(showToast=true) {
     const rows=payload.rows||payload;
     if(!navigationIsCurrent(navigationSerial,"analysis","analysis",analysisTab)||type!==analysisType()||requestSerial!==state.analysisRequestSerial)return;
     const primaryRows=state.session?.access?.can_view_backtests?rows.map(row=>({...row,backtest_leaders_pending:true})):rows;
-    state.analysisRows=primaryRows; renderAnalysisRows(primaryRows);
+    state.analysisRows=primaryRows;state.analysisLastUpdatedAt[type]=Date.now();renderAnalysisRows(primaryRows);
     const warnings=payload?.meta?.warnings||[];
     if(warnings.length) toast(warnings.join(" "),"warning");
     else if(showToast) toast(`${rows.length} ativo(s) após os ajustes.`,"success");
@@ -1379,8 +1617,10 @@ async function applyAdvancedFilters(showToast=true) {
   } catch(error) { if(error.name!=="AbortError"&&state.view==="analysis"&&type===analysisType()&&requestSerial===state.analysisRequestSerial) $("#analysis-table").innerHTML=errorState(error,"analysis"); }
 }
 
-async function openAsset(ticker) {
+async function openAsset(ticker,{historyMode="push"}={}) {
   const dialog=$("#asset-dialog"), content=$("#asset-dialog-content");
+  state.currentAssetTicker=String(ticker||"").toUpperCase();
+  syncNavigationUrl(historyMode);
   const requestSerial=++state.assetRequestSerial;
   content.innerHTML=loadingCards(4); dialog.showModal();
   try {
@@ -2308,7 +2548,7 @@ async function loadAdminOperations(root,context){
   if(!adminPanelIsCurrent(root,context))return;
   const severityLabel={healthy:"Operacional",warning:"Atenção",critical:"Crítico"};
   const serviceRoleLabel={worker:"Processamento em segundo plano",web:"Aplicação web"};
-  const routeLabel={health:"Saúde e disponibilidade",dashboard:"Painel de Mercado",screener_50:"Filtro com até 50 ativos",screener_100:"Filtro com até 100 ativos",asset_detail:"Detalhe do ativo"};
+  const routeLabel={health:"Saúde e disponibilidade",dashboard:"Painel de Mercado",screener_50:"Filtro com até 50 ativos",screener_100:"Filtro com até 100 ativos",asset_detail:"Detalhe do ativo",panel_dashboard:"Mercado",panel_analysis:"Mercado e Análises",panel_portfolio:"Minha Carteira",panel_finances:"Minhas Finanças",panel_backtests:"Backtests",panel_admin:"Administração"};
   const leaseLabel={"background-scheduler":"Agendador automático","price-alert-monitor-leader":"Monitor de alertas","price-alert-monitor-cycle":"Ciclo de verificação dos alertas"};
   const services=marketTable(payload.services||[],[
     {label:"Serviço",render:r=>`<strong>${esc(serviceRoleLabel[r.role]||r.role)}</strong><br><small>${esc(r.node_id)}</small>`},
@@ -2326,6 +2566,15 @@ async function loadAdminOperations(root,context){
     {label:"Meta p95",render:r=>nullable(r.target_p95_ms)?"—":`${number(r.target_p95_ms,0)} ms`},
     {label:"Situação",render:r=>!r.sample_sufficient?'<span class="pill warning">Coletando</span>':r.within_target?'<span class="pill">Dentro da meta</span>':'<span class="pill danger">Acima da meta</span>'},
   ]);
+  const browserRows=(payload.browser_performance||[]).slice(0,80);
+  const browserPerformance=browserRows.length?marketTable(browserRows,[
+    {label:"Hora",render:r=>dateTime(r.bucket_hour)},
+    {label:"Painel",render:r=>`<strong>${esc(routeLabel[`panel_${r.panel}`]||r.panel)}</strong><br><small>${esc(r.device_class||"—")} • ${esc(r.cache_state||"—")}</small>`},
+    {label:"Amostras",render:r=>`${number(r.sample_count,0)}<br><small>${number(r.success_pct,1)}% concluídas</small>`},
+    {label:"p50 / p95",render:r=>`${number(r.p50_ms,0)} / ${number(r.p95_ms,0)} ms`},
+    {label:"Máximo",render:r=>`${number(r.max_ms,0)} ms`},
+    {label:"Web Vitals",render:r=>`LCP ${number(r.web_vitals?.lcp_ms?.average,0)} ms<br><small>INP ${number(r.web_vitals?.inp_ms?.average,0)} ms • CLS ${number(r.web_vitals?.cls?.average,3)}</small>`},
+  ]):'<div class="empty-state compact"><strong>Coletando a experiência real</strong>Os resumos aparecerão por hora apó a navegação autenticada.</div>';
   const openIncidents=(payload.incidents||[]).filter(item=>item.status==="open");
   const incidents=marketTable(openIncidents,[
     {label:"Gravidade",render:r=>`<span class="pill ${r.severity==="critical"?"danger":"warning"}">${r.severity==="critical"?"Crítico":"Atenção"}</span>`},
@@ -2335,7 +2584,7 @@ async function loadAdminOperations(root,context){
     {label:"Última detecção",render:r=>dateTime(r.last_seen_at)},
   ]);
   const leaders=(payload.leases||[]).map(item=>`<span class="operations-lease"><strong>${esc(leaseLabel[item.lease_name]||item.lease_name)}</strong><small>${esc(item.holder_id)} • até ${dateTime(item.expires_at)}</small></span>`).join("")||'<span class="empty-state compact">Nenhuma liderança ativa registrada.</span>';
-  root.innerHTML=`<div class="admin-monitor-row operations-summary ${esc(payload.status)}"><span><strong>Saúde operacional: ${esc(severityLabel[payload.status]||payload.status)}</strong><small>Leitura de ${dateTime(payload.generated_at)} • ${openIncidents.length} ocorrência(s) aberta(s)</small></span><button class="button secondary" data-reload-admin-operations>Atualizar diagnóstico</button></div><div class="metric-grid">${metricCard("Worker",payload.worker_health?.status==="ok"?"Ativo":"Indisponível",payload.worker_health?.last_seen_at?`Último sinal ${dateTime(payload.worker_health.last_seen_at)}`:"Sem heartbeat")}${metricCard("Na fila",number(payload.queue?.queued||0,0),`Mais antigo: ${number(payload.queue?.oldest_due_minutes||0,0)} min`)}${metricCard("Em execução",number(payload.queue?.running||0,0),`${number(payload.queue?.stale_running||0,0)} sem heartbeat`)}${metricCard("Ocorrências",number(openIncidents.length,0),openIncidents.some(i=>i.severity==="critical")?"Há item crítico":"Sem item crítico")}</div>${operationsResourceCards(payload.resources)}${sectionCard("Serviços e liderança",services,"O esperado é um único líder para o agendador e um único líder para o monitor de alertas")}${sectionCard("Leases distribuídas",`<div class="operations-leases">${leaders}</div>`,`A liderança expira automaticamente se uma VM deixar de responder`) }${sectionCard("Tempo de resposta p50/p95",latencies,`Janela de até ${number(payload.route_metrics?.window_size||0,0)} medições desde ${dateTime(payload.route_metrics?.since)}`)}${sectionCard("Ocorrências abertas",incidents||'<div class="empty-state compact"><strong>Nenhuma ocorrência aberta.</strong>Os limites monitorados estão normais.</div>',"Fila parada, falhas repetidas, dados vencidos, memória, swap, disco e latência")}`;
+  root.innerHTML=`<div class="admin-monitor-row operations-summary ${esc(payload.status)}"><span><strong>Saúde operacional: ${esc(severityLabel[payload.status]||payload.status)}</strong><small>Leitura de ${dateTime(payload.generated_at)} • ${openIncidents.length} ocorrência(s) aberta(s)</small></span><button class="button secondary" data-reload-admin-operations>Atualizar diagnóstico</button></div><div class="metric-grid">${metricCard("Worker",payload.worker_health?.status==="ok"?"Ativo":"Indisponível",payload.worker_health?.last_seen_at?`Último sinal ${dateTime(payload.worker_health.last_seen_at)}`:"Sem heartbeat")}${metricCard("Na fila",number(payload.queue?.queued||0,0),`Mais antigo: ${number(payload.queue?.oldest_due_minutes||0,0)} min`)}${metricCard("Em execução",number(payload.queue?.running||0,0),`${number(payload.queue?.stale_running||0,0)} sem heartbeat`)}${metricCard("Ocorrências",number(openIncidents.length,0),openIncidents.some(i=>i.severity==="critical")?"Há item crítico":"Sem item crítico")}</div>${operationsResourceCards(payload.resources)}${sectionCard("Serviços e liderança",services,"O esperado é um único líder para o agendador e um único líder para o monitor de alertas")}${sectionCard("Leases distribuídas",`<div class="operations-leases">${leaders}</div>`,`A liderança expira automaticamente se uma VM deixar de responder`) }${sectionCard("Tempo de resposta do servidor",latencies,`p50/p95 de até ${number(payload.route_metrics?.window_size||0,0)} medições desde ${dateTime(payload.route_metrics?.since)}`)}${sectionCard("Experiência real no navegador",browserPerformance,"Resumos horários das últimas 24 horas; nenhum clique individual é gravado no banco")}${sectionCard("Ocorrências abertas",incidents||'<div class="empty-state compact"><strong>Nenhuma ocorrência aberta.</strong>Os limites monitorados estão normais.</div>',"Fila parada, falhas repetidas, dados vencidos, memória, swap, disco e latência")}`;
 }
 
 function dataQualityStatus(value){return ({updated:"Atualizado",partial:"Cobertura parcial",stale:"Desatualizado",unavailable:"Indisponível",failed:"Falhou",queued:"Na fila",running:"Atualizando"})[value]||value||"Aguardando";}
@@ -2721,7 +2970,10 @@ async function saveUserAccess(email) {
 }
 
 function loadCurrentView() {
-  if(state.view==="dashboard") { renderDashboardTab(); if(!state.market) loadMarket(); }
+  if(state.view==="dashboard") {
+    renderDashboardTab();
+    if(!state.market||Date.now()-state.dashboardCheckedAt>60000)loadMarket(false);
+  }
   else if(state.view==="analysis") loadAnalysis();
   else if(state.view==="portfolio") loadPortfolios();
   else if(state.view==="finances") loadFinances();
@@ -2757,6 +3009,13 @@ function bindEvents() {
   $("#collapse-sidebar").addEventListener("click",()=>document.body.classList.toggle("sidebar-collapsed"));
   $("#mobile-menu").addEventListener("click",()=>document.body.classList.toggle("mobile-nav-open"));
   $$(".tabs").forEach(tabs=>tabs.addEventListener("click",event=>{const button=event.target.closest(".tab");if(button&&activateTab(tabs.dataset.tabs,button.dataset.tab)&&tabs.dataset.tabs==="analysis")updateFilterAvailability();}));
+  $$(".tabs").forEach(tabs=>tabs.addEventListener("keydown",event=>{
+    if(!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"].includes(event.key))return;
+    const visible=$$(".tab:not(.hidden):not([disabled])",tabs);if(!visible.length)return;
+    const current=Math.max(0,visible.indexOf(document.activeElement));
+    const next=event.key==="Home"?0:event.key==="End"?visible.length-1:(current+(["ArrowRight","ArrowDown"].includes(event.key)?1:-1)+visible.length)%visible.length;
+    event.preventDefault();visible[next].focus();visible[next].click();
+  }));
   $("#refresh-market").addEventListener("click",()=>loadMarket(true));
   $("#logout-button").addEventListener("click",async()=>{try{await api("/logout",{method:"POST"});location.href=LANDING_PATH;}catch(error){toast(error.message,"error");}});
   $("#global-search").addEventListener("input",event=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>runSearch(event.target.value),220);});
@@ -2789,6 +3048,8 @@ function bindEvents() {
     const allocationType=event.target.closest("[data-allocation-type]");if(allocationType){showPortfolioAllocationType(allocationType.dataset.allocationType);return;}
     if(event.target.closest("[data-allocation-close]")){showPortfolioAllocationType(null);return;}
     const resetPersonalColumns=event.target.closest("[data-reset-personal-columns]");if(resetPersonalColumns){delete state.visibleColumns[resetPersonalColumns.dataset.resetPersonalColumns];persistVisibleColumns();renderAnalysisRows(state.analysisRows);toast("Colunas restauradas para o padrão da plataforma.","success");return;}
+    const densityButton=event.target.closest("[data-analysis-density]");if(densityButton){state.analysisDensity=densityButton.dataset.analysisDensity;localStorage.setItem("fdi-analysis-density",state.analysisDensity);renderAnalysisRows(state.analysisRows);return;}
+    const sortButton=event.target.closest("[data-analysis-sort]");if(sortButton){const type=analysisType(),column=sortButton.dataset.analysisSort,current=state.analysisSort[type]||{};state.analysisSort[type]={column,direction:current.column===column&&current.direction==="asc"?"desc":"asc"};renderAnalysisRows(state.analysisRows);return;}
     const updateCustom=event.target.closest("[data-update-custom-investment]");if(updateCustom){updateCustomInvestmentValue(updateCustom);return;}
     const deleteCustom=event.target.closest("[data-delete-custom-investment]");if(deleteCustom){deleteCustomInvestment(deleteCustom);return;}
     const deletePosition=event.target.closest("[data-delete-position]");if(deletePosition){deletePortfolioPosition(deletePosition);return;}
@@ -2815,10 +3076,10 @@ function bindEvents() {
     const retryOfficial=event.target.closest("[data-retry-official-job]");if(retryOfficial)retryOfficialBacktestJob(retryOfficial.dataset.retryOfficialJob,retryOfficial);
     if(!event.target.closest(".global-search-wrap"))$("#search-results").classList.add("hidden");
   });
-  const closeAssetDialog=()=>{state.assetRequestSerial+=1;state.requestControllers.get("asset-detail")?.abort();state.requestControllers.delete("asset-detail");$("#asset-dialog").close();};
+  const closeAssetDialog=({historyMode="replace"}={})=>{state.assetRequestSerial+=1;state.requestControllers.get("asset-detail")?.abort();state.requestControllers.delete("asset-detail");state.currentAssetTicker=null;if($("#asset-dialog").open)$("#asset-dialog").close();syncNavigationUrl(historyMode);};
   $("#close-asset-dialog").addEventListener("click",closeAssetDialog);
   $("#asset-dialog").addEventListener("click",event=>{if(event.target===$("#asset-dialog"))closeAssetDialog();});
-  $("#asset-dialog").addEventListener("close",()=>{state.assetRequestSerial+=1;state.requestControllers.get("asset-detail")?.abort();state.requestControllers.delete("asset-detail");});
+  $("#asset-dialog").addEventListener("close",()=>{state.assetRequestSerial+=1;state.requestControllers.get("asset-detail")?.abort();state.requestControllers.delete("asset-detail");if(state.currentAssetTicker){state.currentAssetTicker=null;syncNavigationUrl("replace");}});
   $("#apply-advanced-filters").addEventListener("click",applyAdvancedFilters);
   $("#save-custom-filter").addEventListener("click",saveCustomFilter);
   $("#delete-custom-filter").addEventListener("click",deleteCustomFilter);
@@ -2843,7 +3104,7 @@ function bindEvents() {
       event.target.form?.querySelectorAll("[data-backtest-custom-date]").forEach(field=>field.hidden=!custom);
     }
     if(event.target.id==="portfolio-selector"){state.portfolioId=event.target.value;state.portfolioAllocationType=null;state.portfolioAllocationHierarchy=null;renderPortfolioTab();}
-    if(event.target.id==="finance-month"){state.financeMonth=event.target.value;loadFinances();}
+    if(event.target.id==="finance-month"){capturePanelSurface("finances",state.tabs.finances);state.financeMonth=event.target.value;syncNavigationUrl("replace");restorePanelSurface("finances",state.tabs.finances);loadFinances();}
     if(event.target.id==="analysis-limit"){state.analysisLimit=Number(event.target.value);$("#analysis-limit-label").textContent=state.analysisLimit;}
     if(event.target.matches("[data-comparison-series]")){
       state.comparisonSelected=$$("[data-comparison-series]:checked").map(input=>input.dataset.comparisonSeries);
@@ -2863,6 +3124,35 @@ function bindEvents() {
   document.addEventListener("input",event=>{if(event.target.id==="alert-symbol")renderAlertSuggestions(event.target.value);});
   document.addEventListener("keydown",event=>{const slice=event.target.closest?.("[data-allocation-type]");if(slice&&(event.key==="Enter"||event.key===" ")){event.preventDefault();showPortfolioAllocationType(slice.dataset.allocationType);}});
   document.addEventListener("submit",event=>{if(event.target.id==="email-login-request-form"){event.preventDefault();requestEmailLogin(event.target);}if(event.target.id==="email-login-verify-form"){event.preventDefault();verifyEmailLogin(event.target);}if(event.target.id==="backtest-form"){event.preventDefault();runBacktest(event.target);}if(event.target.id==="portfolio-position-form"){event.preventDefault();savePortfolioPosition(event.target);}if(event.target.id==="custom-investment-form"){event.preventDefault();saveCustomInvestment(event.target);}if(event.target.id==="custom-value-form"){event.preventDefault();saveCustomInvestmentValue(event.target);}if(event.target.id==="finance-transaction-form"){event.preventDefault();saveFinanceTransaction(event.target);}if(event.target.id==="finance-budget-form"){event.preventDefault();saveFinanceBudget(event.target);}if(event.target.id==="price-alert-form"){event.preventDefault();savePriceAlert(event.target);}if(event.target.id==="alert-preference-form"){event.preventDefault();saveAlertPreferences(event.target);}if(event.target.id==="portal-page-form"){event.preventDefault();savePortalPage(event.target);}if(event.target.matches("[data-portal-book-form]")){event.preventDefault();savePortalBook(event.target);}if(event.target.matches("[data-access-level-form]")){event.preventDefault();saveAccessLevel(event.target);}if(event.target.id==="create-access-level-form"){event.preventDefault();createAccessLevel(event.target);}if(event.target.id==="admin-user-filter-form"){event.preventDefault();applyAdminUserFilters(event.target);}if(event.target.matches("[data-admin-preset-form]")){event.preventDefault();saveAdminPreset(event.target);}if(event.target.matches("[data-admin-columns-form]")){event.preventDefault();saveAdminColumns(event.target);}});
+  window.addEventListener("popstate",()=>applyNavigationFromLocation({historyMode:"none"}));
+}
+
+function storedNavigation(){
+  try{return JSON.parse(localStorage.getItem(state.navigationStorageKey)||"null");}catch(_){return null;}
+}
+
+function applyNavigationFromLocation({historyMode="replace",useStored=false}={}){
+  const fromUrl=navigationStateFromLocation(),saved=useStored?storedNavigation():null;
+  let view=fromUrl.view||saved?.view||"dashboard";
+  let tab=fromUrl.tab||saved?.tabs?.[view]||state.tabs[view];
+  if(view==="analysis"){
+    tab=fromUrl.tab||saved?.tabs?.analysis||"stocks";
+    const mode=new URLSearchParams(location.search).get("mode")||saved?.tabs?.analysisMode;
+    if(["list","guide"].includes(mode))state.tabs.analysisMode=mode;
+  }
+  if(view==="finances"){
+    const month=new URLSearchParams(location.search).get("month")||saved?.financeMonth;
+    if(/^\d{4}-\d{2}$/.test(month||"")){state.financeMonth=month;if($("#finance-month"))$("#finance-month").value=month;}
+  }
+  if(!navigationIsAllowed(view,tab)){view="dashboard";tab=state.tabs.dashboard;}
+  state.applyingHistory=true;
+  try{
+    setView(view,tab,{force:true,historyMode:"none"});
+    const requestedAsset=fromUrl.asset;
+    if(requestedAsset&&view==="analysis")scheduleNavigationTask(()=>openAsset(requestedAsset,{historyMode:"none"}),120);
+    else if($("#asset-dialog")?.open){state.currentAssetTicker=null;$("#asset-dialog").close();}
+  }finally{state.applyingHistory=false;}
+  syncNavigationUrl(historyMode);
 }
 
 async function initialize() {
@@ -2874,14 +3164,9 @@ async function initialize() {
     const session=await api("/session/me");
     if(!session.authenticated){showLogin();return;}
     state.session=session; configureAccess(); showApp();
-    const requested=new URLSearchParams(location.search);
-    const requestedView=requested.get("view"),requestedTab=requested.get("tab");
-    if(requestedView==="admin"&&(session.access?.is_owner||session.access?.can_manage_users||session.access?.can_sync_market||session.access?.can_manage_portal)){
-      const requestedAdminTab=requestedTab?document.querySelector(`.tabs[data-tabs="admin"] [data-tab="${CSS.escape(requestedTab)}"]`):null;
-      const safeAdminTab=requestedAdminTab&&!requestedAdminTab.classList.contains("hidden")?requestedTab:state.tabs.admin;
-      setView("admin",safeAdminTab);
-    }
-    else loadMarket();
+    $("#finance-month").value=state.financeMonth;
+    updateNavigationAccessibility();
+    applyNavigationFromLocation({historyMode:"replace",useStored:!new URLSearchParams(location.search).has("view")});
     if(session.access?.can_view_market)prefetchAnalysisCatalogs();
     if(session.access?.can_view_news_insights)api("/insights/news/refresh-daily",{method:"POST",invalidateCache:false}).catch(()=>{});
   } catch(error) { showLogin(); toast(error.message,"error"); }
