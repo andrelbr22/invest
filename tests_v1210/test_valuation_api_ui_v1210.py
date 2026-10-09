@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 
 import pytest
@@ -149,7 +150,7 @@ def test_fundamentus_parser_maps_roic_and_roe_to_their_distinct_columns():
 
 
 def test_browser_exposes_all_four_methods_permissions_parameters_and_nd_state():
-    source = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    source = browser_source(Path(__file__).resolve().parents[1])
     for text in (
         "Número de Graham",
         "Preço-teto por dividend yield-alvo",

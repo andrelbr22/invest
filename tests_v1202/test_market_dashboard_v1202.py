@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -46,7 +47,7 @@ def test_calendar_includes_brazil_and_us_elections():
 
 def test_market_ui_replaces_sp500_card_and_exposes_comparison():
     root = Path(__file__).resolve().parents[1]
-    javascript = (root / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    javascript = browser_source(Path(__file__).resolve().parents[1])
     html = (root / "investment_engine" / "web" / "index.html").read_text(encoding="utf-8")
     summary = javascript[javascript.index("function renderMarketSummary"):javascript.index("function marketTable")]
     assert 'metricCard("IPCA • 12 meses"' in summary

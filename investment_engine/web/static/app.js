@@ -90,6 +90,53 @@ const state = {
   dashboardCheckedAt: 0,
 };
 
+
+const FEATURE_ASSET_VERSION="1.23.7-r2";
+const FEATURE_SCRIPT_PATHS={
+  portfolio:`${BASE_PATH}/ui-assets/feature-portfolio.js?v=${FEATURE_ASSET_VERSION}`,
+  backtests:`${BASE_PATH}/ui-assets/feature-backtests.js?v=${FEATURE_ASSET_VERSION}`,
+  finances:`${BASE_PATH}/ui-assets/feature-finances.js?v=${FEATURE_ASSET_VERSION}`,
+  admin:`${BASE_PATH}/ui-assets/feature-admin.js?v=${FEATURE_ASSET_VERSION}`,
+};
+const FEATURE_BY_VIEW={portfolio:"portfolio",backtests:"backtests",finances:"finances",admin:"admin"};
+const featureLoads=new Map();
+window.FDIFeatures=window.FDIFeatures||{};
+
+function loadFeature(name){
+  if(window.FDIFeatures[name])return Promise.resolve(window.FDIFeatures[name]);
+  if(featureLoads.has(name))return featureLoads.get(name);
+  const source=FEATURE_SCRIPT_PATHS[name];
+  if(!source)return Promise.reject(new Error(`Módulo desconhecido: ${name}`));
+  const pending=new Promise((resolve,reject)=>{
+    const script=document.createElement("script");
+    script.src=source;script.async=true;script.dataset.feature=name;
+    script.onload=()=>{
+      const loaded=window.FDIFeatures[name];
+      if(loaded)resolve(loaded);
+      else reject(new Error(`O módulo ${name} não foi registrado.`));
+    };
+    script.onerror=()=>reject(new Error(`Não foi possível carregar o módulo ${name}.`));
+    document.head.append(script);
+  }).catch(error=>{featureLoads.delete(name);throw error;});
+  featureLoads.set(name,pending);
+  return pending;
+}
+
+async function invokeFeature(name,method,...args){
+  const loaded=await loadFeature(name),handler=loaded?.[method];
+  if(typeof handler!=="function")throw new Error(`A função ${method} não está disponível no módulo ${name}.`);
+  return handler(...args);
+}
+
+function prefetchFeature(name){scheduleIdleTask(()=>loadFeature(name).catch(()=>{}),2400);}
+
+async function loadFeaturePanel(name,method,selector,args=[]){
+  const root=$(selector);
+  if(root&&!root.childElementCount)root.innerHTML=loadingCards(4);
+  try{return await invokeFeature(name,method,...args);}
+  catch(error){if(root)root.innerHTML=errorState(error);else toast(error.message,"error");return null;}
+}
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char]);
@@ -1663,770 +1710,38 @@ async function openAsset(ticker,{historyMode="push"}={}) {
   } catch(error) { if(error.name!=="AbortError"&&requestSerial===state.assetRequestSerial&&dialog.open)content.innerHTML=errorState(error); }
 }
 
-async function loadPortfolios() {
-  const panelStarted=performance.now(),hadCached=Boolean(state.portfolios.length),navigationSerial=state.navigationSerial,requestSerial=++state.portfolioListRequestSerial;
-  const root=$("#portfolio-tab-content"),expectedPanelKey=`${state.portfolioId||"none"}:${state.tabs.portfolio}`;
-  if(root.dataset.panelKey!==expectedPanelKey||!root.childElementCount)root.innerHTML=loadingCards(5);
-  else root.classList.add("panel-refreshing");
-  try {
-    const portfolios=await api("/portfolios",{requestKey:"portfolios",cacheTtlMs:120000});
-    if(requestSerial!==state.portfolioListRequestSerial||!navigationIsCurrent(navigationSerial,"portfolio"))return;
-    state.portfolios=portfolios;
-    if (!state.portfolios.length) {
-      state.portfolioId=null;$("#portfolio-selector-wrap").innerHTML="";
-      root.dataset.panelKey=`none:${state.tabs.portfolio}`;
-      if(state.tabs.portfolio==="alerts"){await renderAlerts(root);return;}
-      if(state.tabs.portfolio==="news"){await renderNewsWorkspace(root);return;}
-      root.innerHTML='<div class="data-card empty-state"><strong>Você ainda não criou uma carteira</strong>A criação estará disponível aqui para contas com permissão de edição.</div>'; return;
-    }
-    if (!state.portfolioId || !state.portfolios.some(p=>p.id===state.portfolioId)) state.portfolioId=state.portfolios[0].id;
-    $("#portfolio-selector-wrap").innerHTML=`<select id="portfolio-selector" class="button secondary">${state.portfolios.map(p=>`<option value="${esc(p.id)}" ${p.id===state.portfolioId?"selected":""}>${esc(p.name)}</option>`).join("")}</select>`;
-    await renderPortfolioTab();
-    if(requestSerial===state.portfolioListRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio"))reportPanelPerformance("portfolio",panelStarted,{cacheState:hadCached?"warm":"cold"});
-  } catch(error) { if(error.name!=="AbortError"&&requestSerial===state.portfolioListRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio")){root.innerHTML=errorState(error,"portfolio");reportPanelPerformance("portfolio",panelStarted,{success:false,cacheState:hadCached?"stale":"cold"});} }
-  finally {if(requestSerial===state.portfolioListRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio"))root.classList.remove("panel-refreshing");}
-}
+async function loadPortfolios(...args){return loadFeaturePanel("portfolio","loadPortfolios","#portfolio-tab-content",args);}
+async function renderPortfolioTab(...args){return loadFeaturePanel("portfolio","renderPortfolioTab","#portfolio-tab-content",args);}
+async function refreshPortfolioNews(...args){return invokeFeature("portfolio","refreshPortfolioNews",...args);}
+async function refreshRecommendationNews(...args){return invokeFeature("portfolio","refreshRecommendationNews",...args);}
+async function renderAlertSuggestions(...args){return invokeFeature("portfolio","renderAlertSuggestions",...args);}
+async function setAlertStatus(...args){return invokeFeature("portfolio","setAlertStatus",...args);}
+async function editPriceAlert(...args){return invokeFeature("portfolio","editPriceAlert",...args);}
+async function sendAlertTestEmail(...args){return invokeFeature("portfolio","sendAlertTestEmail",...args);}
+async function savePriceAlert(...args){return invokeFeature("portfolio","savePriceAlert",...args);}
+async function saveAlertPreferences(...args){return invokeFeature("portfolio","saveAlertPreferences",...args);}
+async function refreshPortfolioPrices(...args){return invokeFeature("portfolio","refreshPortfolioPrices",...args);}
+async function showPortfolioAllocationType(...args){return invokeFeature("portfolio","showPortfolioAllocationType",...args);}
+async function updateCustomInvestmentValue(...args){return invokeFeature("portfolio","updateCustomInvestmentValue",...args);}
+async function deleteCustomInvestment(...args){return invokeFeature("portfolio","deleteCustomInvestment",...args);}
+async function deletePortfolioPosition(...args){return invokeFeature("portfolio","deletePortfolioPosition",...args);}
+async function saveCustomInvestment(...args){return invokeFeature("portfolio","saveCustomInvestment",...args);}
+async function savePortfolioPosition(...args){return invokeFeature("portfolio","savePortfolioPosition",...args);}
+async function saveCustomInvestmentValue(...args){return invokeFeature("portfolio","saveCustomInvestmentValue",...args);}
 
-function portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial){
-  return root?.dataset.panelKey===panelKey&&requestSerial===state.portfolioRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio","portfolio",state.tabs.portfolio);
-}
+async function openStudyStrategy(...args){return invokeFeature("backtests","openStudyStrategy",...args);}
+async function openOfficialBacktestJob(...args){return invokeFeature("backtests","openOfficialBacktestJob",...args);}
+async function retryOfficialBacktestJob(...args){return invokeFeature("backtests","retryOfficialBacktestJob",...args);}
+async function launchOfficialBacktestRound(...args){return invokeFeature("backtests","launchOfficialBacktestRound",...args);}
+async function renderBacktestStrategyParameters(...args){return invokeFeature("backtests","renderBacktestStrategyParameters",...args);}
+async function loadBacktests(...args){return loadFeaturePanel("backtests","loadBacktests","#backtests-tab-content",args);}
+async function runBacktest(...args){return invokeFeature("backtests","runBacktest",...args);}
 
-function allocationDonut(items) {
-  const rows=(items||[]).filter(item=>Number(item.value)>0);
-  if(!rows.length)return '<div class="empty-state"><strong>Composição ainda vazia</strong>Cadastre posições ou investimentos para visualizar a distribuição.</div>';
-  const colors=["#0b5d4b","#c79b3b","#4f7cac","#9b5de5","#e07a5f","#2a9d8f","#6c757d","#f4a261"];
-  let cursor=0;const stops=rows.map((item,index)=>{const start=cursor;cursor+=Number(item.weight_pct||0);return `${colors[index%colors.length]} ${start}% ${cursor}%`;});
-  return `<div class="allocation-visual"><div class="allocation-donut" style="background:conic-gradient(${stops.join(",")})"><span>${money(rows.reduce((sum,item)=>sum+Number(item.value||0),0))}</span></div><div class="allocation-legend">${rows.map((item,index)=>`<div><i class="legend-dot" style="background:${colors[index%colors.length]}"></i><span>${esc(item.label)}</span><strong>${pct(item.weight_pct)}</strong></div>`).join("")}</div></div>`;
-}
-
-const allocationTypeColors={
-  stock:"#0b5d4b",fii:"#c79b3b",etf:"#4f7cac",bdr:"#8b5fbf",future:"#e07a5f",
-  fixed_income:"#2a9d8f",crypto:"#5b6ee1",funds:"#7a8b3a",pension:"#b56576",cash:"#6c757d",other:"#9a8f82",
-};
-const allocationFallbackColors=["#0b5d4b","#c79b3b","#4f7cac","#8b5fbf","#e07a5f","#2a9d8f","#5b6ee1","#7a8b3a","#b56576","#6c757d"];
-
-function allocationPolar(cx,cy,radius,angle){return [cx+radius*Math.cos(angle),cy+radius*Math.sin(angle)];}
-
-function allocationArcPath(start,end,innerRadius,outerRadius,cx=160,cy=160){
-  const span=Math.max(0,end-start),full=span>=Math.PI*2-.000001;
-  if(full){
-    return `M ${cx} ${cy-outerRadius} A ${outerRadius} ${outerRadius} 0 1 1 ${cx} ${cy+outerRadius} A ${outerRadius} ${outerRadius} 0 1 1 ${cx} ${cy-outerRadius} L ${cx} ${cy-innerRadius} A ${innerRadius} ${innerRadius} 0 1 0 ${cx} ${cy+innerRadius} A ${innerRadius} ${innerRadius} 0 1 0 ${cx} ${cy-innerRadius} Z`;
-  }
-  const [outerStartX,outerStartY]=allocationPolar(cx,cy,outerRadius,start),[outerEndX,outerEndY]=allocationPolar(cx,cy,outerRadius,end);
-  const [innerEndX,innerEndY]=allocationPolar(cx,cy,innerRadius,end),[innerStartX,innerStartY]=allocationPolar(cx,cy,innerRadius,start);
-  const large=span>Math.PI?1:0;
-  return `M ${outerStartX.toFixed(3)} ${outerStartY.toFixed(3)} A ${outerRadius} ${outerRadius} 0 ${large} 1 ${outerEndX.toFixed(3)} ${outerEndY.toFixed(3)} L ${innerEndX.toFixed(3)} ${innerEndY.toFixed(3)} A ${innerRadius} ${innerRadius} 0 ${large} 0 ${innerStartX.toFixed(3)} ${innerStartY.toFixed(3)} Z`;
-}
-
-function allocationChildColor(typeIndex,childIndex){
-  const hues=[160,42,210,274,18,174,231,78,342,205,28],hue=hues[typeIndex%hues.length];
-  const lightness=[42,53,63,72][childIndex%4];
-  return `hsl(${hue} 48% ${lightness}%)`;
-}
-
-function allocationDetailPanel(hierarchy){
-  const selected=(hierarchy?.types||[]).find(item=>item.id===state.portfolioAllocationType);
-  if(!selected)return "";
-  const rows=(selected.breakdown||[]).filter(item=>Number(item.value)>0);
-  let cursor=-Math.PI/2;
-  const paths=rows.map((item,index)=>{
-    const span=Math.PI*2*(Number(item.within_type_weight_pct||0)/100),start=cursor,end=cursor+span;cursor=end;
-    const color=allocationChildColor((hierarchy.types||[]).indexOf(selected),index);
-    return `<path d="${allocationArcPath(start,end,72,126)}" fill="${color}" tabindex="0"><title>${esc(item.label)}: ${money(item.value)} • ${pct(item.within_type_weight_pct)} de ${esc(selected.label)}</title></path>`;
-  }).join("");
-  const legend=rows.map((item,index)=>`<div><i class="legend-dot" style="background:${allocationChildColor((hierarchy.types||[]).indexOf(selected),index)}"></i><span>${esc(item.label)}${item.sector&&item.segment?`<small>${esc(item.sector)} • ${esc(item.segment)}</small>`:""}</span><strong>${pct(item.within_type_weight_pct)}</strong></div>`).join("");
-  return `<section class="data-card allocation-detail-card" aria-live="polite"><div class="card-heading"><div><p class="eyebrow">Detalhamento de ${esc(selected.label)}</p><h3>Setores e segmentos</h3><small>${pct(selected.weight_pct)} do patrimônio conhecido</small></div><button type="button" class="icon-button" data-allocation-close aria-label="Fechar detalhamento">×</button></div><div class="allocation-visual allocation-detail-visual"><div class="allocation-svg-wrap"><svg class="allocation-svg allocation-detail-svg" viewBox="0 0 320 320" role="img" aria-label="Distribuição por setor ou segmento de ${esc(selected.label)}">${paths}<circle cx="160" cy="160" r="66" class="allocation-center"/><text x="160" y="155" class="allocation-center-label">${esc(selected.label)}</text><text x="160" y="176" class="allocation-center-value">${esc(money(selected.value))}</text></svg></div><div class="allocation-legend">${legend}</div></div></section>`;
-}
-
-function hierarchicalAllocationDonut(hierarchy,fallbackItems=[]){
-  const types=(hierarchy?.types||[]).filter(item=>Number(item.value)>0);
-  if(!types.length)return allocationDonut(fallbackItems);
-  let cursor=-Math.PI/2;
-  const inner=[],outer=[],legend=[];
-  types.forEach((type,typeIndex)=>{
-    const typeSpan=Math.PI*2*(Number(type.weight_pct||0)/100),typeStart=cursor,typeEnd=cursor+typeSpan;
-    const color=allocationTypeColors[type.id]||allocationFallbackColors[typeIndex%allocationFallbackColors.length];
-    inner.push(`<path class="allocation-type-slice ${state.portfolioAllocationType===type.id?"selected":""}" d="${allocationArcPath(typeStart,typeEnd,55,91)}" fill="${color}" role="button" tabindex="0" data-allocation-type="${esc(type.id)}"><title>${esc(type.label)}: ${money(type.value)} • ${pct(type.weight_pct)}</title></path>`);
-    let childCursor=typeStart;
-    (type.breakdown||[]).filter(item=>Number(item.value)>0).forEach((item,childIndex)=>{
-      const span=Math.PI*2*(Number(item.global_weight_pct||0)/100),start=childCursor,end=Math.min(typeEnd,childCursor+span);childCursor=end;
-      outer.push(`<path class="allocation-breakdown-slice" d="${allocationArcPath(start,end,98,142)}" fill="${allocationChildColor(typeIndex,childIndex)}" tabindex="0"><title>${esc(type.label)} › ${esc(item.label)}: ${money(item.value)} • ${pct(item.global_weight_pct)} do total • ${pct(item.within_type_weight_pct)} de ${esc(type.label)}</title></path>`);
-    });
-    legend.push(`<button type="button" class="allocation-legend-row ${state.portfolioAllocationType===type.id?"selected":""}" data-allocation-type="${esc(type.id)}"><i class="legend-dot" style="background:${color}"></i><span>${esc(type.label)}<small>Clique para detalhar setores e segmentos</small></span><strong>${pct(type.weight_pct)}</strong></button>`);
-    cursor=typeEnd;
-  });
-  const partial=hierarchy.allocation_complete===false?`<div class="notice warning allocation-partial"><strong>Composição parcial.</strong> ${number(hierarchy.missing_price_positions||0,0)} posição(ões) sem cotação não foi(foram) tratada(s) como zero.</div>`:"";
-  return `<div class="allocation-hierarchy">${partial}<div class="allocation-visual"><div class="allocation-svg-wrap"><svg class="allocation-svg" viewBox="0 0 320 320" role="img" aria-label="Alocação da carteira: tipos no anel interno e setores ou segmentos no anel externo">${outer.join("")}${inner.join("")}<circle cx="160" cy="160" r="49" class="allocation-center"/><text x="160" y="154" class="allocation-center-label">Patrimônio conhecido</text><text x="160" y="176" class="allocation-center-value">${esc(money(hierarchy.known_total_value))}</text></svg><small class="allocation-ring-help">Interno: tipo • externo: setor ou segmento</small></div><div class="allocation-legend">${legend.join("")}</div></div><div id="allocation-detail-panel">${allocationDetailPanel(hierarchy)}</div></div>`;
-}
-
-function showPortfolioAllocationType(type){
-  state.portfolioAllocationType=type||null;
-  const panel=$("#allocation-detail-panel");
-  if(panel)panel.innerHTML=allocationDetailPanel(state.portfolioAllocationHierarchy);
-  $$("[data-allocation-type]").forEach(node=>node.classList.toggle("selected",node.dataset.allocationType===state.portfolioAllocationType));
-  panel?.scrollIntoView({behavior:"smooth",block:"nearest"});
-}
-
-function newsCacheStatus(cache) {
-  const labels={not_requested:"Aguardando primeira atualização",pending:"Na fila",queued:"Na fila",running:"Atualizando",completed:"Atualizado",failed:"Falha na última tentativa"};
-  return labels[cache?.status]||cache?.status||"Aguardando";
-}
-
-function newsHeadline(item,index,{recommendation=false}={}) {
-  const institution=recommendation?(item.institution||item.bank_group_label):null;
-  const metadata=[institution,item.source,item.published_at?dateTime(item.published_at):null].filter(Boolean);
-  const tickers=(item.mentioned_tickers||[]).map(ticker=>`<span class="pill">${esc(ticker)}</span>`).join("");
-  return `<a class="headline" href="${esc(safeExternalUrl(item.url))}" target="_blank" rel="noopener noreferrer"><span class="headline-number">${index+1}</span><span><strong>${esc(item.title)}</strong><small>${esc(metadata.join(" • "))}</small>${tickers?`<span class="headline-tags">${tickers}</span>`:""}</span><small>Abrir fonte</small></a>`;
-}
-
-function queueNewsPanelReload(cache) {
-  clearTimeout(state.newsRefreshTimer);
-  state.newsRefreshTimer=null;
-  if(!["pending","queued","running"].includes(cache?.status))return;
-  const navigationSerial=state.navigationSerial,portfolioId=state.portfolioId,newsMode=state.portfolioNewsMode;
-  state.newsRefreshTimer=setTimeout(()=>{
-    state.newsRefreshTimer=null;
-    if(navigationIsCurrent(navigationSerial,"portfolio","portfolio","news")&&state.portfolioId===portfolioId&&state.portfolioNewsMode===newsMode)renderPortfolioTab({forceNews:true});
-  },4500);
-}
-
-async function renderPortfolioNews(root,{force=false}={}) {
-  const panelKey=root.dataset.panelKey;
-  if(!state.portfolioId) {
-    root.innerHTML='<div class="data-card empty-state"><strong>Nenhuma carteira cadastrada</strong>Crie uma carteira para receber notícias relacionadas aos ativos. As notícias de recomendações continuam disponíveis acima.</div>';
-    return;
-  }
-  const cache=await api(`/insights/news/cache/portfolios/${state.portfolioId}`,{requestKey:"portfolio-news",cacheTtlMs:NEWS_NAVIGATION_CACHE_TTL_MS,bypassCache:force});
-  if(root.dataset.panelKey!==panelKey||state.view!=="portfolio"||state.tabs.portfolio!=="news")return;
-  const data=cache.data||{},groups=data.assets||data.items||[];
-  const update=`<div class="update-panel"><div class="update-summary"><span><strong>Notícias dos ativos da carteira</strong><small>${cache.finished_at?`Última atualização: ${dateTime(cache.finished_at)}`:"A atualização diária será iniciada no primeiro acesso autenticado."}</small></span><span><span class="pill ${cache.status==="failed"?"danger":""}">${esc(newsCacheStatus(cache))}</span><button class="button secondary compact" data-portfolio-news-refresh="${esc(state.portfolioId)}" ${["pending","queued","running"].includes(cache.status)?"disabled":""}>Atualizar novamente hoje</button></span></div>${cache.error?`<div class="notice danger">A última tentativa não foi concluída. Os dados anteriores foram preservados.</div>`:""}</div>`;
-  const content=groups.length?groups.map(group=>`<div class="card-section"><div class="card-heading"><h3>${esc(group.ticker||group.label||"Ativo")}</h3><small>${(group.items||group.news||[]).length} notícia(s)</small></div><div class="headline-list">${(group.items||group.news||[]).map((item,index)=>newsHeadline(item,index)).join("")}</div></div>`).join(""):'<div class="empty-state"><strong>Notícias sendo preparadas</strong>O carregamento ocorre em segundo plano e a página continua disponível para outras tarefas.</div>';
-  root.innerHTML=update+sectionCard("Notícias da carteira",content,"Até 3 notícias relevantes por ativo, sem bloquear a navegação");
-  queueNewsPanelReload(cache);
-}
-
-async function renderRecommendationNews(root,{force=false}={}) {
-  const panelKey=root.dataset.panelKey;
-  const category=state.recommendationCategory;
-  const cache=await api(`/insights/news/cache/recommendations?category=${encodeURIComponent(category)}`,{requestKey:"portfolio-news",cacheTtlMs:NEWS_NAVIGATION_CACHE_TTL_MS,bypassCache:force});
-  if(root.dataset.panelKey!==panelKey||state.view!=="portfolio"||state.tabs.portfolio!=="news"||category!==state.recommendationCategory)return;
-  const data=cache.data||{},items=data.items||[];
-  const categories=[{id:"all",label:"Todas"},{id:"brazil",label:"Instituições brasileiras"},{id:"global",label:"Instituições globais"}];
-  const controls=`<div class="recommendation-controls"><div class="segmented-control">${categories.map(item=>`<button class="button ${item.id===category?"primary":"ghost"} compact" data-recommendation-category="${item.id}">${item.label}</button>`).join("")}</div><button class="button secondary compact" data-recommendation-news-refresh="${esc(category)}" ${["pending","queued","running"].includes(cache.status)?"disabled":""}>Atualizar novamente hoje</button></div>`;
-  const update=`<div class="update-panel"><div class="update-summary"><span><strong>Notícias de recomendações</strong><small>${cache.finished_at?`Última atualização: ${dateTime(cache.finished_at)}`:"A primeira busca do dia será feita automaticamente."}</small></span><span class="pill ${cache.status==="failed"?"danger":""}">${esc(newsCacheStatus(cache))}</span></div>${cache.error?'<div class="notice danger">A fonte não respondeu na última tentativa. Uma nova tentativa pode ser solicitada sem apagar os dados anteriores.</div>':""}</div>`;
-  const content=items.length?`<div class="headline-list"><div class="headline headline-header"><span>#</span><span>Manchete • instituição • fonte • publicação</span><span>Link</span></div>${items.map((item,index)=>newsHeadline(item,index,{recommendation:true})).join("")}</div>`:'<div class="empty-state"><strong>Recomendações sendo pesquisadas</strong>As fontes públicas estão sendo consultadas em segundo plano.</div>';
-  root.innerHTML=controls+update+sectionCard("Recomendações de instituições",content,"Links informativos encontrados em fontes públicas; não constituem recomendação do Formação do Investidor.");
-  queueNewsPanelReload(cache);
-}
-
-async function renderNewsWorkspace(root,{force=false}={}) {
-  const allowed=state.session.access.can_view_news_insights;
-  if(!allowed){root.innerHTML='<div class="data-card empty-state"><strong>Notícias não liberadas para esta conta</strong>O administrador pode liberar este módulo no nível de acesso do usuário.</div>';return;}
-  let content=$("#portfolio-news-content",root);
-  if(!content){
-    root.innerHTML=`<div class="subtabs"><button class="tab ${state.portfolioNewsMode==="portfolio"?"active":""}" data-portfolio-news-mode="portfolio">Ativos da carteira</button><button class="tab ${state.portfolioNewsMode==="recommendations"?"active":""}" data-portfolio-news-mode="recommendations">Recomendações</button></div><div id="portfolio-news-content">${loadingCards(4)}</div>`;
-    content=$("#portfolio-news-content",root);
-  }else{
-    $$('[data-portfolio-news-mode]',root).forEach(button=>button.classList.toggle("active",button.dataset.portfolioNewsMode===state.portfolioNewsMode));
-  }
-  if(state.portfolioNewsMode==="recommendations")await renderRecommendationNews(content,{force});
-  else await renderPortfolioNews(content,{force});
-}
-
-async function renderPortfolioTab({forceNews=false}={}) {
-  const root=$("#portfolio-tab-content"), tab=state.tabs.portfolio;
-  clearTimeout(state.newsRefreshTimer);state.newsRefreshTimer=null;
-  const portfolioId=state.portfolioId,navigationSerial=state.navigationSerial,requestSerial=++state.portfolioRequestSerial,panelKey=`${portfolioId||"none"}:${tab}`;
-  const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;
-  root.dataset.panelKey=panelKey;
-  if(!samePanel)root.innerHTML=loadingCards(5);else root.classList.add("panel-refreshing");
-  try {
-    if (tab==="positions") {
-      const data=await api(`/portfolios/${portfolioId}`,{requestKey:"portfolio-detail",cacheTtlMs:120000});
-      if(!portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial))return;
-      const positions=data.positions||data.items||[];
-      const summary=data.summary||{};
-      const cards=`<div class="metric-grid summary-grid">${metricCard("Patrimônio",money(data.consolidated_summary?.total_value??data.consolidated_summary?.known_total_value??summary.market_value))}${metricCard("Posições",String(positions.length))}${metricCard("Outros investimentos",money(data.custom_summary?.current_value||0))}${metricCard("Caixa",money(data.portfolio?.cash_balance))}</div>`;
-      const priceDates=positions.map(item=>item.current_price_as_of).filter(Boolean).sort();
-      const priceUpdate=data.price_update||{};
-      const quoteUpdate=`<div class="update-panel"><div class="update-summary"><span><strong>Cotações da carteira</strong><small>${priceDates.length?`Mais recente: ${dateTime(priceDates[priceDates.length-1])}`:"Nenhuma cotação disponível"} • ${esc(priceUpdate.source||"Yahoo Finance")}${priceUpdate.next_update_at?` • próxima ${dateTime(priceUpdate.next_update_at)}`:""}</small></span><span><span class="pill ${["failed","stale","partial"].includes(priceUpdate.status)?"warning":""}">${esc(updateStatusLabels[priceUpdate.status]||priceUpdate.status||"Sob demanda")}</span><button class="button secondary compact" data-portfolio-prices-refresh="${esc(state.portfolioId)}">Atualizar agora</button></span></div></div>`;
-      const positionForm=state.session.access.can_write_portfolio?`<details class="data-card"><summary><strong>Adicionar ou atualizar posição</strong></summary><form id="portfolio-position-form" class="filter-grid" style="margin-top:16px"><div class="field"><label>Código do ativo</label><input name="ticker" required maxlength="24" placeholder="PETR4"></div><div class="field"><label>Tipo</label><select name="asset_type"><option value="stock">Ação</option><option value="fii">FII</option><option value="etf">ETF</option><option value="bdr">BDR</option><option value="future">Futuro</option><option value="crypto">Cripto</option><option value="other">Outro</option></select></div><div class="field"><label>Quantidade total</label><input name="quantity" type="number" min="0" step="0.000001" required></div><div class="field"><label>Preço médio</label><input name="average_price" type="number" min="0" step="0.000001"></div><div class="field"><label>Meta na carteira (%)</label><input name="target_weight_pct" type="number" min="0" max="100" step="0.01" value="0"></div><div class="field"><label>Categoria opcional</label><input name="classification_override" maxlength="120" placeholder="Ex.: Renda variável"></div><div class="field"><label>Setor</label><input name="sector_override" maxlength="120" placeholder="Ex.: Financeiro"></div><div class="field"><label>Segmento</label><input name="segment_override" maxlength="120" placeholder="Ex.: Bancos"></div><button class="button primary wide-action" type="submit">Salvar posição</button></form></details>`:"";
-      const positionTable=marketTable(positions,[{label:"Ativo",render:r=>`<span class="ticker-cell">${esc(r.ticker)}</span>`},{label:"Quantidade",render:r=>Number(r.quantity||0).toLocaleString("pt-BR",{maximumFractionDigits:6})},{label:"Preço médio",render:r=>money(r.average_price)},{label:"Preço atual",render:r=>`${money(r.current_price)}${r.current_price_as_of?`<br><small>${dateTime(r.current_price_as_of)} • ${esc(r.price_source||"")}</small>`:""}`},{label:"Valor",render:r=>money(r.market_value??(Number(r.quantity)*Number(r.current_price)))},{label:"Peso / meta",render:r=>`${pct(r.current_weight_pct)}<br><small>meta ${pct(r.effective_target_weight_pct??r.target_weight_pct)}</small>`},{label:"Rebalanceamento",render:r=>nullable(r.rebalance_value)?"—":`<strong class="${variationClass(r.rebalance_value)}">${Number(r.rebalance_value)>=0?"Comprar":"Reduzir"} ${money(Math.abs(Number(r.rebalance_value)))}</strong>${nullable(r.rebalance_quantity)?"":`<br><small>aprox. ${number(Math.abs(Number(r.rebalance_quantity)),0)} unidade(s)</small>`}`},{label:"Setor / segmento",render:r=>`${esc(r.sector||r.classification||"—")}<br><small>${esc(r.segment||"—")}</small>`},{label:"",render:r=>state.session.access.can_write_portfolio?`<button class="button ghost compact danger" data-delete-position="${esc(r.ticker)}">Remover</button>`:""}]);
-      root.innerHTML=quoteUpdate+cards+sectionCard("Posições",positionTable,"Sugestão matemática baseada nas metas informadas; não constitui recomendação de investimento.")+positionForm;
-    } else if (tab==="allocation") {
-      const [data,catalog]=await Promise.all([api(`/portfolios/${portfolioId}`,{requestKey:"portfolio-detail",cacheTtlMs:120000}),api(`/portfolios/${portfolioId}/custom-investments/catalog`,{requestKey:"portfolio-catalog",cacheTtlMs:300000})]);
-      if(!portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial))return;
-      const rows=data.custom_investments||[],summary=data.consolidated_summary||{},today=new Date().toISOString().slice(0,10);
-      state.portfolioAllocationHierarchy=data.consolidated_allocation_hierarchy||null;
-      if(state.portfolioAllocationType&&!state.portfolioAllocationHierarchy?.types?.some(item=>item.id===state.portfolioAllocationType))state.portfolioAllocationType=null;
-      const form=state.session.access.can_write_portfolio?`<details class="data-card" ${rows.length?"":"open"}><summary><strong>Adicionar investimento sem ticker</strong></summary><form id="custom-investment-form" class="filter-grid" style="margin-top:16px"><div class="field"><label>Tipo</label><select name="category" required>${catalog.map(item=>`<option value="${esc(item.id)}">${esc(item.label)}</option>`).join("")}</select></div><div class="field"><label>Nome do investimento</label><input name="name" required maxlength="200" placeholder="Ex.: CDB Banco X 110% CDI"></div><div class="field"><label>Instituição</label><input name="institution" maxlength="160" placeholder="Banco ou corretora"></div><div class="field"><label>Setor</label><input name="sector" maxlength="120" placeholder="Ex.: Renda fixa"></div><div class="field"><label>Segmento</label><input name="segment" maxlength="120" placeholder="Ex.: Bancário pós-fixado"></div><div class="field"><label>Data da aplicação</label><input type="date" name="application_date" required value="${today}"></div><div class="field"><label>Vencimento (opcional)</label><input type="date" name="maturity_date"></div><div class="field"><label>Valor aplicado</label><input type="number" name="invested_value" min="0.01" step="0.01" required></div><div class="field"><label>Valor atual</label><input type="number" name="current_value" min="0" step="0.01" required></div><div class="field"><label>Data do valor atual</label><input type="date" name="current_value_as_of" required value="${today}"></div><div class="field"><label>Indexador / referência</label><input name="benchmark" maxlength="80" placeholder="Ex.: 110% do CDI"></div><div class="field"><label>Liquidez</label><input name="liquidity" maxlength="120" placeholder="Ex.: no vencimento ou D+1"></div><div class="field wide-action"><label>Observações</label><textarea name="notes" rows="2"></textarea></div><button class="button primary wide-action" type="submit">Salvar investimento</button></form></details>`:"";
-      root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Patrimônio conhecido",money(summary.known_total_value))}${metricCard("Investimentos sem ticker",money(data.custom_summary?.current_value||0),`${rows.length} cadastro(s)`)}${metricCard("Valor aplicado",money(data.custom_summary?.invested_value||0))}${metricCard("Variação",pct(data.custom_summary?.variation_pct,true))}</div>${sectionCard("Composição consolidada",hierarchicalAllocationDonut(state.portfolioAllocationHierarchy,data.consolidated_allocation||[]),summary.allocation_complete?"Valores de mercado e valores informados manualmente":"Composição parcial: existe posição sem cotação")}${sectionCard("Renda fixa, fundos e outros",marketTable(rows,[{label:"Investimento",render:r=>`<strong>${esc(r.name)}</strong><br><small>${esc(r.category_label)}</small>`},{label:"Setor / segmento",render:r=>`${esc(r.sector||"—")}<br><small>${esc(r.segment||"—")}</small>`},{label:"Instituição",render:r=>esc(r.institution||"—")},{label:"Aplicação",render:r=>dateOnly(r.application_date)},{label:"Vencimento",render:r=>dateOnly(r.maturity_date)},{label:"Aplicado",render:r=>money(r.invested_value)},{label:"Atual",render:r=>`${money(r.current_value)}<br><small>${dateOnly(r.current_value_as_of)}</small>`},{label:"Variação",render:r=>pct(r.variation_pct,true),className:r=>variationClass(r.variation_pct)},{label:"",render:r=>state.session.access.can_write_portfolio?`<span class="row-actions"><button class="button ghost compact" data-update-custom-investment="${esc(r.id)}" data-current-value="${esc(r.current_value)}">Atualizar valor</button><button class="button ghost compact danger" data-delete-custom-investment="${esc(r.id)}">Arquivar</button></span>`:""}]),"O histórico preserva cada valor informado por data")}${form}`;
-    } else if (tab==="dividends") {
-      await renderPortfolioDividends(root);
-    } else if (tab==="news") {
-      await renderNewsWorkspace(root,{force:forceNews});
-    } else {
-      await renderAlerts(root);
-    }
-  } catch(error) { if(error.name!=="AbortError"&&portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial))root.innerHTML=errorState(error); }
-  finally {if(portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial))root.classList.remove("panel-refreshing");}
-}
-
-async function renderAlerts(root) {
-  const panelKey=root.dataset.panelKey;
-  const access=state.session.access;
-  if (!access.can_use_price_alerts) { root.innerHTML='<div class="data-card empty-state"><strong>Alertas não liberados para esta conta</strong>O administrador pode conceder um limite de 1, 3, 5 ou 10 ativos.</div>'; return; }
-  const [catalog,data,history]=await Promise.all([
-    api("/alerts/catalog",{requestKey:"portfolio-alerts-catalog",cacheTtlMs:300000}),
-    api("/alerts",{requestKey:"portfolio-alerts-list",cacheTtlMs:30000}),
-    api("/alerts/history?limit=100",{requestKey:"portfolio-alerts-history",cacheTtlMs:30000}),
-  ]);
-  if(root.dataset.panelKey!==panelKey||state.view!=="portfolio"||state.tabs.portfolio!=="alerts")return;
-  state.alertCatalog=catalog;state.alertData={...data,history};
-  const alerts=data.alerts||[],active=alerts.filter(item=>item.status==="active");
-  const permissions=catalog.permissions||data.permissions||{};
-  const conditionFields=[
-    {key:"price_above",label:"Preço subindo até ou acima de",placeholder:"Ex.: 42,50",suffix:"valor"},
-    {key:"price_below",label:"Preço caindo até ou abaixo de",placeholder:"Ex.: 38,00",suffix:"valor"},
-    {key:"change_positive_pct",label:"Variação positiva desde o fechamento",placeholder:"Ex.: 3,00",suffix:"%"},
-    {key:"change_negative_pct",label:"Variação negativa desde o fechamento",placeholder:"Ex.: 2,50",suffix:"%"},
-  ];
-  const ruleInputs=conditionFields.map(field=>`<div class="field alert-condition ${permissions[field.key]?"":"disabled-condition"}"><label>${esc(field.label)} ${permissions[field.key]?"":'<span class="pill">Não liberado</span>'}</label><div class="input-suffix"><input name="${field.key}" type="number" min="0.000001" step="any" placeholder="${esc(field.placeholder)}" ${permissions[field.key]?"":"disabled"}><span>${field.suffix}</span></div></div>`).join("");
-  const alertForm=`<form id="price-alert-form" class="alert-form"><div class="filter-grid"><div class="field"><label>Mercado</label><select name="market_scope" id="alert-market-scope"><option value="b3">Ativos negociados na B3</option><option value="market">Índices, moedas, criptos e commodities</option></select></div><div class="field alert-symbol-field"><label>Código ou nome do ativo</label><input name="symbol" id="alert-symbol" autocomplete="off" required maxlength="32" placeholder="Digite, por exemplo, BBAS3"><div id="alert-symbol-suggestions" class="alert-suggestions hidden"></div></div>${ruleInputs}<button class="button primary wide-action" type="submit">Criar ou atualizar alerta</button></div><div class="notice info alert-form-help">Cada ativo consome uma vaga, mesmo quando possui mais de uma condição. Campos vazios não serão monitorados. Regravar um ativo atualiza o alerta existente.</div></form>`;
-  const preferenceForm=`<form id="alert-preference-form" class="filter-grid"><div class="field"><label>E-mail principal do cadastro</label><input value="${esc(data.primary_email||state.session.user.email)}" disabled></div><div class="field"><label>Segundo e-mail (opcional)</label><input name="secondary_email" type="email" maxlength="320" value="${esc(data.secondary_email||"")}" placeholder="outro@email.com"></div><button class="button primary" type="submit">Salvar e-mails</button><button class="button secondary" type="button" data-alert-test-email ${data.delivery_configured?"":"disabled"}>Enviar e-mail de teste</button></form>`;
-  const alertTable=marketTable(alerts,[
-    {label:"Ativo",render:r=>`<strong>${esc(r.symbol)}</strong><br><small>${esc(r.display_name||"")}</small>`},
-    {label:"Condições",render:r=>alertConditionSummary(r)},
-    {label:"Última cotação",render:r=>`${nullable(r.last_price)?"—":number(r.last_price,4)}${nullable(r.last_change_pct)?"":`<br><small class="${variationClass(r.last_change_pct)}">${pct(r.last_change_pct,true)}</small>`}`},
-    {label:"Verificado em",render:r=>dateTime(r.last_checked_at)},
-    {label:"Situação",render:r=>`<span class="pill ${r.status==="disabled"?"warning":r.status==="triggered"?"danger":""}">${esc(alertStatusLabel(r.status))}</span>`},
-    {label:"Ações",render:r=>`<span class="row-actions"><button class="button ghost compact" data-edit-alert="${esc(r.id)}">Editar</button><button class="button ${r.status==="active"?"ghost danger":"secondary"} compact" data-alert-status="${esc(r.id)}" data-next-status="${r.status==="active"?"disabled":"active"}">${r.status==="active"?"Desativar":"Reativar"}</button></span>`},
-  ]);
-  const historyTable=marketTable(history,[
-    {label:"Ativo",render:r=>`<strong>${esc(r.symbol)}</strong><br><small>${esc(r.display_name||"")}</small>`},
-    {label:"O que ocorreu",render:r=>alertEventSummary(r)},
-    {label:"Cotação",render:r=>`${nullable(r.observed?.price)?"—":number(r.observed.price,4)}${nullable(r.observed?.change_pct)?"":`<br><small class="${variationClass(r.observed.change_pct)}">${pct(r.observed.change_pct,true)}</small>`}`},
-    {label:"Disparo",render:r=>dateTime(r.sent_at||r.created_at)},
-    {label:"Destinatários",render:r=>(r.recipients||[]).map(esc).join("<br>")||"—"},
-    {label:"Entrega",render:r=>`<span class="pill ${r.delivery_status==="failed"?"danger":""}">${esc(({sent:"E-mail enviado",pending:"Envio pendente",failed:"Falha no envio"})[r.delivery_status]||r.delivery_status||"—")}</span>`},
-  ]);
-  root.innerHTML=`<div class="notice info alert-schedule"><strong>Como funciona:</strong> ${esc(catalog.b3_schedule)} ${esc(catalog.market_schedule)}<br><small>${esc(catalog.quote_notice||"")}</small></div><div class="metric-grid summary-grid">${metricCard("Alertas ativos",`${active.length} / ${data.limit??access.alert_asset_limit}`,"Cada ativo conta como um alerta")}${metricCard("Condições liberadas",String(Object.values(permissions).filter(Boolean).length),"Até quatro por ativo")}${metricCard("Envio por e-mail",data.delivery_configured?"Configurado":"Pendente",data.secondary_email?"Dois destinatários":"E-mail principal")}${metricCard("Alertas disparados",String(history.length),"Histórico preservado")}</div><div class="alerts-workspace">${sectionCard("Novo alerta",alertForm,"B3 a cada 5 minutos; mercados internacionais a cada 30 minutos")}${sectionCard("Destinatários",preferenceForm,"O e-mail principal é o mesmo utilizado no acesso à plataforma")}</div>${sectionCard("Alertas cadastrados",alerts.length?alertTable:'<div class="empty-state compact"><strong>Nenhum alerta cadastrado</strong>Escolha um ativo e ao menos uma condição acima.</div>',`Limite autorizado: ${data.limit??access.alert_asset_limit} ativo(s)`)}`+
-    `<details class="data-card alert-history" ${history.length?"":"open"}><summary><strong>Histórico de alertas disparados</strong><span class="pill">${history.length}</span></summary><div class="alert-history-body">${history.length?historyTable:'<div class="empty-state compact">Nenhum alerta foi disparado até agora.</div>'}</div></details>`;
-  $("#notification-count").textContent=active.length;
-  $("#notification-count").classList.toggle("hidden",!active.length);
-}
-
-function alertStatusLabel(status){return ({active:"Ativo",disabled:"Desativado",triggered:"Disparado"})[status]||status||"—";}
-function alertConditionSummary(alert){
-  const parts=[];
-  if(!nullable(alert.price_above))parts.push(`Preço ≥ ${number(alert.price_above,4)}`);
-  if(!nullable(alert.price_below))parts.push(`Preço ≤ ${number(alert.price_below,4)}`);
-  if(!nullable(alert.change_positive_pct))parts.push(`Alta ≥ ${pct(alert.change_positive_pct)}`);
-  if(!nullable(alert.change_negative_pct))parts.push(`Queda ≥ ${pct(alert.change_negative_pct)}`);
-  return parts.length?parts.map(esc).join("<br>"):"—";
-}
-function alertEventSummary(event){
-  const configured=event.configured_values||{};
-  return (event.triggered_rules||[]).map(rule=>({price_above:`Preço atingiu ou superou ${number(configured.price_above,4)}`,price_below:`Preço atingiu ou caiu abaixo de ${number(configured.price_below,4)}`,change_positive_pct:`Alta atingiu ${pct(configured.change_positive_pct)}`,change_negative_pct:`Queda atingiu ${pct(configured.change_negative_pct)}`})[rule]||rule).map(esc).join("<br>")||"Condição atingida";
-}
-function alertCatalogItems(){
-  const scope=$("#alert-market-scope")?.value||"b3";
-  return state.alertCatalog?.[scope]||[];
-}
-function renderAlertSuggestions(query=""){
-  const root=$("#alert-symbol-suggestions");if(!root)return;
-  const term=String(query||"").trim().toLocaleUpperCase("pt-BR");
-  if(!term){root.classList.add("hidden");root.innerHTML="";return;}
-  const items=alertCatalogItems().filter(item=>`${item.key} ${item.label}`.toLocaleUpperCase("pt-BR").includes(term)).slice(0,12);
-  root.innerHTML=items.length?items.map(item=>`<button type="button" data-alert-suggestion="${esc(item.key)}"><strong>${esc(item.key)}</strong><span>${esc(item.label||item.key)}</span><small>${esc(item.asset_type||item.group||"")}</small></button>`).join(""):'<div class="empty-state compact">Nenhum ativo correspondente.</div>';
-  root.classList.remove("hidden");
-}
-async function savePriceAlert(form){
-  const values=Object.fromEntries(new FormData(form));
-  const payload={market_scope:values.market_scope,symbol:String(values.symbol||"").trim().toUpperCase()};
-  for(const key of ["price_above","price_below","change_positive_pct","change_negative_pct"])payload[key]=values[key]?Number(String(values[key]).replace(",",".")):null;
-  const button=form.querySelector('button[type="submit"]');button.disabled=true;button.textContent="Salvando…";
-  try{await api("/alerts",{method:"POST",body:JSON.stringify(payload)});toast("Alerta salvo e monitoramento ativado.","success");await renderPortfolioTab();}
-  catch(error){toast(error.message,"error");button.disabled=false;button.textContent="Criar ou atualizar alerta";}
-}
-async function saveAlertPreferences(form){
-  const secondary=String(new FormData(form).get("secondary_email")||"").trim()||null;
-  try{await api("/alerts/preferences",{method:"PUT",body:JSON.stringify({secondary_email:secondary})});toast("Destinatários atualizados.","success");await renderPortfolioTab();}
-  catch(error){toast(error.message,"error");}
-}
-async function sendAlertTestEmail(button){
-  button.disabled=true;
-  try{const result=await api("/alerts/test-email",{method:"POST"});toast(`E-mail de teste enviado para ${(result.recipients||[]).length||1} destinatário(s).`,"success");}
-  catch(error){toast(error.message,"error");}
-  finally{button.disabled=false;}
-}
-async function setAlertStatus(button){
-  button.disabled=true;
-  try{await api(`/alerts/${encodeURIComponent(button.dataset.alertStatus)}/status`,{method:"PATCH",body:JSON.stringify({status:button.dataset.nextStatus})});toast(button.dataset.nextStatus==="active"?"Alerta reativado.":"Alerta desativado.","success");await renderPortfolioTab();}
-  catch(error){toast(error.message,"error");button.disabled=false;}
-}
-function editPriceAlert(alertId){
-  const alert=(state.alertData?.alerts||[]).find(item=>item.id===alertId),form=$("#price-alert-form");if(!alert||!form)return;
-  form.elements.market_scope.value=alert.market_scope;form.elements.symbol.value=alert.symbol;
-  for(const key of ["price_above","price_below","change_positive_pct","change_negative_pct"])if(form.elements[key])form.elements[key].value=nullable(alert[key])?"":alert[key];
-  form.scrollIntoView({behavior:"smooth",block:"start"});form.elements.symbol.focus();
-}
-
-async function refreshRecommendationNews(category){
-  try{const result=await api(`/insights/news/cache/recommendations/refresh?category=${encodeURIComponent(category)}`,{method:"POST"});toast(result.scheduled===false?"As recomendações já estão sendo atualizadas.":"Atualização das recomendações solicitada.",result.scheduled===false?"info":"success");scheduleNavigationTask(()=>renderPortfolioTab({forceNews:true}),2500);}
-  catch(error){toast(error.message,"error");}
-}
-
-async function refreshPortfolioNews(portfolioId) {
-  try {
-    const result=await api(`/insights/news/cache/portfolios/${encodeURIComponent(portfolioId)}/refresh`,{method:"POST"});
-    toast(result.scheduled===false?"As notícias já estão sendo atualizadas.":"Atualização das notícias solicitada.",result.scheduled===false?"info":"success");
-    scheduleNavigationTask(()=>renderPortfolioTab({forceNews:true}),2500);
-  } catch(error) { toast(error.message,"error"); }
-}
-
-async function saveCustomInvestment(form) {
-  const values=Object.fromEntries(new FormData(form));
-  for(const key of ["invested_value","current_value"])values[key]=Number(values[key]);
-  for(const key of ["maturity_date","institution","sector","segment","benchmark","liquidity","notes"])if(!values[key])values[key]=null;
-  try{await api(`/portfolios/${encodeURIComponent(state.portfolioId)}/custom-investments`,{method:"POST",body:JSON.stringify(values)});toast("Investimento salvo.","success");renderPortfolioTab();}
-  catch(error){toast(error.message,"error");}
-}
-
-async function savePortfolioPosition(form){
-  const values=Object.fromEntries(new FormData(form)),ticker=String(values.ticker||"").trim().toUpperCase();
-  const payload={asset_type:values.asset_type,stage:"position",quantity:Number(values.quantity||0),average_price:values.average_price?Number(values.average_price):null,target_weight_pct:Number(values.target_weight_pct||0),classification_override:values.classification_override||null,sector_override:values.sector_override||null,segment_override:values.segment_override||null,notes:null};
-  try{await api(`/portfolios/${encodeURIComponent(state.portfolioId)}/positions/${encodeURIComponent(ticker)}`,{method:"PUT",body:JSON.stringify(payload)});toast("Posição salva e alocação recalculada.","success");renderPortfolioTab();}
-  catch(error){toast(error.message,"error");}
-}
-
-async function deletePortfolioPosition(button){
-  if(!window.confirm(`Remover ${button.dataset.deletePosition} desta carteira?`))return;
-  try{await api(`/portfolios/${encodeURIComponent(state.portfolioId)}/positions/${encodeURIComponent(button.dataset.deletePosition)}`,{method:"DELETE"});toast("Posição removida.","success");renderPortfolioTab();}
-  catch(error){toast(error.message,"error");}
-}
-
-async function updateCustomInvestmentValue(button) {
-  const dialog=$("#custom-value-dialog"),form=$("#custom-value-form");
-  form.elements.investment_id.value=button.dataset.updateCustomInvestment;
-  form.elements.current_value.value=button.dataset.currentValue||"";
-  form.elements.current_value_as_of.value=new Date().toISOString().slice(0,10);
-  dialog.showModal();
-}
-
-async function saveCustomInvestmentValue(form){
-  const values=Object.fromEntries(new FormData(form)),value=Number(values.current_value);
-  if(!Number.isFinite(value)||value<0){toast("Informe um valor válido.","error");return;}
-  try{await api(`/portfolios/${encodeURIComponent(state.portfolioId)}/custom-investments/${encodeURIComponent(values.investment_id)}`,{method:"PATCH",body:JSON.stringify({current_value:value,current_value_as_of:values.current_value_as_of})});$("#custom-value-dialog").close();toast("Valor e histórico atualizados.","success");renderPortfolioTab();}
-  catch(error){toast(error.message,"error");}
-}
-
-async function deleteCustomInvestment(button) {
-  if(!window.confirm("Arquivar este investimento? O histórico será preservado."))return;
-  try{await api(`/portfolios/${encodeURIComponent(state.portfolioId)}/custom-investments/${encodeURIComponent(button.dataset.deleteCustomInvestment)}`,{method:"DELETE"});toast("Investimento arquivado.","success");renderPortfolioTab();}
-  catch(error){toast(error.message,"error");}
-}
-
-async function refreshPortfolioPrices(portfolioId) {
-  try {
-    const result=await api(`/portfolios/${encodeURIComponent(portfolioId)}/refresh-prices`,{method:"POST"});
-    toast(result.scheduled?"Atualização das cotações solicitada.":"As cotações foram solicitadas há menos de 5 minutos.",result.scheduled?"success":"info");
-    scheduleNavigationTask(()=>renderPortfolioTab(),3000);
-  } catch(error) { toast(error.message,"error"); }
-}
-
-function readableConfigurationKey(key) {
-  const labels={
-    fast:"Período rápido",fast_period:"Período rápido",fast_window:"Média rápida",
-    slow:"Período lento",slow_period:"Período lento",slow_window:"Média lenta",
-    signal:"Período do sinal",signal_period:"Período do sinal",window:"Período",
-    lower:"Limite inferior",upper:"Limite superior",enabled:"Status",direction:"Direção",
-    period:"Período da média",mode:"Regra da tendência",slope_lookback:"Intervalo para confirmar a inclinação",
-    daily_trend:"Tendência diária",weekly_trend:"Tendência semanal",monthly_trend:"Tendência mensal",
-    trend_combination:"Combinação das tendências",adx_min:"ADX mínimo",volume_ratio_min:"Volume mínimo em relação à média",
-    rsi_min:"RSI mínimo",rsi_max:"RSI máximo",atr_pct_min:"ATR mínimo",atr_pct_max:"ATR máximo",
-    exit_on_filter_failure:"Sair quando um filtro deixar de ser atendido",fundamental_entry:"Fundamentos exigidos para entrada",
-    fundamental_exit:"Fundamentos que provocam saída",fundamental_exit_logic:"Combinação das condições de saída",
-    fundamental_min_coverage_pct:"Cobertura fundamentalista mínima",fundamental_max_age_days:"Idade máxima dos fundamentos",
-    initial_capital:"Capital inicial",fee_pct:"Taxa por operação",slippage_pct:"Slippage estimado",
-    risk_free_rate_pct:"Taxa livre de risco",apply_cash_yield:"Remunerar o caixa não investido",
-    cash_yield_rate_pct:"Rendimento anual do caixa",fundamental_filters:"Filtros fundamentalistas",
-    technical_filters:"Filtros técnicos",mean_total_return_pct:"Retorno total médio",
-    mean_cagr_pct:"Retorno anualizado médio (CAGR)",mean_sharpe_ratio:"Índice de Sharpe médio",
-    mean_max_drawdown_pct:"Perda máxima média (drawdown)",mean_profit_factor:"Fator de lucro médio",
-    mean_win_rate_pct:"Taxa média de acerto",mean_closed_trades:"Média de operações encerradas",
-    pe:"P/L",pbv:"P/VP",dividend_yield_pct:"Dividend yield",ev_ebitda:"EV/EBITDA",
-    ebit_margin_pct:"Margem EBIT",net_margin_pct:"Margem líquida",current_ratio:"Liquidez corrente",
-    roe_pct:"ROE",roic_pct:"ROIC",gross_debt_to_equity:"Dívida bruta / patrimônio",
-    net_debt_to_ebitda:"Dívida líquida / EBITDA",revenue_cagr_5y_pct:"Crescimento da receita em 5 anos",
-    earnings_cagr_5y_pct:"Crescimento dos lucros em 5 anos",ffo_yield_pct:"FFO yield",
-    cap_rate_pct:"Cap rate",vacancy_pct:"Vacância física",financial_vacancy_pct:"Vacância financeira",
-    ltv_pct:"LTV",wale_years:"Prazo médio dos contratos (WALE)",daily_liquidity:"Liquidez diária",
-    min:"Mínimo",max:"Máximo",
-  };
-  return labels[key]||String(key||"").replaceAll("_"," ").replace(/^./,letter=>letter.toUpperCase());
-}
-
-function readableConfigurationValue(key,value,parentKey="") {
-  if(value===null||value===undefined||value==="")return "Não utilizado neste teste";
-  if(typeof value==="boolean")return key==="enabled"||key==="apply_cash_yield"?(value?"Ativado":"Desativado"):(value?"Sim":"Não");
-  if(typeof value==="number") {
-    if(key==="initial_capital")return money(value);
-    if(key==="fundamental_max_age_days")return `${number(value,0)} dias`;
-    if(["fast","fast_period","fast_window","slow","slow_period","slow_window","signal","signal_period","window","period","slope_lookback"].includes(key))return `${number(value,0)} períodos`;
-    if(key==="volume_ratio_min")return `${number(value,2)} × a média`;
-    if(String(key).includes("_pct")||String(parentKey).includes("_pct"))return `${number(value,2)}%`;
-    return number(value,2);
-  }
-  const text=String(value);
-  const labels={
-    up:"Alta",down:"Baixa",none:"Sem filtro",all:"Todas as condições",any:"Qualquer condição",
-    majority:"Maioria das condições",price_above:"Preço acima da média móvel",
-    sma_rising:"Média móvel simples em alta",price_above_or_sma_rising:"Preço acima da média OU média em alta",
-    price_above_and_sma_rising:"Preço acima da média E média em alta",close:"Fechamento",
-    low_touch:"Mínima toca a banda",close_reentry:"Fechamento retorna para dentro da banda",
-  };
-  if(key==="trend_combination")return {all:"Todas as tendências ativas devem concordar",any:"Ao menos uma tendência ativa deve confirmar",majority:"A maioria das tendências ativas deve confirmar"}[text]||readableConfigurationKey(text);
-  if(key==="fundamental_exit_logic")return {all:"Todas as condições devem ocorrer",any:"Qualquer condição pode provocar a saída"}[text]||readableConfigurationKey(text);
-  return labels[text]||readableConfigurationKey(text);
-}
-
-function configurationValue(value,key="",parentKey="") {
-  if(Array.isArray(value))return value.length?`<ul class="configuration-list">${value.map(item=>`<li>${configurationValue(item,key,parentKey)}</li>`).join("")}</ul>`:'<span class="muted">Nenhum item configurado.</span>';
-  if(value!==null&&typeof value==="object") {
-    const nested=Object.entries(value);
-    if(!nested.length)return '<span class="muted">Nenhuma condição configurada.</span>';
-    return `<dl class="configuration-pairs nested">${nested.map(([nestedKey,nestedValue])=>`<div><dt>${esc(readableConfigurationKey(nestedKey))}</dt><dd>${configurationValue(nestedValue,nestedKey,key||parentKey)}</dd></div>`).join("")}</dl>`;
-  }
-  return `<span>${esc(readableConfigurationValue(key,value,parentKey))}</span>`;
-}
-
-function configurationPairs(values) {
-  if(values!==null&&values!==undefined&&typeof values!=="object")return `<p class="configuration-text">${configurationValue(values)}</p>`;
-  const entries=Object.entries(values||{});
-  if(!entries.length)return '<span class="muted">Nenhuma configuração adicional.</span>';
-  return `<dl class="configuration-pairs">${entries.map(([key,value])=>`<div><dt>${esc(readableConfigurationKey(key))}</dt><dd>${configurationValue(value,key)}</dd></div>`).join("")}</dl>`;
-}
-
-async function openStudyStrategy(strategyId) {
-  const dialog=$("#asset-dialog"),content=$("#asset-dialog-content");
-  content.innerHTML=loadingCards(5);dialog.showModal();
-  try {
-    const data=await api(`/backtests/study/${encodeURIComponent(strategyId)}/configurations`,{cacheTtlMs:60000});
-    const configurations=data.items||[];
-    content.innerHTML=`<div class="asset-dialog-header"><p class="eyebrow">Estudo de backtests</p><h2 class="asset-title">${esc(data.strategy_name||strategyId)}</h2><p class="asset-subtitle">Todas as configurações oficiais utilizadas nesta estratégia.</p></div>
-      <div class="metric-grid">${metricCard("Configurações",number(data.configuration_count||0,0))}${metricCard("Execuções",number(data.run_count||0,0))}${metricCard("Estratégia",esc(strategyId))}</div>
-      ${sectionCard("Regras da estratégia",configurationPairs(data.strategy_rules))}
-      <div class="study-configurations">${configurations.length?configurations.map(item=>`<details class="study-configuration"><summary><span>Configuração ${number(item.configuration_number,0)}</span><small>${number(item.assets_tested,0)} ativo(s) • nota média ${number(item.mean_ranking_score,1)}</small></summary><div class="study-configuration-body"><div class="study-configuration-grid"><article><h4>Parâmetros da estratégia</h4>${configurationPairs(item.strategy_parameters)}</article><article><h4>Filtros</h4>${configurationPairs(item.filters)}</article><article><h4>Premissas financeiras</h4>${configurationPairs({...item.financial,...item.assumptions})}</article><article><h4>Métricas médias</h4>${configurationPairs(item.mean_metrics)}</article></div><p><strong>Ativos testados:</strong> ${esc((item.tickers||[]).join(", ")||"—")}</p><p><strong>Sinais atuais:</strong> ${esc(Object.entries(item.signal_counts||{}).map(([key,value])=>`${signalLabel(key)}: ${value}`).join(" • ")||"—")}</p></div></details>`).join(""):'<div class="empty-state"><strong>Nenhuma configuração elegível</strong>As configurações aparecerão depois da próxima rodada oficial válida.</div>'}</div>`;
-  } catch(error) {content.innerHTML=errorState(error);}
-}
-
-const officialStatusLabels = {
-  queued:"Na fila", running:"Executando", completed:"Concluído",
-  completed_with_errors:"Concluído com avisos", failed:"Falhou", cancelled:"Cancelado",
-};
-
-function officialErrorText(item) {
-  const code=String(item?.code||"");
-  const labels={
-    github_worker_failed:"A execução no GitHub foi interrompida antes da conclusão.",
-    github_dispatch_failed:"Não foi possível iniciar a nova execução no GitHub.",
-    cancelled_by_owner:"A rodada foi cancelada pelo administrador.",
-  };
-  const stage=String(item?.details?.failure_stage||"");
-  if(stage==="prepare_temporary_database") return "O banco temporário da rodada não pôde ser preparado. A correção desta revisão torna a inicialização independente do histórico de migrações da produção.";
-  const safe=String(item?.details?.safe_message||"");
-  if(safe.includes("HTTP 413")) return "O pacote de resultados ultrapassou o limite de envio. Esta versão passa a entregá-lo em partes menores e repetíveis com segurança.";
-  return labels[code]||String(item?.message||item?.error||"Falha não detalhada.");
-}
-
-function openOfficialBacktestJob(jobId) {
-  const job=state.officialBacktestJobs.get(String(jobId));
-  if(!job)return;
-  const content=$("#asset-dialog-content"),dialog=$("#asset-dialog");
-  const total=Number(job.total_assets||(job.tickers||[]).length||0);
-  const processed=Number(job.processed_assets||0);
-  const errors=job.errors||[];
-  const canRetry=Boolean(state.session?.access?.is_owner&&(job.retry_tickers||[]).length&&["failed","cancelled","completed_with_errors"].includes(job.status));
-  content.innerHTML=`<div class="asset-dialog-header"><p class="eyebrow">Rodada oficial</p><h2 class="asset-title">${esc(officialStatusLabels[job.status]||job.status||"—")}</h2><p class="asset-subtitle">${esc(job.id)}</p></div>
-    <div class="metric-grid">${metricCard("Ativos concluídos",`${processed} / ${total}`)}${metricCard("Partes recebidas",number(job.received_chunks||0,0))}${metricCard("Execuções concluídas",number(job.completed_runs||0,0))}${metricCard("Execuções com falha",number(job.failed_runs||0,0))}</div>
-    ${sectionCard("Andamento",`<p><strong>Início:</strong> ${dateTime(job.started_at||job.created_at)}</p><p><strong>Última atualização:</strong> ${dateTime(job.last_update_at||job.finished_at)}</p><p><strong>Último ativo recebido:</strong> ${esc(job.last_ticker||job.last_chunk_ticker||"—")}${job.last_chunk_count?` • parte ${number(job.last_chunk_index,0)} de ${number(job.last_chunk_count,0)}`:""}</p>`)}
-    ${(job.pending_tickers||[]).length?sectionCard("Ativos pendentes",`<p>${esc(job.pending_tickers.join(", "))}</p>`):""}
-    ${errors.length?sectionCard("Motivo e orientação",`<div class="notice danger">${errors.map(item=>`<p>${esc(officialErrorText(item))}</p>`).join("")}</div>`):""}
-    <div class="dialog-actions">${canRetry?`<button class="button primary" data-retry-official-job="${esc(job.id)}">Reprocessar ativos pendentes ou com falha</button>`:""}<a class="button secondary" href="https://github.com/andrelbr22/invest/actions/workflows/backtests-semanais.yml" target="_blank" rel="noopener">Ver execuções no GitHub</a></div>`;
-  dialog.showModal();
-}
-
-async function retryOfficialBacktestJob(jobId, button) {
-  if(button){button.disabled=true;button.textContent="Solicitando nova execução…";}
-  try {
-    const result=await api(`/backtests/batch/jobs/${encodeURIComponent(jobId)}/retry`,{method:"POST",body:"{}"});
-    $("#asset-dialog").close();
-    const destination=result.dispatch?.environment==="production"?"produção":"ambiente de teste";
-    toast(`${(result.retry_tickers||result.tickers||[]).length} ativo(s) enviado(s) para nova execução em ${destination}.`,"success");
-    await loadBacktests();
-  } catch(error) {
-    toast(error.message,"error");
-    if(button){button.disabled=false;button.textContent="Reprocessar ativos pendentes ou com falha";}
-  }
-}
-
-function officialRoundLaunchCard(status) {
-  const active=status?.active_job;
-  const remaining=Math.max(0,Number(status?.remaining_seconds||0));
-  const hours=Math.floor(remaining/3600),minutes=Math.ceil((remaining%3600)/60);
-  const waitLabel=hours?`${hours}h${minutes?` ${minutes}min`:""}`:`${minutes} min`;
-  const explanation=active
-    ?`A rodada ${String(active.id||"").slice(0,8)}… ainda está ${officialStatusLabels[active.status]||active.status}.`
-    :status?.allowed
-      ?"O intervalo mínimo foi cumprido. O botão iniciará a matriz completa no GitHub."
-      :`A próxima rodada completa poderá ser iniciada em aproximadamente ${waitLabel}.`;
-  return sectionCard("Iniciar rodada oficial completa",`<div class="admin-launch-row"><div><p>${esc(explanation)}</p><small>Disponível somente ao proprietário e nunca antes de 12 horas da rodada oficial anterior.</small></div><button type="button" class="button primary" data-launch-official-backtests ${status?.allowed?"":"disabled"}>Iniciar nova rodada oficial</button></div>`,status?.next_allowed_at?`Próxima liberação: ${dateTime(status.next_allowed_at)}`:"");
-}
-
-async function launchOfficialBacktestRound(button) {
-  if(!window.confirm("Iniciar uma rodada oficial completa de backtests? A operação usará o catálogo padrão e poderá levar bastante tempo."))return;
-  button.disabled=true;button.textContent="Solicitando rodada…";
-  try {
-    const result=await api("/backtests/batch/official-launch",{method:"POST",body:"{}"});
-    toast(`Rodada oficial ${String(result.id||"").slice(0,8)}… enviada ao GitHub.`,"success");
-    await loadBacktests();
-  } catch(error) {
-    toast(error.message,"error");
-    await loadBacktests();
-  }
-}
-
-const backtestParameterLabels={period:"Período",stddev:"Desvios-padrão",rsi_period:"Período do RSI",entry_rsi:"RSI de entrada",exit_rsi:"RSI de saída",trend_period:"Período da tendência",trend_filter_mode:"Filtro de tendência",trend_slope_lookback:"Janela da inclinação",band_trigger:"Gatilho da banda",fast_period:"Média rápida",slow_period:"Média lenta",fast_type:"Tipo da média rápida",slow_type:"Tipo da média lenta",atr_period:"Período do ATR",multiplier:"Multiplicador",lookback:"Janela de observação",skip_recent:"Pregões recentes ignorados",min_absolute_return_pct:"Retorno absoluto mínimo (%)",min_excess_return_pct:"Excesso sobre benchmark (%)",squeeze_lookback:"Janela do squeeze",squeeze_quantile:"Percentil do squeeze",volume_period:"Período do volume",volume_ratio_min:"Volume / média mínimo"};
-const backtestChoiceLabels={sma:"Média simples",ema:"Média exponencial",price_above:"Preço acima/abaixo",sma_rising:"Inclinação da média",price_above_and_sma_rising:"Preço e inclinação",price_above_or_sma_rising:"Preço ou inclinação",none:"Sem filtro",close:"Fechamento",low_touch:"Mínima toca a banda",close_reentry:"Retorno para dentro da banda"};
-
-function renderBacktestStrategyParameters(form){
-  const root=form?.querySelector("#backtest-strategy-parameters");if(!root)return;
-  const selected=[...form.querySelector('[name="strategy_ids"]').selectedOptions].map(option=>option.value);
-  const catalog=state.backtestCatalog?.strategies||[];
-  root.innerHTML=selected.map(id=>{
-    const strategy=catalog.find(item=>item.id===id),schema=strategy?.parameter_schema||{},defaults=strategy?.default_params||{};
-    const fields=Object.entries(schema).map(([key,spec])=>{
-      const name=`strategy_param__${id}__${key}`,label=backtestParameterLabels[key]||key,value=defaults[key];
-      if(spec.type==="choice")return `<div class="field"><label>${esc(label)}</label><select name="${esc(name)}">${(spec.options||[]).map(option=>`<option value="${esc(option)}" ${String(option)===String(value)?"selected":""}>${esc(backtestChoiceLabels[option]||option)}</option>`).join("")}</select></div>`;
-      const step=spec.type==="int"?"1":"0.01";
-      return `<div class="field"><label>${esc(label)}</label><input type="number" name="${esc(name)}" min="${esc(spec.min)}" max="${esc(spec.max)}" step="${step}" value="${esc(value)}"></div>`;
-    }).join("");
-    return `<details class="data-card strategy-parameter-card" open><summary><strong>${esc(strategy?.name||id)}</strong></summary><p class="block-hint">${esc(strategy?.rules||"")}</p>${fields?`<div class="filter-grid compact-grid">${fields}</div>`:'<p class="block-hint">Esta estratégia usa parâmetros fixos e auditados; os filtros técnicos gerais continuam disponíveis abaixo.</p>'}</details>`;
-  }).join("")||'<div class="notice info">Selecione uma ou mais estratégias para revisar regras e parâmetros antes do envio.</div>';
-}
-
-function collectBacktestStrategyParameters(form,strategyIds){
-  const result={};
-  strategyIds.forEach(id=>{
-    const strategy=(state.backtestCatalog?.strategies||[]).find(item=>item.id===id),params={};
-    Object.entries(strategy?.parameter_schema||{}).forEach(([key,spec])=>{
-      const input=form.querySelector(`[name="strategy_param__${CSS.escape(id)}__${CSS.escape(key)}"]`);if(!input)return;
-      params[key]=spec.type==="choice"?input.value:spec.type==="int"?Number.parseInt(input.value,10):Number(input.value);
-    });
-    result[id]=params;
-  });
-  return result;
-}
-
-async function loadBacktests() {
-  const panelStarted=performance.now();
-  const root=$("#backtests-tab-content"),tab=state.tabs.backtests,navigationSerial=state.navigationSerial,requestSerial=++state.backtestRequestSerial,panelKey=tab;
-  const isCurrent=()=>root.dataset.panelKey===panelKey&&requestSerial===state.backtestRequestSerial&&navigationIsCurrent(navigationSerial,"backtests","backtests",tab);
-  const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;root.dataset.panelKey=panelKey;
-  let panelSucceeded=false;
-  if(!samePanel)root.innerHTML=loadingCards(6);else root.classList.add("panel-refreshing");
-  try {
-    if(tab==="history") {
-      const rows=await api("/backtests/runs?limit=100",{requestKey:"backtests",cacheTtlMs:15000});
-      if(!isCurrent())return;
-      rows.sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
-      root.innerHTML=recordedUpdatePanel("Histórico de backtests",rows[0]?.created_at,"Atualizado sempre que um teste é concluído")+sectionCard("Últimos 100 backtests",marketTable(rows,[{label:"Data e hora",render:r=>dateTime(r.created_at)},{label:"Ativo",render:r=>`<span class="ticker-cell">${esc(r.ticker||"—")}</span>`},{label:"Estratégia",render:r=>esc(r.strategy_name||r.strategy_id||"—")},{label:"Retorno",render:r=>pct(r.metrics?.total_return_pct??r.return_pct,true),className:r=>variationClass(r.metrics?.total_return_pct??r.return_pct)},{label:"Status",render:r=>`<span class="pill">${esc(r.status||"—")}</span>`}]));
-    } else if(tab==="study") {
-      const data=await api("/backtests/study?limit=5",{requestKey:"backtests-study",cacheTtlMs:120000});if(!isCurrent())return; const rows=data.items||data.ranking||[];
-      root.innerHTML=recordedUpdatePanel("Estudos oficiais",data.generated_at||data.updated_at,"Recalculado a partir das rodadas oficiais")+sectionCard("Estratégias mais consistentes",marketTable(rows,[{label:"Posição",render:(r)=>`<strong>${esc(r.position||r.rank||"—")}</strong>`},{label:"Estratégia",render:r=>`<button class="table-link" data-study-strategy="${esc(r.strategy_id)}">${esc(r.strategy_name||r.name||r.strategy_id)}</button><small class="block-hint">Abrir configurações</small>`},{label:"Pontuação",render:r=>number(r.study_score??r.score??r.points,1)},{label:"Presença no top 3",render:r=>number(r.top_three_count??r.top3_count,0)},{label:"1º lugares",render:r=>number(r.first_places,0)},{label:"Cobertura",render:r=>pct(r.coverage_pct)}]),"Ranking ponderado por recorrência no top 3, posição, qualidade e cobertura. Clique na estratégia para ver todas as variáveis.");
-    } else if(tab==="official") {
-      const [rows,launchStatus]=await Promise.all([
-        api("/backtests/batch/jobs?limit=30",{requestKey:"backtests-official-jobs",cacheTtlMs:30000}),
-        api("/backtests/batch/official-launch",{requestKey:"backtests-official-launch",cacheTtlMs:30000}),
-      ]);
-      if(!isCurrent())return;
-      state.officialBacktestJobs=new Map(rows.map(row=>[String(row.id),row]));
-      const officialUpdated=rows.map(row=>row.last_update_at||row.finished_at||row.created_at).filter(Boolean).sort().pop();
-      root.innerHTML=recordedUpdatePanel("Backtests oficiais",officialUpdated,"Rodada automática aos sábados às 00h01, horário de Brasília")+officialRoundLaunchCard(launchStatus)+sectionCard("Rodadas oficiais",marketTable(rows,[{label:"Criado em",render:r=>dateTime(r.created_at)},{label:"Identificador",render:r=>`<button class="table-link" data-official-job="${esc(r.id)}">${esc(String(r.id).slice(0,8))}…</button>`},{label:"Ativos",render:r=>number((r.requested_tickers||r.tickers||[]).length,0)},{label:"Progresso",render:r=>`${number(r.processed_assets||0,0)} / ${number(r.total_assets||(r.requested_tickers||r.tickers||[]).length,0)}`},{label:"Partes",render:r=>number(r.received_chunks||0,0)},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":""}">${esc(officialStatusLabels[r.status]||r.status)}</span>`},{label:"",render:r=>`<button class="button ghost compact" data-official-job="${esc(r.id)}">Detalhes</button>`}]),"Em caso de falha, abra Detalhes e use Reprocessar ativos pendentes ou com falha. O sistema não recalcula entregas já concluídas.");
-    } else {
-      const [catalog,recentJobs]=await Promise.all([api("/backtests/strategies",{requestKey:"backtests-catalog",cacheTtlMs:300000}),api("/backtests/jobs?limit=5",{requestKey:"backtests-recent",cacheTtlMs:30000})]);
-      if(!isCurrent())return;
-      const access=state.session.access;state.backtestCatalog=catalog;
-      root.innerHTML=sectionCard("Comparar estratégias",`<form id="backtest-form" class="filter-grid backtest-form">
-        <div class="field wide-action"><label>Ativos — separe por vírgula ou espaço</label><textarea name="tickers" required rows="3" placeholder="PETR4, VALE3, BBAS3"></textarea><small>Limite autorizado por análise: ${number(access.backtest_asset_limit||0,0)} ativo(s).</small></div>
-        <div class="field"><label>Estratégias (até ${number(access.backtest_strategy_limit||0,0)})</label><select name="strategy_ids" multiple size="7" required>${(catalog.strategies||[]).map(s=>`<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("")}</select><small>Use Ctrl para selecionar mais de uma.</small></div>
-        <div id="backtest-strategy-parameters" class="wide-action strategy-parameters"></div>
-        <div class="field"><label>Forma de análise</label><select name="execution_mode"><option value="compare">Comparar separadamente</option><option value="combined">Combinar estratégias</option></select><small>A combinação produz uma única posição.</small></div>
-        <div class="field" data-combination-rule hidden><label>Regra da combinação</label><select name="combination_rule"><option value="all">Todas confirmam (E)</option><option value="any">Qualquer uma confirma (OU)</option><option value="majority">Maioria confirma</option></select></div>
-        <div class="field"><label>Tipo de ativo</label><select name="asset_type"><option value="stock">Ações</option><option value="fii">FIIs</option><option value="etf">ETFs</option><option value="bdr">BDRs</option><option value="future">Futuros</option></select></div>
-        <div class="field"><label>Período</label><select name="period">${Object.entries(catalog.periods||{}).map(([id,label])=>`<option value="${esc(id)}" ${id==="5y"?"selected":""}>${esc(label)}</option>`).join("")}<option value="custom">Personalizado</option></select></div>
-        <div class="field" data-backtest-custom-date hidden><label>De</label><input type="date" name="start"></div><div class="field" data-backtest-custom-date hidden><label>Até</label><input type="date" name="end"></div>
-        <details class="wide-action"><summary>Filtros técnicos de entrada e saída</summary><p class="block-hint">Cada filtro é aplicado sobre o sinal de todas as estratégias selecionadas, sem antecipar dados futuros.</p><div class="filter-grid compact-grid">
-          ${["daily","weekly","monthly"].map((prefix,index)=>`<fieldset class="data-card"><legend>${["Tendência diária","Tendência semanal","Tendência mensal"][index]}</legend><label class="check"><input type="checkbox" name="${prefix}_enabled"> Ativar</label><div class="field"><label>Média móvel</label><select name="${prefix}_ma"><option value="sma:8">MMS 8</option><option value="ema:9">MME 9</option><option value="sma:21" selected>MMS 21</option><option value="sma:50">MMS 50</option><option value="sma:200">MMS 200</option></select></div><div class="field"><label>Direção</label><select name="${prefix}_direction"><option value="up">Alta</option><option value="down">Baixa</option></select></div><div class="field"><label>Condição</label><select name="${prefix}_mode"><option value="price_above">Preço acima/abaixo da média</option><option value="sma_rising">Inclinação da média</option><option value="price_above_and_sma_rising">Preço e inclinação confirmam</option><option value="price_above_or_sma_rising">Preço ou inclinação confirma</option></select></div></fieldset>`).join("")}
-          <div class="field"><label>Combinação das tendências</label><select name="trend_combination"><option value="all">Todas confirmam</option><option value="majority">Maioria confirma</option><option value="any">Qualquer uma confirma</option></select></div>
-          <div class="field"><label>ADX mínimo</label><input type="number" name="adx_min" min="0" max="100" step="0.1" placeholder="Ex.: 20"></div><div class="field"><label>Volume / média mínimo</label><input type="number" name="volume_ratio_min" min="0.1" max="10" step="0.1" placeholder="Ex.: 1,2"></div>
-          <div class="field"><label>Período da média de volume</label><select name="volume_period"><option value="9">9 períodos</option><option value="20" selected>20 períodos</option><option value="50">50 períodos</option></select></div><div class="field"><label>Gráfico do volume</label><select name="volume_timeframe"><option value="daily">Diário</option><option value="weekly">Semanal</option><option value="monthly">Mensal</option></select></div>
-          <div class="field"><label>RSI mínimo</label><input type="number" name="rsi_min" min="0" max="100" step="0.1"></div><div class="field"><label>RSI máximo</label><input type="number" name="rsi_max" min="0" max="100" step="0.1"></div>
-          <div class="field"><label>ATR mínimo (%)</label><input type="number" name="atr_pct_min" min="0" max="100" step="0.1"></div><div class="field"><label>ATR máximo (%)</label><input type="number" name="atr_pct_max" min="0" max="100" step="0.1"></div>
-          <div class="field"><label>MACD</label><select name="macd_condition"><option value="any">Sem filtro</option><option value="above">Acima do sinal</option><option value="below">Abaixo do sinal</option><option value="cross_up">Cruzamento para cima</option><option value="cross_down">Cruzamento para baixo</option></select></div>
-          <div class="field"><label>Bollinger %B mínimo</label><input type="number" name="bollinger_percent_b_min" min="-5" max="5" step="0.01"></div><div class="field"><label>Bollinger %B máximo</label><input type="number" name="bollinger_percent_b_max" min="-5" max="5" step="0.01"></div>
-          <div class="field"><label>Largura Bollinger mínima</label><input type="number" name="bollinger_bandwidth_min" min="0" max="500" step="0.1"></div><div class="field"><label>Largura Bollinger máxima</label><input type="number" name="bollinger_bandwidth_max" min="0" max="500" step="0.1"></div>
-          <div class="field"><label>Força relativa mínima (%)</label><input type="number" name="relative_strength_min" min="-200" max="500" step="0.1"></div><div class="field"><label>Janela da força relativa</label><input type="number" name="relative_strength_lookback" min="20" max="504" step="1" value="126"></div>
-          <div class="field"><label>Zona de pivô</label><select name="pivot_zone"><option value="any">Sem filtro</option><option value="below_s3">Abaixo de S3</option><option value="s3_s2">S3–S2</option><option value="s2_s1">S2–S1</option><option value="s1_pp">S1–Pivô</option><option value="pp_r1">Pivô–R1</option><option value="r1_r2">R1–R2</option><option value="r2_r3">R2–R3</option><option value="above_r3">Acima de R3</option></select></div><div class="field"><label>Próximo do nível</label><select name="near_pivot_level"><option value="none">Sem filtro</option><option value="s3">S3</option><option value="s2">S2</option><option value="s1">S1</option><option value="pp">Pivô</option><option value="r1">R1</option><option value="r2">R2</option><option value="r3">R3</option></select></div>
-          <div class="field"><label>Tolerância ao pivô (%)</label><input type="number" name="pivot_tolerance_pct" min="0" max="20" step="0.1" value="0.5"></div><div class="field"><label>Liquidez diária mínima (R$)</label><input type="number" name="daily_liquidity_min" min="0" step="1000"></div>
-          <label class="check wide-action"><input type="checkbox" name="exit_on_filter_failure"> Encerrar a posição quando os filtros deixarem de ser atendidos</label>
-        </div></details>
-        <details class="wide-action"><summary>Premissas financeiras</summary><div class="filter-grid compact-grid"><div class="field"><label>Capital inicial</label><input type="number" name="initial_capital" min="1" step="100" value="10000"></div><div class="field"><label>Taxa (%)</label><input type="number" name="fee_pct" min="0" max="5" step="0.01" value="0.03"></div><div class="field"><label>Slippage (%)</label><input type="number" name="slippage_pct" min="0" max="5" step="0.01" value="0.05"></div><div class="field"><label>Taxa livre de risco (% a.a.)</label><input type="number" name="risk_free_rate_pct" min="-20" max="100" step="0.1" value="0"></div><label class="check"><input type="checkbox" name="apply_cash_yield"> Remunerar o caixa</label><div class="field"><label>Rendimento do caixa (% a.a.)</label><input type="number" name="cash_yield_rate_pct" min="-99" max="100" step="0.1" value="0"></div></div></details>
-        <button class="button primary wide-action" type="submit">Enviar análise para processamento</button>
-      </form><div id="backtest-result" style="margin-top:16px"></div>`+((recentJobs||[]).length?`<div style="margin-top:18px">${sectionCard("Execuções recentes",marketTable(recentJobs,[{label:"Solicitado",render:r=>dateTime(r.created_at)},{label:"Progresso",render:r=>`${number(r.progress_current||0,0)} / ${number(r.progress_total||0,0)}`},{label:"Status",render:r=>`<span class="pill">${esc(r.status)}</span>`}]))}</div>`:""),`Cada envio conta como uma análise diária. Limite: ${access.backtest_daily_limit||0} por dia; até ${access.backtest_strategy_limit||0} estratégia(s); intervalo mínimo de ${access.backtest_cooldown_seconds||60} segundos. A tela permanece livre durante o processamento.`);
-      renderBacktestStrategyParameters($("#backtest-form"));
-    }
-    panelSucceeded=true;
-  } catch(error) { if(error.name!=="AbortError"&&isCurrent())root.innerHTML=errorState(error,"backtests"); }
-  finally {if(isCurrent()){root.classList.remove("panel-refreshing");reportPanelPerformance("backtests",panelStarted,{success:panelSucceeded,cacheState:samePanel?(panelSucceeded?"warm":"stale"):"cold"});}}
-}
-
-async function runBacktest(form) {
-  const result=$("#backtest-result"); result.innerHTML=loadingCards(4);
-  const formData=new FormData(form), values=Object.fromEntries(formData);
-  const tickers=String(values.tickers||"").toUpperCase().split(/[\s,;]+/).map(value=>value.trim()).filter(Boolean);
-  const strategy_ids=[...form.querySelector('[name="strategy_ids"]').selectedOptions].map(option=>option.value);
-  if(!tickers.length||!strategy_ids.length){result.innerHTML=errorState("Informe ao menos um ativo e uma estratégia.");return;}
-  try {
-    const numberOrNull=name=>values[name]===""||nullable(values[name])?null:Number(values[name]);
-    const trend=prefix=>{const [ma_type,period]=String(values[`${prefix}_ma`]||"sma:21").split(":");return {enabled:Boolean(form.querySelector(`[name="${prefix}_enabled"]`)?.checked),direction:values[`${prefix}_direction`]||"up",ma_type,period:Number(period),mode:values[`${prefix}_mode`]||"price_above",slope_lookback:prefix==="daily"?5:prefix==="weekly"?4:3};};
-    const filters={daily_trend:trend("daily"),weekly_trend:trend("weekly"),monthly_trend:trend("monthly"),trend_combination:values.trend_combination||"all",adx_min:numberOrNull("adx_min"),volume_ratio_min:numberOrNull("volume_ratio_min"),volume_period:Number(values.volume_period||20),volume_timeframe:values.volume_timeframe||"daily",rsi_min:numberOrNull("rsi_min"),rsi_max:numberOrNull("rsi_max"),atr_pct_min:numberOrNull("atr_pct_min"),atr_pct_max:numberOrNull("atr_pct_max"),macd_condition:values.macd_condition||"any",bollinger_percent_b_min:numberOrNull("bollinger_percent_b_min"),bollinger_percent_b_max:numberOrNull("bollinger_percent_b_max"),bollinger_bandwidth_min:numberOrNull("bollinger_bandwidth_min"),bollinger_bandwidth_max:numberOrNull("bollinger_bandwidth_max"),relative_strength_min:numberOrNull("relative_strength_min"),relative_strength_lookback:Number(values.relative_strength_lookback||126),pivot_zone:values.pivot_zone||"any",near_pivot_level:values.near_pivot_level||"none",pivot_tolerance_pct:Number(values.pivot_tolerance_pct||.5),daily_liquidity_min:numberOrNull("daily_liquidity_min"),exit_on_filter_failure:Boolean(form.querySelector('[name="exit_on_filter_failure"]')?.checked)};
-    const strategy_params=collectBacktestStrategyParameters(form,strategy_ids);
-    const payload={tickers,strategy_ids,strategy_params,execution_mode:values.execution_mode,combination_rule:values.combination_rule,asset_type:values.asset_type,period:values.period,start:values.period==="custom"&&values.start?`${values.start}T00:00:00Z`:null,end:values.period==="custom"&&values.end?`${values.end}T23:59:59Z`:null,initial_capital:Number(values.initial_capital||10000),fee_pct:Number(values.fee_pct||0),slippage_pct:Number(values.slippage_pct||0),risk_free_rate_pct:Number(values.risk_free_rate_pct||0),apply_cash_yield:form.querySelector('[name="apply_cash_yield"]')?.checked||false,cash_yield_rate_pct:Number(values.cash_yield_rate_pct||0),filters};
-    const data=await api("/backtests/matrix",{method:"POST",body:JSON.stringify(payload)});
-    result.innerHTML=sectionCard("Análise na fila",`<div class="notice"><strong>Você pode continuar usando o site.</strong><br>O processamento ocorre em segundo plano.</div><progress max="${data.assets_requested}" value="0" style="width:100%;margin-top:14px"></progress><p class="block-hint">Preparando a análise…</p>`);
-    toast("Análise enviada. Você pode continuar navegando.","success");
-    await watchBacktestJob(data.job_id,result,data);
-  } catch(error) { result.innerHTML=errorState(error); }
-}
-
-function renderPersonalBacktestResult(job,submission) {
-  const data=job.result||{},rows=data.results||[];
-  return sectionCard(data.execution_mode==="combined"?"Resultado da combinação":"Resultado comparativo",marketTable(rows,[
-    {label:"Ativo",render:r=>`<strong>${esc(r.ticker||r.requested_ticker)}</strong>`},
-    {label:"Estratégia",render:r=>esc(r.strategy_name||r.strategy_id)},
-    {label:"Ação agora",render:r=>`<span class="pill signal-${esc(r.action_signal?.status||r.current_signal||"neutral")}">${signalLabel(r.action_signal?.status||r.current_signal)}</span>`},
-    {label:"Posição",render:r=>esc(r.position_state?.label||({invested:"Comprado",out:"Fora da posição"})[r.position_state?.status]||"—")},
-    {label:"Retorno",render:r=>pct(r.total_return_pct,true),className:r=>variationClass(r.total_return_pct)},
-    {label:"CAGR",render:r=>pct(r.cagr_pct??r.cagr,true),className:r=>variationClass(r.cagr_pct??r.cagr)},
-    {label:"Sharpe",render:r=>number(r.sharpe_ratio??r.sharpe)},
-    {label:"Drawdown",render:r=>pct(r.max_drawdown_pct??r.max_drawdown,true)},
-  ]),`${data.assets_requested||submission.assets_requested} ativo(s), ${data.strategies_requested||submission.strategies_requested} estratégia(s) • uso diário ${submission.daily_used}/${submission.daily_limit}`)+(data.failures?.length?`<div class="notice" style="margin-top:12px">${data.failures.length} ativo(s) não puderam ser processados nesta rodada.</div>`:"")+`<p style="margin-top:14px"><a class="button secondary" href="${BASE_PATH}/backtests/jobs/${encodeURIComponent(job.id)}/export.csv">Exportar operações em CSV</a></p>`;
-}
-
-async function watchBacktestJob(jobId,result,submission) {
-  for(let attempt=0;attempt<3600;attempt+=1) {
-    if(!result?.isConnected)return;
-    const job=await api(`/backtests/jobs/${encodeURIComponent(jobId)}`);
-    const total=Math.max(1,Number(job.progress_total||submission.assets_requested||1));
-    const current=Math.min(total,Number(job.progress_current||0));
-    if(job.status==="succeeded"){
-      result.innerHTML=renderPersonalBacktestResult(job,submission);
-      toast("Análise concluída e salva no histórico.","success");return;
-    }
-    if(job.status==="failed"||job.status==="cancelled"){
-      result.innerHTML=errorState(`A análise não foi concluída (${job.last_error_code||job.status}).`);return;
-    }
-    result.innerHTML=sectionCard("Análise em segundo plano",`<progress max="${total}" value="${current}" style="width:100%"></progress><p><strong>${current} de ${total}</strong> ativo(s)</p><p class="block-hint">${esc(job.message||"Processando…")} Você pode continuar usando as outras áreas.</p>`);
-    await new Promise(resolve=>setTimeout(resolve,2000));
-  }
-  result.innerHTML=errorState("O acompanhamento excedeu o tempo desta tela. Consulte o histórico de execuções.");
-}
-
-function financeCategoryBars(rows,total) {
-  if(!(rows||[]).length)return '<div class="empty-state compact"><strong>Nenhuma despesa neste mês</strong>Os grupos aparecerão à medida que você fizer lançamentos.</div>';
-  const maximum=Math.max(...rows.map(row=>Number(row.value||0)),1);
-  return `<div class="finance-bars">${rows.map(row=>`<div class="finance-bar-row"><span>${esc(row.category)}</span><div><i style="width:${Math.max(2,Number(row.value||0)/maximum*100)}%"></i></div><strong>${money(row.value)}</strong></div>`).join("")}</div><small>Total previsto e realizado: ${money(total)}</small>`;
-}
-
-function financeBudgetTable(rows) {
-  return marketTable(rows||[],[
-    {label:"Categoria",render:r=>`<strong>${esc(r.category)}</strong>`},
-    {label:"Limite",render:r=>money(r.limit_value)},
-    {label:"Usado",render:r=>money(r.used_value)},
-    {label:"Consumo",render:r=>`<span class="pill ${Number(r.used_pct)>100?"danger":""}">${pct(r.used_pct)}</span>`},
-  ]);
-}
-
-function financeTransactionTable(rows,canWrite) {
-  const statusLabels={planned:"Previsto",paid:"Pago",received:"Recebido",overdue:"Atrasado"};
-  return marketTable(rows||[],[
-    {label:"Data",render:r=>dateOnly(r.transaction_date)},
-    {label:"Descrição",render:r=>`<strong>${esc(r.description)}</strong><br><small>${esc(r.category)}${r.institution?` • ${esc(r.institution)}`:""}</small>`},
-    {label:"Tipo",render:r=>r.kind==="income"?"Receita":"Despesa"},
-    {label:"Valor",render:r=>money(r.amount),className:r=>r.kind==="income"?"positive":"negative"},
-    {label:"Status",render:r=>`<span class="pill ${r.status==="overdue"?"danger":""}">${esc(statusLabels[r.status]||r.status)}</span>`},
-    {label:"",render:r=>canWrite?`<span class="row-actions">${["paid","received"].includes(r.status)?"":`<button class="button ghost compact" data-set-finance-status="${esc(r.id)}" data-finance-kind="${esc(r.kind)}">${r.kind==="income"?"Marcar recebido":"Marcar pago"}</button>`}<button class="button ghost compact danger" data-delete-finance="${esc(r.id)}">Arquivar</button></span>`:""},
-  ]);
-}
-
-async function loadFinances() {
-  const panelStarted=performance.now();
-  const root=$("#finances-tab-content"),monthInput=$("#finance-month");
-  if(monthInput&&!monthInput.value)monthInput.value=state.financeMonth;
-  const month=state.financeMonth,tab=state.tabs.finances,navigationSerial=state.navigationSerial,requestSerial=++state.financeRequestSerial,panelKey=`${month}:${tab}`;
-  const isCurrent=()=>root.dataset.panelKey===panelKey&&requestSerial===state.financeRequestSerial&&navigationIsCurrent(navigationSerial,"finances","finances",tab)&&state.financeMonth===month;
-  const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;root.dataset.panelKey=panelKey;
-  let panelSucceeded=false;
-  if(!samePanel)root.innerHTML=loadingCards(5);else root.classList.add("panel-refreshing");
-  try {
-    const [data,catalog]=await Promise.all([
-      api(`/finances/summary?month=${encodeURIComponent(month)}`,{requestKey:"finances",cacheTtlMs:120000}),
-      api("/finances/catalog",{requestKey:"finance-catalog",cacheTtlMs:300000}),
-    ]);
-    if(!isCurrent())return;
-    const access=state.session.access,transactions=data.transactions||[];
-    if(tab==="monthly"){
-      const expenseTotal=(data.expense_by_category||[]).reduce((sum,row)=>sum+Number(row.value||0),0);
-      root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Receitas recebidas",money(data.realized?.income),"Realizado")}${metricCard("Despesas pagas",money(data.realized?.expense),"Realizado")}${metricCard("Saldo realizado",money(data.realized?.balance),"Entradas menos saídas",data.realized?.balance)}${metricCard("Saldo previsto",money(data.forecast?.balance),"Inclui lançamentos pendentes",data.forecast?.balance)}</div><div class="finance-overview-grid">${sectionCard("Despesas por categoria",financeCategoryBars(data.expense_by_category||[],expenseTotal),`Competência ${state.financeMonth}`)}${sectionCard("Orçamento do mês",(data.budgets||[]).length?financeBudgetTable(data.budgets):'<div class="empty-state compact"><strong>Orçamento ainda não definido</strong>Use a aba Orçamento para criar limites por categoria.</div>')}</div>${sectionCard("Lançamentos mais recentes",financeTransactionTable(transactions.slice(0,8),access.can_write_finances),data.updated_at?`Atualizado em ${dateTime(data.updated_at)}`:"Sem lançamentos")}`;
-    }else if(tab==="transactions"){
-      const options=(kind)=>(catalog.categories?.[kind]||[]).map(item=>`<option data-finance-category-kind="${kind}" ${kind==="income"?"hidden disabled":""}>${esc(item)}</option>`).join("");
-      const form=access.can_write_finances?`<details class="data-card" open><summary><strong>Novo lançamento</strong></summary><form id="finance-transaction-form" class="filter-grid" style="margin-top:16px"><div class="field"><label>Tipo</label><select name="kind"><option value="expense">Despesa</option><option value="income">Receita</option></select></div><div class="field"><label>Categoria</label><select name="category">${options("expense")}${options("income")}</select></div><div class="field"><label>Descrição</label><input name="description" required maxlength="200"></div><div class="field"><label>Valor</label><input name="amount" type="number" min="0.01" step="0.01" required></div><div class="field"><label>Data</label><input name="transaction_date" type="date" value="${new Date().toISOString().slice(0,10)}" required></div><div class="field"><label>Situação</label><select name="status"><option value="planned">Previsto</option><option value="paid" data-finance-status-kind="expense">Pago</option><option value="received" data-finance-status-kind="income" hidden disabled>Recebido</option><option value="overdue">Atrasado</option></select></div><div class="field"><label>Instituição</label><input name="institution" maxlength="120"></div><div class="field"><label>Forma de pagamento</label><input name="payment_method" maxlength="80"></div><div class="field wide-action"><label>Observações</label><textarea name="notes" rows="2"></textarea></div><button class="button primary wide-action" type="submit">Salvar lançamento</button></form></details>`:"";
-      root.innerHTML=form+sectionCard("Planilha mensal",financeTransactionTable(transactions,access.can_write_finances),`${transactions.length} lançamento(s) em ${state.financeMonth}`);
-    }else{
-      const current=new Map((data.budgets||[]).map(row=>[row.category,Number(row.limit_value||0)]));
-      const fields=(catalog.categories?.expense||[]).map(category=>`<div class="field"><label>${esc(category)}</label><input type="number" min="0" step="0.01" name="${esc(category)}" value="${current.get(category)||""}" placeholder="Sem limite"></div>`).join("");
-      root.innerHTML=`${sectionCard("Acompanhamento",(data.budgets||[]).length?financeBudgetTable(data.budgets):'<div class="empty-state compact">Nenhum limite definido.</div>',"O consumo inclui despesas previstas e pagas")}${access.can_write_finances?`<form id="finance-budget-form" class="data-card filter-grid" style="margin-top:16px">${fields}<button class="button primary wide-action" type="submit">Salvar orçamento de ${esc(state.financeMonth)}</button></form>`:""}`;
-    }
-    panelSucceeded=true;
-  }catch(error){if(error.name!=="AbortError"&&isCurrent())root.innerHTML=errorState(error,"finances");}
-  finally {if(isCurrent()){root.classList.remove("panel-refreshing");reportPanelPerformance("finances",panelStarted,{success:panelSucceeded,cacheState:samePanel?(panelSucceeded?"warm":"stale"):"cold"});}}
-}
-
-async function saveFinanceTransaction(form){
-  const values=Object.fromEntries(new FormData(form));values.amount=Number(values.amount);values.competence_month=state.financeMonth;
-  try{await api("/finances/transactions",{method:"POST",body:JSON.stringify(values)});toast("Lançamento salvo.","success");loadFinances();}
-  catch(error){toast(error.message,"error");}
-}
-
-async function saveFinanceBudget(form){
-  const values={};new FormData(form).forEach((value,key)=>{values[key]=Number(value||0);});
-  try{await api("/finances/budgets",{method:"PUT",body:JSON.stringify({competence_month:state.financeMonth,values})});toast("Orçamento atualizado.","success");loadFinances();}
-  catch(error){toast(error.message,"error");}
-}
-
-async function setFinanceStatus(button){
-  const status=button.dataset.financeKind==="income"?"received":"paid";
-  try{await api(`/finances/transactions/${encodeURIComponent(button.dataset.setFinanceStatus)}`,{method:"PATCH",body:JSON.stringify({status})});toast("Situação atualizada.","success");loadFinances();}
-  catch(error){toast(error.message,"error");}
-}
-
-async function archiveFinanceTransaction(button){
-  if(!window.confirm("Arquivar este lançamento? O registro continuará preservado no banco."))return;
-  try{await api(`/finances/transactions/${encodeURIComponent(button.dataset.deleteFinance)}`,{method:"DELETE"});toast("Lançamento arquivado.","success");loadFinances();}
-  catch(error){toast(error.message,"error");}
-}
+async function loadFinances(...args){return loadFeaturePanel("finances","loadFinances","#finances-tab-content",args);}
+async function saveFinanceTransaction(...args){return invokeFeature("finances","saveFinanceTransaction",...args);}
+async function saveFinanceBudget(...args){return invokeFeature("finances","saveFinanceBudget",...args);}
+async function setFinanceStatus(...args){return invokeFeature("finances","setFinanceStatus",...args);}
+async function archiveFinanceTransaction(...args){return invokeFeature("finances","archiveFinanceTransaction",...args);}
 
 const accessPermissionSections=[
   {title:"Mercado e análises",items:[["can_view_market","Ver Painel de Mercado"],["can_use_advanced_filters","Usar filtros avançados"],["can_use_fdi_analysis","Análise FDI"],["can_use_alb_analysis","Análise ALB"],["can_use_graham_valuation","Número de Graham"],["can_use_dividend_ceiling","Preço-teto por dividendos"],["can_use_relative_valuation","Valuation relativo"],["can_use_economic_valuation","Valor econômico"]]},
@@ -2452,376 +1767,28 @@ const adminRefreshGroups=[
   {key:"operations_retention",section:"Operação",frequency:"Diária, 02h50"},
 ];
 
-function accessRuleEditor(level,disabled=false){
-  const permissions=level.permissions||{},limits=level.limits||{};
-  const sections=accessPermissionSections.map((section,index)=>`<details class="permission-section" ${index<2?"open":""}><summary>${esc(section.title)}<span>${section.items.filter(([key])=>permissions[key]).length} liberada(s)</span></summary><div class="permission-matrix">${section.items.map(([key,label])=>`<label class="check"><input type="checkbox" data-level-permission="${key}" ${permissions[key]?"checked":""} ${disabled?"disabled":""}><span>${esc(label)}</span></label>`).join("")}</div></details>`).join("");
-  const limitFields=accessLimitDefinitions.map(field=>`<div class="field"><label>${esc(field.label)}</label><select data-level-limit="${field.key}" ${disabled?"disabled":""}>${field.values.map(value=>`<option value="${value}" ${Number(limits[field.key]||0)===value?"selected":""}>${value}</option>`).join("")}</select></div>`).join("");
-  return `${sections}<div class="access-limit-grid">${limitFields}</div>`;
-}
-
-function accessLevelCard(level){
-  const locked=level.slug==="owner";
-  return `<details class="access-level-card" data-level-card="${esc(level.slug)}"><summary><span><strong>${esc(level.name)}</strong><small>${esc(level.description||"")}</small></span><span><span class="pill">${number(level.member_count||0,0)} usuário(s)</span>${level.is_active?'<span class="pill">Ativo</span>':'<span class="pill warning">Inativo</span>'}</span></summary><form class="access-level-form" data-access-level-form="${esc(level.slug)}"><div class="access-level-meta"><div class="field"><label>Nome do nível</label><input name="name" maxlength="80" value="${esc(level.name)}" ${locked?"disabled":""}></div><div class="field"><label>Descrição</label><input name="description" maxlength="500" value="${esc(level.description||"")}" ${locked?"disabled":""}></div>${locked?"":`<label class="check access-active"><input name="is_active" type="checkbox" ${level.is_active?"checked":""}> Nível disponível para novas atribuições</label>`}</div>${accessRuleEditor(level,locked)}${locked?'<div class="notice info">O nível do proprietário é permanente e não pode ser reduzido.</div>':'<button class="button primary" type="submit">Salvar regras deste nível</button>'}</form></details>`;
-}
-
-function adminPanelIsCurrent(root,context){
-  return root?.dataset.panelKey===context.panelKey&&context.requestSerial===state.adminRequestSerial&&navigationIsCurrent(context.navigationSerial,"admin","admin",context.panelKey);
-}
-
-async function loadAccessLevels(root,context){
-  const levels=await api("/access/levels",{requestKey:"admin-levels",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force});
-  if(!adminPanelIsCurrent(root,context))return;
-  root.innerHTML=`<div class="notice info"><strong>Permissões por nível:</strong> altere uma vez aqui e a mudança será aplicada imediatamente a todos os usuários vinculados. Contas antigas só mudam quando você atribuir um nível.</div><div class="access-level-list">${levels.map(accessLevelCard).join("")}</div><details class="data-card create-level-card"><summary><strong>Criar nível adicional</strong></summary><form id="create-access-level-form" class="filter-grid"><div class="field"><label>Identificador interno</label><input name="slug" required pattern="[a-z][a-z0-9_-]{1,31}" placeholder="ex.: parceiro"></div><div class="field"><label>Nome exibido</label><input name="name" required maxlength="80" placeholder="Ex.: Parceiro"></div><div class="field wide-action"><label>Descrição</label><input name="description" maxlength="500"></div><button class="button primary wide-action" type="submit">Criar nível sem permissões</button></form></details>`;
-}
-
-function userStatusLabel(status){return ({pending:"Pendente",approved:"Aprovado",blocked:"Bloqueado"})[status]||status;}
-async function loadAdminUsers(root,context){
-  const params=new URLSearchParams({limit:"100",offset:String(state.adminUsersOffset)});if(state.adminUsersQuery)params.set("q",state.adminUsersQuery);if(state.adminUsersStatus)params.set("status",state.adminUsersStatus);if(state.adminUsersLevel)params.set("level",state.adminUsersLevel);
-  const [payload,levels]=await Promise.all([api(`/access/users/manage?${params}`,{requestKey:"admin-users",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}),api("/access/levels?include_inactive=true",{requestKey:"admin-levels",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force})]);
-  if(!adminPanelIsCurrent(root,context))return;
-  const users=payload.items||[],activeLevels=levels.filter(level=>level.slug!=="owner"&&level.is_active),from=payload.total?payload.offset+1:0,to=Math.min(payload.offset+payload.limit,payload.total);
-  const levelOptions=user=>{
-    const legacy=!user.access_level_slug?'<option value="legacy" selected disabled>Personalizado legado (preservado)</option>':"";
-    const current=levels.find(level=>level.slug===user.access_level_slug);
-    const inactive=current&&!current.is_active?`<option value="${esc(current.slug)}" selected disabled>${esc(current.name)} (inativo)</option>`:"";
-    return legacy+inactive+activeLevels.map(level=>`<option value="${esc(level.slug)}" ${user.access_level_slug===level.slug?"selected":""}>${esc(level.name)}</option>`).join("");
-  };
-  const rows=users.map(user=>`<tr data-user-row="${esc(user.email)}" data-current-level="${esc(user.access_level_slug||"legacy")}" data-current-status="${esc(user.status)}"><td>${user.is_owner?"":`<input type="checkbox" data-user-select="${esc(user.email)}" aria-label="Selecionar ${esc(user.email)}">`}</td><td><strong>${esc(user.display_name||user.email)}</strong><br><small>${esc(user.email)}</small></td><td>${user.is_owner?'<span class="pill">Proprietário</span>':`<select data-user-level>${levelOptions(user)}</select><small class="block-hint">${user.access_inheritance?"Herda regras do nível":"Permissões atuais preservadas"}</small>`}</td><td>${user.is_owner?'<span class="pill">Permanente</span>':`<select data-user-status><option value="pending" ${user.status==="pending"?"selected":""}>Pendente</option><option value="approved" ${user.status==="approved"?"selected":""}>Aprovado</option><option value="blocked" ${user.status==="blocked"?"selected":""}>Bloqueado</option></select>`}</td><td>${user.access_overrides&&Object.keys(user.access_overrides).length?`<span class="pill warning">${Object.keys(user.access_overrides).length} ajuste(s)</span><br><button class="button ghost compact" data-clear-user-overrides="${esc(user.email)}">Remover ajustes</button>`:'<span class="pill">Sem exceções</span>'}</td><td>${dateTime(user.last_seen_at)}</td><td>${user.is_owner?"":`<button class="button primary compact" data-save-user-level="${esc(user.email)}">Salvar</button>`}</td></tr>`).join("");
-  root.innerHTML=`<form id="admin-user-filter-form" class="admin-user-filters"><div class="field"><label>Buscar</label><input name="q" value="${esc(state.adminUsersQuery)}" placeholder="Nome ou e-mail"></div><div class="field"><label>Nível</label><select name="level"><option value="">Todos</option><option value="legacy" ${state.adminUsersLevel==="legacy"?"selected":""}>Personalizado legado</option>${levels.map(level=>`<option value="${esc(level.slug)}" ${state.adminUsersLevel===level.slug?"selected":""}>${esc(level.name)}</option>`).join("")}</select></div><div class="field"><label>Status</label><select name="status"><option value="">Todos</option>${["pending","approved","blocked"].map(value=>`<option value="${value}" ${state.adminUsersStatus===value?"selected":""}>${userStatusLabel(value)}</option>`).join("")}</select></div><button class="button secondary" type="submit">Filtrar</button></form><div class="bulk-access-bar"><span><strong>Atribuição em lote</strong><small>Marque usuários desta página</small></span><select id="bulk-access-level">${activeLevels.map(level=>`<option value="${esc(level.slug)}">${esc(level.name)}</option>`).join("")}</select><button class="button secondary" data-bulk-assign-level>Atribuir nível</button></div>${sectionCard("Usuários",`<div class="table-scroll"><table class="admin-users-table"><thead><tr><th></th><th>Usuário</th><th>Nível de acesso</th><th>Status individual</th><th>Exceções</th><th>Último acesso</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="7"><div class="empty-state compact">Nenhum usuário encontrado.</div></td></tr>'}</tbody></table></div>`,`Exibindo ${from}–${to} de ${payload.total} usuário(s)`)}<div class="pagination"><button class="button ghost" data-admin-users-page="prev" ${payload.offset<=0?"disabled":""}>Anterior</button><span>Página ${Math.floor(payload.offset/payload.limit)+1}</span><button class="button ghost" data-admin-users-page="next" ${to>=payload.total?"disabled":""}>Próxima</button></div>`;
-}
-
-function adminUpdateTable(updates){
-  return marketTable(adminRefreshGroups.map(item=>({...item,...(updates[item.key]||{})})),[
-    {label:"Atualização",render:r=>`<strong>${esc(r.label||r.key)}</strong><br><small>${esc(r.section)} • ${esc(r.frequency)}</small>`},
-    {label:"Fonte",render:r=>esc(r.source||"—")},
-    {label:"Status",render:r=>`<span class="pill ${["failed","stale","partial"].includes(r.status)?"warning":""}">${esc(updateStatusLabels[r.status]||r.status||"Aguardando")}</span>${r.last_error_code?`<br><small>${esc(r.last_error_code)}</small>`:""}`},
-    {label:"Última atualização",render:r=>dateTime(r.last_updated_at)},
-    {label:"Próxima",render:r=>dateTime(r.next_update_at)},
-    {label:"",render:r=>`<button class="button secondary compact" data-refresh-groups="${esc(r.key)}" ${["queued","running"].includes(r.status)?"disabled":""}>Atualizar</button>`},
-  ]);
-}
-
-async function loadAdminUpdates(root,context){
-  const owner=Boolean(state.session?.access?.is_owner);
-  const [summary,updatePayload,officialLaunch]=await Promise.all([
-    api("/data/catalog-summary",{requestKey:"admin-catalog-summary",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}),
-    api("/market-dashboard/updates",{requestKey:"admin-updates",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}),
-    owner?api("/backtests/batch/official-launch",{requestKey:"admin-official-launch",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}):Promise.resolve(null),
-  ]);
-  if(!adminPanelIsCurrent(root,context))return;
-  const updates=updatePayload.updates||{};state.marketEnvelope=state.marketEnvelope||{};state.marketEnvelope.updates={...(state.marketEnvelope.updates||{}),...updates};
-  const counts=summary.counts||{},groups=summary.groups||{},allKeys=adminRefreshGroups.map(item=>item.key);
-  const grouped=[
-    ["Juros, inflação e agenda",["selic_current","selic_focus","macro","rates_calendar"]],
-    ["Mercados, criptos e câmbio",["global_markets","crypto","fx"]],
-    ["Notícias, comparador e composição do Ibovespa",["headlines","comparison","ibov_portfolio"]],
-    ["Catálogo, fundamentos, técnica e métricas atuais",["catalog","fundamentals","technical_daily","technical_intraday","current_metrics"]],
-    ["Proventos, CVM, agenda e índices ANBIMA",["portfolio_dividends","cvm_relevant_facts","official_calendar","ima_history"]],
-    ["Qualidade e filtro ALB",["alb_monitor","data_quality"]],
-  ];
-  root.innerHTML=`<div class="metric-grid">${metricCard("Ações",number(groups.stock||0,0),"Ativos ativos")}${metricCard("FIIs",number(groups.fii||0,0),"Fundos imobiliários")}${metricCard("ETFs",number(counts.etf||0,0),"Fundos de índice")}${metricCard("BDRs",number(counts.bdr||0,0),"Recibos negociados na B3")}</div><div class="admin-update-actions"><button class="button secondary" data-refresh-groups="catalog">Atualizar catálogo</button><button class="button secondary" data-refresh-groups="fundamentals">Atualizar fundamentos e notas</button>${grouped.map(([label,keys])=>`<button class="button secondary" data-refresh-groups="${keys.join(",")}">${esc(label)}</button>`).join("")}<button class="button primary" data-refresh-groups="${allKeys.join(",")}" data-confirm-all-updates>Atualizar todas as ${allKeys.length} rotinas</button></div>${officialLaunch?officialRoundLaunchCard(officialLaunch):""}${sectionCard("Todas as atualizações automáticas",adminUpdateTable(updates),"As solicitações entram na fila e não bloqueiam o site")}${sectionCard("Monitor de alertas",`<div class="admin-monitor-row"><span><strong>B3: 5 minutos no pregão</strong><small>Demais mercados: 30 minutos, continuamente</small></span><button class="button secondary" data-run-alert-monitor>Executar verificação agora</button></div><div id="alert-monitor-result" class="notice info hidden"></div>`,`A execução manual respeita as mesmas regras e não envia alertas duplicados`)}`;
-}
-
-const jobTypeLabels={market_group_refresh:"Mercado e economia",economy_headlines_refresh:"Manchetes",historical_comparison_refresh:"Comparador histórico",market_catalog_refresh:"Catálogo",market_fundamentals_refresh:"Fundamentos",market_technicals_refresh:"Indicadores técnicos",market_intraday_refresh:"Cotações intradiárias",market_full_sync:"Sincronização completa de mercado",current_metrics_refresh:"Métricas atuais pré-calculadas",asset_price_ingest:"Histórico de preços do ativo",b3_index_portfolio_refresh:"Composição do Ibovespa",portfolio_prices_refresh:"Preços de carteira",user_news_refresh:"Notícias do usuário",personal_backtest_matrix:"Backtest pessoal",investor_dividends_refresh:"Proventos oficiais",cvm_relevant_facts_refresh:"Fatos relevantes CVM",official_calendar_refresh:"Agenda oficial",anbima_ima_history_refresh:"Histórico IMA-B/IRF-M",alb_universe_monitor:"Monitor do filtro ALB",data_quality_refresh:"Qualidade dos dados",operational_retention:"Retenção operacional",noop:"Verificação interna"};
-function jobStatusLabel(status){return ({queued:"Na fila",running:"Executando",succeeded:"Concluído",failed:"Falhou",cancelled:"Cancelado"})[status]||status;}
-async function loadAdminJobs(root,context){
-  const jobs=await api("/admin/jobs?limit=100",{requestKey:"admin-jobs",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force});
-  if(!adminPanelIsCurrent(root,context))return;
-  const table=marketTable(jobs,[{label:"Trabalho",render:r=>`<strong>${esc(jobTypeLabels[r.job_type]||r.job_type)}</strong><br><small>${esc(r.id)}</small>`},{label:"Status",render:r=>`<span class="pill ${r.status==="failed"?"danger":r.status==="running"?"warning":""}">${esc(jobStatusLabel(r.status))}</span>`},{label:"Progresso",render:r=>r.progress_total?`${number(r.progress_current||0,0)} / ${number(r.progress_total,0)}`:"—"},{label:"Tentativas",render:r=>`${number(r.attempts||0,0)} / ${number(r.max_attempts||0,0)}`},{label:"Solicitado por",render:r=>esc(r.requested_by||"Sistema")},{label:"Atualização",render:r=>dateTime(r.updated_at)},{label:"Mensagem",render:r=>`${esc(r.message||"—")}${r.last_error_code?`<br><small>${esc(r.last_error_code)}</small>`:""}`},{label:"",render:r=>["failed","cancelled"].includes(r.status)?`<button class="button secondary compact" data-retry-admin-job="${esc(r.id)}">Reprocessar</button>`:""}]);
-  root.innerHTML=`<div class="admin-monitor-row"><span><strong>Fila de trabalhos em segundo plano</strong><small>Atualizações de mercado, notícias, carteiras e backtests sem travar a navegação.</small></span><button class="button secondary" data-reload-admin-jobs>Atualizar lista</button></div>${sectionCard("100 trabalhos mais recentes",table,"Falhas podem ser reprocessadas; trabalhos ativos nunca são duplicados")}`;
-}
-
-function bytesLabel(value){
-  const amount=Number(value);if(!Number.isFinite(amount)||amount<0)return "—";
-  const units=["B","KB","MB","GB","TB"];let index=0,current=amount;
-  while(current>=1024&&index<units.length-1){current/=1024;index+=1;}
-  return `${number(current,current>=10||index===0?0:1)} ${units[index]}`;
-}
-
-function operationsResourceCards(resources){
-  const item=(label,data)=>metricCard(label,nullable(data?.used_pct)?"—":`${number(data.used_pct,1)}%`,`${bytesLabel(data?.used_bytes)} de ${bytesLabel(data?.total_bytes)}`);
-  return `<div class="metric-grid operations-resources">${item("Memória do contêiner",resources?.container_memory?.used_pct===null?resources?.memory:resources?.container_memory)}${item("Memória da máquina",resources?.memory)}${item("Swap",resources?.swap)}${item("Disco",resources?.disk)}</div>`;
-}
-
-async function loadAdminOperations(root,context){
-  const payload=await api("/admin/operations",{requestKey:"admin-operations",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force});
-  if(!adminPanelIsCurrent(root,context))return;
-  const severityLabel={healthy:"Operacional",warning:"Atenção",critical:"Crítico"};
-  const serviceRoleLabel={worker:"Processamento em segundo plano",web:"Aplicação web"};
-  const routeLabel={health:"Saúde e disponibilidade",dashboard:"Painel de Mercado",screener_50:"Filtro com até 50 ativos",screener_100:"Filtro com até 100 ativos",asset_detail:"Detalhe do ativo",panel_dashboard:"Mercado",panel_analysis:"Mercado e Análises",panel_portfolio:"Minha Carteira",panel_finances:"Minhas Finanças",panel_backtests:"Backtests",panel_admin:"Administração"};
-  const leaseLabel={"background-scheduler":"Agendador automático","price-alert-monitor-leader":"Monitor de alertas","price-alert-monitor-cycle":"Ciclo de verificação dos alertas"};
-  const services=marketTable(payload.services||[],[
-    {label:"Serviço",render:r=>`<strong>${esc(serviceRoleLabel[r.role]||r.role)}</strong><br><small>${esc(r.node_id)}</small>`},
-    {label:"Ambiente",render:r=>esc(r.environment)},
-    {label:"Versão",render:r=>`${esc(r.version)}${r.commit_sha?`<br><small>${esc(String(r.commit_sha).slice(0,10))}</small>`:""}`},
-    {label:"Heartbeat",render:r=>`${dateTime(r.last_seen_at)}<br><small>há ${number(r.age_seconds,0)} s</small>`},
-    {label:"Agendador",render:r=>r.scheduler_leader?'<span class="pill">Líder</span>':'<span class="pill warning">Espera</span>'},
-    {label:"Alertas",render:r=>r.alert_monitor_leader?'<span class="pill">Líder</span>':'<span class="pill warning">Espera</span>'},
-  ]);
-  const latencies=marketTable(payload.route_metrics?.categories||[],[
-    {label:"Rota medida",render:r=>`<strong>${esc(routeLabel[r.key]||r.key)}</strong><br><small>${number(r.count,0)} amostras</small>`},
-    {label:"p50",render:r=>nullable(r.p50_ms)?"—":`${number(r.p50_ms,0)} ms`},
-    {label:"p95",render:r=>nullable(r.p95_ms)?"—":`${number(r.p95_ms,0)} ms`},
-    {label:"Máximo",render:r=>nullable(r.max_ms)?"—":`${number(r.max_ms,0)} ms`},
-    {label:"Meta p95",render:r=>nullable(r.target_p95_ms)?"—":`${number(r.target_p95_ms,0)} ms`},
-    {label:"Situação",render:r=>!r.sample_sufficient?'<span class="pill warning">Coletando</span>':r.within_target?'<span class="pill">Dentro da meta</span>':'<span class="pill danger">Acima da meta</span>'},
-  ]);
-  const browserRows=(payload.browser_performance||[]).slice(0,80);
-  const browserPerformance=browserRows.length?marketTable(browserRows,[
-    {label:"Hora",render:r=>dateTime(r.bucket_hour)},
-    {label:"Painel",render:r=>`<strong>${esc(routeLabel[`panel_${r.panel}`]||r.panel)}</strong><br><small>${esc(r.device_class||"—")} • ${esc(r.cache_state||"—")}</small>`},
-    {label:"Amostras",render:r=>`${number(r.sample_count,0)}<br><small>${number(r.success_pct,1)}% concluídas</small>`},
-    {label:"p50 / p95",render:r=>`${number(r.p50_ms,0)} / ${number(r.p95_ms,0)} ms`},
-    {label:"Máximo",render:r=>`${number(r.max_ms,0)} ms`},
-    {label:"Web Vitals",render:r=>`LCP ${number(r.web_vitals?.lcp_ms?.average,0)} ms<br><small>INP ${number(r.web_vitals?.inp_ms?.average,0)} ms • CLS ${number(r.web_vitals?.cls?.average,3)}</small>`},
-  ]):'<div class="empty-state compact"><strong>Coletando a experiência real</strong>Os resumos aparecerão por hora apó a navegação autenticada.</div>';
-  const openIncidents=(payload.incidents||[]).filter(item=>item.status==="open");
-  const incidents=marketTable(openIncidents,[
-    {label:"Gravidade",render:r=>`<span class="pill ${r.severity==="critical"?"danger":"warning"}">${r.severity==="critical"?"Crítico":"Atenção"}</span>`},
-    {label:"Ocorrência",render:r=>`<strong>${esc(r.title)}</strong><br><small>${esc(r.code)}</small>`},
-    {label:"Detalhe",render:r=>esc(r.message)},
-    {label:"Desde",render:r=>dateTime(r.first_seen_at)},
-    {label:"Última detecção",render:r=>dateTime(r.last_seen_at)},
-  ]);
-  const leaders=(payload.leases||[]).map(item=>`<span class="operations-lease"><strong>${esc(leaseLabel[item.lease_name]||item.lease_name)}</strong><small>${esc(item.holder_id)} • até ${dateTime(item.expires_at)}</small></span>`).join("")||'<span class="empty-state compact">Nenhuma liderança ativa registrada.</span>';
-  root.innerHTML=`<div class="admin-monitor-row operations-summary ${esc(payload.status)}"><span><strong>Saúde operacional: ${esc(severityLabel[payload.status]||payload.status)}</strong><small>Leitura de ${dateTime(payload.generated_at)} • ${openIncidents.length} ocorrência(s) aberta(s)</small></span><button class="button secondary" data-reload-admin-operations>Atualizar diagnóstico</button></div><div class="metric-grid">${metricCard("Worker",payload.worker_health?.status==="ok"?"Ativo":"Indisponível",payload.worker_health?.last_seen_at?`Último sinal ${dateTime(payload.worker_health.last_seen_at)}`:"Sem heartbeat")}${metricCard("Na fila",number(payload.queue?.queued||0,0),`Mais antigo: ${number(payload.queue?.oldest_due_minutes||0,0)} min`)}${metricCard("Em execução",number(payload.queue?.running||0,0),`${number(payload.queue?.stale_running||0,0)} sem heartbeat`)}${metricCard("Ocorrências",number(openIncidents.length,0),openIncidents.some(i=>i.severity==="critical")?"Há item crítico":"Sem item crítico")}</div>${operationsResourceCards(payload.resources)}${sectionCard("Serviços e liderança",services,"O esperado é um único líder para o agendador e um único líder para o monitor de alertas")}${sectionCard("Leases distribuídas",`<div class="operations-leases">${leaders}</div>`,`A liderança expira automaticamente se uma VM deixar de responder`) }${sectionCard("Tempo de resposta do servidor",latencies,`p50/p95 de até ${number(payload.route_metrics?.window_size||0,0)} medições desde ${dateTime(payload.route_metrics?.since)}`)}${sectionCard("Experiência real no navegador",browserPerformance,"Resumos horários das últimas 24 horas; nenhum clique individual é gravado no banco")}${sectionCard("Ocorrências abertas",incidents||'<div class="empty-state compact"><strong>Nenhuma ocorrência aberta.</strong>Os limites monitorados estão normais.</div>',"Fila parada, falhas repetidas, dados vencidos, memória, swap, disco e latência")}`;
-}
-
-function dataQualityStatus(value){return ({updated:"Atualizado",partial:"Cobertura parcial",stale:"Desatualizado",unavailable:"Indisponível",failed:"Falhou",queued:"Na fila",running:"Atualizando"})[value]||value||"Aguardando";}
-function dataQualityClass(value){return ["failed","unavailable"].includes(value)?"danger":["partial","stale"].includes(value)?"warning":"";}
-
-async function loadAdminQuality(root,context){
-  const payload=await api("/admin/data-quality",{requestKey:"admin-quality",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force});
-  if(!adminPanelIsCurrent(root,context))return;
-  const summary=payload.summary||{},alb=payload.alb||null,rows=payload.sources||[];
-  const sourceRows=marketTable(rows,[
-    {label:"Conjunto de dados",render:r=>`<strong>${esc(r.label||r.key)}</strong><br><small>${esc(r.category||"")}</small>`},
-    {label:"Fonte",render:r=>r.source_url?`<a href="${esc(safeExternalUrl(r.source_url))}" target="_blank" rel="noopener noreferrer">${esc(r.source||"Fonte oficial")}</a>`:esc(r.source||"—")},
-    {label:"Situação",render:r=>`<span class="pill ${dataQualityClass(r.status)}">${esc(dataQualityStatus(r.status))}</span>${r.last_error_code?`<br><small>${esc(r.last_error_code)}</small>`:""}`},
-    {label:"Cobertura",render:r=>nullable(r.coverage_pct)?(nullable(r.item_count)?"—":`${number(r.item_count,0)} item(ns)`):`${pct(r.coverage_pct)}<br><small>${number(r.item_count,0)} de ${number(r.total_items,0)}</small>`},
-    {label:"Última atualização",render:r=>dateTime(r.last_updated_at)},
-    {label:"Próxima",render:r=>dateTime(r.next_update_at)},
-  ]);
-  const albBody=alb?`<div class="metric-grid summary-grid">${metricCard("Ativos no ALB",number(alb.asset_count,0),`Faixa esperada: ${number(alb.target_min,0)} a ${number(alb.target_max,0)}`)}${metricCard("Situação",alb.status==="within_range"?"Dentro da faixa":"Requer atenção","Critérios nunca são afrouxados automaticamente")}${metricCard("Referência",dateOnly(alb.reference_date),`Preset ${alb.preset_version||"—"}`)}</div>${(alb.tickers||[]).length?`<div class="tag-list">${alb.tickers.map(item=>`<span>${esc(item)}</span>`).join("")}</div>`:""}`:'<div class="empty-state compact"><strong>Primeira medição pendente</strong>O monitor será executado pela rotina diária, sem alterar o preset ALB.</div>';
-  root.innerHTML=`<div class="admin-monitor-row operations-summary ${esc(payload.status)}"><span><strong>Qualidade dos dados: ${payload.status==="ok"?"normal":payload.status==="critical"?"crítica":"atenção"}</strong><small>Leitura em ${dateTime(payload.generated_at)} • somente metadados persistidos, sem bloquear o site</small></span><button class="button secondary" data-reload-admin-quality>Atualizar diagnóstico</button></div><div class="metric-grid">${metricCard("Fontes monitoradas",number(summary.total||0,0),"Séries, snapshots e cobertura por ativo")}${metricCard("Atualizadas",number(summary.updated||0,0),"Dentro do prazo esperado")}${metricCard("Parciais",number(summary.partial||0,0),"Cobertura abaixo de 80%")}${metricCard("Vencidas ou indisponíveis",number((summary.stale||0)+(summary.unavailable_or_failed||0),0),"Exigem atualização ou revisão")}</div>${sectionCard("Filtro ALB — controle diário",albBody,"A faixa esperada é de 5 a 20 ativos; um alerta operacional é aberto fora dela")}${sectionCard("Cobertura, frescor e proveniência",sourceRows,"Cada linha informa a fonte, a última atualização e eventuais falhas")}`;
-}
-
-const adminAnalysisAssetTypes=[
-  {id:"stock",label:"Ações"},{id:"fii",label:"FIIs"},{id:"etf",label:"ETFs"},{id:"bdr",label:"BDRs"},{id:"future",label:"Futuros"},
-];
-const adminAnalysisPresetLabels={default:"Padrão",cnpi:"FDI",alb:"ALB"};
-const adminFundamentalFields={
-  stock:["price","pe","pbv","dividend_yield_pct","ev_ebitda","ebit_margin_pct","net_margin_pct","current_ratio","roe_pct","roic_pct","gross_debt_to_equity","net_debt_to_ebitda","revenue_cagr_5y_pct","earnings_cagr_5y_pct","daily_liquidity"],
-  fii:["price","pbv","dividend_yield_pct","ffo_yield_pct","cap_rate_pct","vacancy_pct","financial_vacancy_pct","ltv_pct","daily_liquidity"],
-};
-
-function adminAnalysisLabel(group,key){
-  const rows=group==="score"?filterDefinitions.scores:filterDefinitions.fundamental;
-  return rows.find(([id])=>id===key)?.[1]||key.replaceAll("_"," ");
-}
-
-function adminRangeEditor(group,key,configuration){
-  const source=group==="score"?configuration.score_filters:configuration.fundamental_filters,range=source?.[key]||{};
-  return `<div class="field admin-analysis-range" data-admin-analysis-range="${group}" data-admin-analysis-field="${esc(key)}"><label>${esc(adminAnalysisLabel(group,key))}</label><div class="range-pair"><input type="number" step="any" data-bound="min" value="${esc(range.min??"")}" placeholder="Mín."><input type="number" step="any" data-bound="max" value="${esc(range.max??"")}" placeholder="Máx."></div></div>`;
-}
-
-function adminConfigurationSummary(configuration={}){
-  const items=[];
-  for(const [field,range] of Object.entries(configuration.fundamental_filters||{}))items.push(`${adminAnalysisLabel("fundamental",field)}: ${nullable(range.min)?"—":`mín. ${number(range.min)}`} ${nullable(range.max)?"":`máx. ${number(range.max)}`}`.trim());
-  for(const [field,range] of Object.entries(configuration.score_filters||{}))items.push(`${adminAnalysisLabel("score",field)}: ${nullable(range.min)?"—":`mín. ${number(range.min)}`} ${nullable(range.max)?"":`máx. ${number(range.max)}`}`.trim());
-  const technical=configuration.technical_filters||{};
-  for(const [key,label] of [["daily_trend","Tendência diária"],["weekly_trend","Tendência semanal"],["monthly_trend","Tendência mensal"]])if(technical[key]&&technical[key]!=="any")items.push(`${label}: ${technical[key]==="up"?"alta":"baixa"}`);
-  if(technical.rsi14)items.push(`RSI 14: ${nullable(technical.rsi14.min)?"—":`mín. ${number(technical.rsi14.min)}`} ${nullable(technical.rsi14.max)?"":`máx. ${number(technical.rsi14.max)}`}`.trim());
-  const valuationLabels={below_graham:"Número de Graham",below_barsi_6pct:"Preço-teto por dividendos",below_relative_value:"Valuation relativo",below_economic_value:"Valor econômico"};
-  Object.entries(valuationLabels).forEach(([key,label])=>{if(configuration.valuation_flags?.[key])items.push(label);});
-  if(configuration.ibov_membership&&configuration.ibov_membership!=="any")items.push(configuration.ibov_membership==="inside"?"Somente IBOV":"Fora do IBOV");
-  return items.length?`<div class="tag-list admin-analysis-summary-tags">${items.map(item=>`<span>${esc(item)}</span>`).join("")}</div>`:'<span class="muted">Sem critérios adicionais; utiliza o universo integral da classe.</span>';
-}
-
-function adminPresetEditor(row){
-  const configuration=JSON.parse(JSON.stringify(row.owner_configuration||row.factory_configuration||{})),technical=configuration.technical_filters||{},valuation=configuration.valuation_flags||{};
-  const fundamental=(adminFundamentalFields[row.asset_type]||[]).map(key=>adminRangeEditor("fundamental",key,configuration)).join("");
-  const scores=["quality_score","value_score","growth_score","technical_score","risk_score","liquidity_score","alb_score","data_quality_score"].map(key=>adminRangeEditor("score",key,configuration)).join("");
-  const rsi=technical.rsi14||{},economic=configuration.valuation_assumptions?.economic_value||{};
-  const scenarios=economic.scenarios||{},scenario=(name,field,fallback)=>scenarios[name]?.[field]??fallback;
-  const stockUniverse=row.asset_type==="stock"?`<details class="filter-subgroup"><summary>Universo de ações</summary><div class="filter-grid compact-grid"><div class="field"><label>Participação no IBOV</label><select data-admin-analysis-value="ibov_membership"><option value="any" ${configuration.ibov_membership==="any"||!configuration.ibov_membership?"selected":""}>Qualquer</option><option value="inside" ${configuration.ibov_membership==="inside"?"selected":""}>Somente no IBOV</option><option value="outside" ${configuration.ibov_membership==="outside"?"selected":""}>Fora do IBOV</option></select></div><div class="field"><label>Porte</label><select data-admin-analysis-value="company_sizes" multiple size="3"><option value="large" ${(configuration.company_sizes||[]).includes("large")?"selected":""}>Blue Chip / Large Cap</option><option value="mid" ${(configuration.company_sizes||[]).includes("mid")?"selected":""}>Mid Cap</option><option value="small" ${(configuration.company_sizes||[]).includes("small")?"selected":""}>Small Cap</option></select></div></div></details>`:"";
-  const economicFields=row.asset_type==="stock"?`<details class="filter-subgroup"><summary>Cenários de valor econômico</summary><label class="check"><input type="checkbox" data-admin-analysis-economic="use_ttm_dividend" ${economic.use_ttm_dividend?"checked":""}> Confirmar proventos dos últimos 12 meses como D0</label><div class="filter-grid compact-grid">${[["conservative","Conservador",16,1],["base","Base",13,3],["optimistic","Otimista",11,4]].map(([key,label,ret,growth])=>`<div class="field"><label>${label}: retorno (%)</label><input type="number" step="0.1" data-admin-analysis-economic="${key}.required_return_pct" value="${esc(scenario(key,"required_return_pct",ret))}"></div><div class="field"><label>${label}: crescimento (%)</label><input type="number" step="0.1" data-admin-analysis-economic="${key}.growth_pct" value="${esc(scenario(key,"growth_pct",growth))}"></div>`).join("")}<div class="field"><label>Margem de segurança (%)</label><input type="number" min="0" max="99" step="0.1" data-admin-analysis-economic="margin_of_safety_pct" value="${esc(economic.margin_of_safety_pct??20)}"></div></div></details>`:"";
-  return `<form class="access-level-card admin-analysis-preset" data-admin-preset-form data-asset-type="${esc(row.asset_type)}" data-preset-id="${esc(row.preset_id)}" data-revision="${Number(row.revision||0)}"><div class="admin-analysis-preset-heading"><span><strong>${esc(adminAnalysisPresetLabels[row.preset_id]||row.preset_id)}</strong><small>${row.active_variant==="owner"?"Alternativa administrativa ativa":"Padrão original ativo"} • revisão ${number(row.revision||0,0)}</small></span><span class="pill ${row.active_variant==="owner"?"":"muted"}">${row.active_variant==="owner"?"Alternativa":"Original"}</span></div><details class="filter-subgroup"><summary>Padrão original preservado</summary><div class="notice info">Esta referência é imutável e sempre poderá ser restaurada.</div>${adminConfigurationSummary(row.factory_configuration)}</details><div class="admin-analysis-owner-toggle"><label class="check"><input type="checkbox" name="owner_enabled" ${row.owner_enabled?"checked":""}> Ativar esta configuração alternativa para os usuários autorizados</label><small>Desmarcar preserva a alternativa, mas volta a usar o padrão original.</small></div>${fundamental?`<details class="filter-subgroup" open><summary>Indicadores fundamentalistas</summary><div class="filter-grid">${fundamental}</div></details>`:""}${row.asset_type==="stock"||row.asset_type==="fii"?`<details class="filter-subgroup"><summary>Notas e qualidade</summary><div class="filter-grid">${scores}</div></details>`:""}<details class="filter-subgroup" open><summary>Indicadores técnicos</summary><div class="filter-grid"><div class="field"><label>RSI 14</label><div class="range-pair"><input type="number" step="any" data-admin-rsi="min" value="${esc(rsi.min??"")}" placeholder="Mín."><input type="number" step="any" data-admin-rsi="max" value="${esc(rsi.max??"")}" placeholder="Máx."></div></div><div class="field"><label>Média da tendência</label><select data-admin-analysis-value="trend_period"><option value="20" ${Number(configuration.trend_period)===20?"selected":""}>20 períodos</option><option value="21" ${Number(configuration.trend_period)!==20?"selected":""}>21 períodos</option></select></div>${[["daily_trend","Diária"],["weekly_trend","Semanal"],["monthly_trend","Mensal"]].map(([key,label])=>`<div class="field"><label>Tendência ${label.toLowerCase()}</label><select data-admin-technical="${key}"><option value="any" ${!technical[key]||technical[key]==="any"?"selected":""}>Qualquer</option><option value="up" ${technical[key]==="up"?"selected":""}>Alta</option><option value="down" ${technical[key]==="down"?"selected":""}>Baixa</option></select></div>`).join("")}<label class="check"><input type="checkbox" data-admin-technical="volume_daily_above_ma9" ${technical.volume_daily_above_ma9?"checked":""}> Volume diário acima da média 9</label><label class="check"><input type="checkbox" data-admin-technical="volume_monthly_above_ma9" ${technical.volume_monthly_above_ma9?"checked":""}> Volume mensal acima da média 9</label></div></details><details class="filter-subgroup"><summary>Metodologias de valor</summary><div class="valuation-choice-grid">${[["below_graham","Número de Graham"],["below_barsi_6pct","Preço-teto por dividendos"],["below_relative_value","Valuation relativo"],["below_economic_value","Valor econômico"]].map(([key,label])=>`<label class="check"><input type="checkbox" data-admin-valuation="${key}" ${valuation[key]?"checked":""}> ${label}</label>`).join("")}</div><div class="filter-grid compact-grid"><div class="field"><label>Combinação</label><select data-admin-valuation="logic"><option value="all" ${(valuation.logic||"all")==="all"?"selected":""}>Todos</option><option value="any" ${valuation.logic==="any"?"selected":""}>Ao menos um</option></select></div><div class="field"><label>Potencial mínimo (%)</label><input type="number" min="0" step="0.1" data-admin-valuation="minimum_upside_pct" value="${esc(valuation.minimum_upside_pct??"")}"></div></div></details>${economicFields}${stockUniverse}<div class="admin-analysis-actions"><button type="button" class="button ghost danger" data-reset-admin-preset="${esc(row.preset_id)}" data-asset-type="${esc(row.asset_type)}">Restaurar padrão original</button><button class="button primary" type="submit">Salvar configuração alternativa</button></div></form>`;
-}
-
-function adminColumnsEditor(row){
-  const available=row.available_columns||[],byId=new Map(available.map(item=>[item.id,item])),preferred=row.owner_columns||row.factory_columns||[];
-  const ordered=[];preferred.forEach(id=>{if(byId.has(id)){ordered.push(byId.get(id));byId.delete(id);}});available.forEach(item=>{if(byId.has(item.id)){ordered.push(item);byId.delete(item.id);}});
-  const active=new Set(preferred);
-  return `<form class="access-level-card admin-column-settings" data-admin-columns-form data-asset-type="${esc(row.asset_type)}" data-revision="${Number(row.revision||0)}"><div class="admin-analysis-preset-heading"><span><strong>Colunas padrão de ${esc(adminAnalysisAssetTypes.find(item=>item.id===row.asset_type)?.label||row.asset_type)}</strong><small>${row.active_variant==="owner"?"Ordem administrativa ativa":"Ordem original ativa"}</small></span><label class="check"><input type="checkbox" name="owner_enabled" ${row.owner_enabled?"checked":""}> Ativar alternativa</label></div><div class="notice info">Marque as colunas visíveis por padrão e use as setas para definir a ordem. O Ativo permanece obrigatório. Cada usuário ainda pode personalizar sua própria tabela.</div><div class="admin-column-order">${ordered.map((item,index)=>`<div class="admin-column-row" data-admin-column-id="${esc(item.id)}"><label class="check"><input type="checkbox" ${active.has(item.id)||item.always?"checked":""} ${item.always?"disabled":""}> ${esc(item.label)}</label><span><button type="button" class="icon-button" data-move-admin-column="up" aria-label="Mover ${esc(item.label)} para cima" ${index===0?"disabled":""}>↑</button><button type="button" class="icon-button" data-move-admin-column="down" aria-label="Mover ${esc(item.label)} para baixo" ${index===ordered.length-1?"disabled":""}>↓</button></span></div>`).join("")}</div><div class="admin-analysis-actions"><button type="button" class="button ghost danger" data-reset-admin-columns="${esc(row.asset_type)}">Restaurar colunas originais</button><button class="button primary" type="submit">Salvar colunas e ordem</button></div></form>`;
-}
-
-function renderAdminAnalysisSettings(root){
-  const payload=state.adminAnalysisSettings||{},type=state.adminAnalysisType;
-  const presets=(payload.presets||[]).filter(item=>item.asset_type===type),columns=(payload.columns||[]).find(item=>item.asset_type===type);
-  root.innerHTML=`<div class="notice info"><strong>Configurações seguras:</strong> os padrões homologados continuam imutáveis. A alternativa só passa a valer quando é salva e ativada; restaurar nunca apaga filtros pessoais nem históricos.</div><div class="admin-analysis-type-picker"><label for="admin-analysis-type"><strong>Classe de ativo</strong></label><select id="admin-analysis-type">${adminAnalysisAssetTypes.map(item=>`<option value="${item.id}" ${item.id===type?"selected":""}>${item.label}</option>`).join("")}</select></div>${sectionCard("Filtros Padrão, FDI e ALB",`<div class="admin-analysis-preset-list">${presets.map(adminPresetEditor).join("")}</div>`,`Padrão de fábrica ${esc(payload.factory_version||"V1.23.0 R7")}`)}${columns?sectionCard("Colunas padrão e ordem",adminColumnsEditor(columns),"A preferência individual continua prevalecendo para quem já personalizou a tabela"):""}`;
-}
-
-async function loadAdminAnalysisSettings(root,context=null){
-  const payload=await api("/admin/analysis-settings",{requestKey:"admin-analysis-settings",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:Boolean(context?.force)});
-  if(context&&!adminPanelIsCurrent(root,context))return;
-  state.adminAnalysisSettings=payload;
-  renderAdminAnalysisSettings(root);
-}
-
-function adminSetNested(target,path,value){const parts=path.split(".");let cursor=target;for(const part of parts.slice(0,-1)){cursor[part]??={};cursor=cursor[part];}cursor[parts.at(-1)]=value;}
-
-function adminPresetConfigurationFromForm(form){
-  const row=state.adminAnalysisSettings.presets.find(item=>item.asset_type===form.dataset.assetType&&item.preset_id===form.dataset.presetId),configuration=JSON.parse(JSON.stringify(row.owner_configuration||row.factory_configuration||{}));
-  configuration.asset_type=form.dataset.assetType;configuration.fundamental_filters={};configuration.score_filters={};configuration.technical_filters={...(configuration.technical_filters||{})};configuration.valuation_flags={...(configuration.valuation_flags||{})};
-  form.querySelectorAll("[data-admin-analysis-range]").forEach(group=>{const min=group.querySelector('[data-bound="min"]').value,max=group.querySelector('[data-bound="max"]').value;if(min!==""||max!==""){const target=group.dataset.adminAnalysisRange==="score"?configuration.score_filters:configuration.fundamental_filters;target[group.dataset.adminAnalysisField]={min:min===""?null:Number(min),max:max===""?null:Number(max)};}});
-  const rsiMin=form.querySelector('[data-admin-rsi="min"]')?.value||"",rsiMax=form.querySelector('[data-admin-rsi="max"]')?.value||"";if(rsiMin!==""||rsiMax!=="")configuration.technical_filters.rsi14={min:rsiMin===""?null:Number(rsiMin),max:rsiMax===""?null:Number(rsiMax)};else delete configuration.technical_filters.rsi14;
-  form.querySelectorAll("[data-admin-technical]").forEach(input=>{configuration.technical_filters[input.dataset.adminTechnical]=input.type==="checkbox"?input.checked:input.value;});
-  form.querySelectorAll("[data-admin-valuation]").forEach(input=>{const key=input.dataset.adminValuation,value=input.type==="checkbox"?input.checked:input.value;configuration.valuation_flags[key]=key==="minimum_upside_pct"?(value===""?null:Number(value)):value;});
-  const trend=form.querySelector('[data-admin-analysis-value="trend_period"]');if(trend)configuration.trend_period=Number(trend.value);
-  const ibov=form.querySelector('[data-admin-analysis-value="ibov_membership"]');if(ibov)configuration.ibov_membership=ibov.value;
-  const sizes=form.querySelector('[data-admin-analysis-value="company_sizes"]');if(sizes)configuration.company_sizes=[...sizes.selectedOptions].map(option=>option.value);
-  const economicInputs=form.querySelectorAll("[data-admin-analysis-economic]");if(economicInputs.length){const economic={scenarios:{}};economicInputs.forEach(input=>{const path=input.dataset.adminAnalysisEconomic,value=input.type==="checkbox"?input.checked:Number(input.value);if(path.includes(".")){const [scenario,field]=path.split(".");economic.scenarios[scenario]??={};economic.scenarios[scenario][field]=value;}else economic[path]=value;});configuration.valuation_assumptions={...(configuration.valuation_assumptions||{}),economic_value:economic};}
-  configuration.include_technical_columns=true;configuration.limit=Number(configuration.limit||50);
-  return configuration;
-}
-
-async function saveAdminPreset(form){
-  const button=form.querySelector('button[type="submit"]');button.disabled=true;
-  try{const configuration=adminPresetConfigurationFromForm(form);validateAnalysisRequest(configuration);await api(`/admin/analysis-settings/presets/${encodeURIComponent(form.dataset.assetType)}/${encodeURIComponent(form.dataset.presetId)}`,{method:"PUT",body:JSON.stringify({configuration,owner_enabled:Boolean(form.elements.owner_enabled.checked),expected_revision:Number(form.dataset.revision||0)})});state.analysisCatalog={};state.analysisColumnCatalog={};state.analysisResultCache.clear();toast("Configuração alternativa salva.","success");await loadAdminAnalysisSettings($("#admin-tab-content"));}catch(error){toast(error.message,"error");button.disabled=false;}
-}
-
-async function resetAdminPreset(button){
-  if(!window.confirm(`Restaurar o preset ${adminAnalysisPresetLabels[button.dataset.resetAdminPreset]||button.dataset.resetAdminPreset} ao padrão original homologado?`))return;
-  const row=state.adminAnalysisSettings.presets.find(item=>item.asset_type===button.dataset.assetType&&item.preset_id===button.dataset.resetAdminPreset);
-  try{await api(`/admin/analysis-settings/presets/${encodeURIComponent(button.dataset.assetType)}/${encodeURIComponent(button.dataset.resetAdminPreset)}/reset`,{method:"POST",body:JSON.stringify({expected_revision:Number(row?.revision||0)})});state.analysisCatalog={};state.analysisResultCache.clear();toast("Padrão original restaurado.","success");await loadAdminAnalysisSettings($("#admin-tab-content"));}catch(error){toast(error.message,"error");}
-}
-
-function refreshAdminColumnMoveButtons(form){const rows=$$("[data-admin-column-id]",form);rows.forEach((row,index)=>{const buttons=$$("[data-move-admin-column]",row);buttons.forEach(button=>button.disabled=button.dataset.moveAdminColumn==="up"?index===0:index===rows.length-1);});}
-function moveAdminColumn(button){const row=button.closest("[data-admin-column-id]"),form=button.closest("[data-admin-columns-form]"),sibling=button.dataset.moveAdminColumn==="up"?row.previousElementSibling:row.nextElementSibling;if(!sibling)return;if(button.dataset.moveAdminColumn==="up")row.parentNode.insertBefore(row,sibling);else row.parentNode.insertBefore(sibling,row);refreshAdminColumnMoveButtons(form);}
-
-async function saveAdminColumns(form){
-  const row=state.adminAnalysisSettings.columns.find(item=>item.asset_type===form.dataset.assetType),columns=$$("[data-admin-column-id]",form).filter(item=>item.querySelector('input[type="checkbox"]').checked).map(item=>item.dataset.adminColumnId),button=form.querySelector('button[type="submit"]');button.disabled=true;
-  try{await api(`/admin/analysis-settings/columns/${encodeURIComponent(form.dataset.assetType)}`,{method:"PUT",body:JSON.stringify({columns,owner_enabled:Boolean(form.elements.owner_enabled.checked),expected_revision:Number(row?.revision||0)})});state.analysisColumnCatalog={};state.analysisCatalog={};toast("Colunas padrão e ordem salvas.","success");await loadAdminAnalysisSettings($("#admin-tab-content"));}catch(error){toast(error.message,"error");button.disabled=false;}
-}
-
-async function resetAdminColumns(assetType){
-  if(!window.confirm("Restaurar as colunas visíveis e a ordem originais desta classe?"))return;
-  const row=state.adminAnalysisSettings.columns.find(item=>item.asset_type===assetType);
-  try{await api(`/admin/analysis-settings/columns/${encodeURIComponent(assetType)}/reset`,{method:"POST",body:JSON.stringify({expected_revision:Number(row?.revision||0)})});state.analysisColumnCatalog={};state.analysisCatalog={};toast("Colunas originais restauradas.","success");await loadAdminAnalysisSettings($("#admin-tab-content"));}catch(error){toast(error.message,"error");}
-}
-
-function portalField(content,path,label,{textarea=false,wide=false,list=false}={}){
-  const parts=path.split(".");let value=content;for(const part of parts)value=value?.[part];
-  if(list)value=(value||[]).join("\n");
-  const control=textarea?`<textarea rows="${wide?4:2}" data-portal-page-field="${esc(path)}" ${list?'data-portal-list="true"':""}>${esc(value||"")}</textarea>`:`<input data-portal-page-field="${esc(path)}" value="${esc(value||"")}">`;
-  return `<div class="field ${wide?"wide-action":""}"><label>${esc(label)}</label>${control}</div>`;
-}
-
-function portalPageEditor(payload){
-  const content=payload.content||{},purpose=content.purpose?.items||[];
-  return `<form id="portal-page-form" class="portal-admin-sections" data-portal-revision="${Number(payload.revision||1)}">
-    <details class="data-card" open><summary><strong>Título, marca e navegação</strong></summary><div class="filter-grid portal-edit-grid">
-      ${portalField(content,"meta.title","Título da janela",{wide:true})}${portalField(content,"meta.description","Descrição para buscadores",{textarea:true,wide:true})}
-      ${portalField(content,"brand.monogram","Monograma da marca")}${portalField(content,"brand.primary","Marca — linha principal")}${portalField(content,"brand.secondary","Marca — linha secundária")}
-      ${portalField(content,"navigation.skip","Atalho de acessibilidade")}${portalField(content,"navigation.books","Menu dos livros")}${portalField(content,"navigation.purpose","Menu da proposta")}${portalField(content,"navigation.platform","Menu da plataforma")}${portalField(content,"navigation.admin","Link de ajustes")}
-    </div></details>
-    <details class="data-card"><summary><strong>Abertura da página</strong></summary><div class="filter-grid portal-edit-grid">
-      ${portalField(content,"hero.eyebrow","Chamada curta")}${portalField(content,"hero.title","Título principal",{wide:true})}${portalField(content,"hero.intro","Texto de apresentação",{textarea:true,wide:true})}
-      ${portalField(content,"hero.primary_action","Botão da plataforma")}${portalField(content,"hero.secondary_action","Botão dos livros")}${portalField(content,"hero.proof","Temas — um por linha",{textarea:true,wide:true,list:true})}
-      ${portalField(content,"hero.collection_title","Título da coleção")}${portalField(content,"hero.collection_subtitle","Subtítulo da coleção")}
-    </div></details>
-    <details class="data-card"><summary><strong>Nossa proposta</strong></summary><div class="filter-grid portal-edit-grid">
-      ${portalField(content,"purpose.eyebrow","Chamada curta")}${portalField(content,"purpose.title","Título",{wide:true})}
-      ${purpose.map((item,index)=>`<fieldset class="portal-purpose-item wide-action"><legend>Bloco ${index+1}</legend><div class="field"><label>Número</label><input data-portal-purpose="${index}" data-portal-purpose-field="number" value="${esc(item.number)}"></div><div class="field"><label>Título</label><input data-portal-purpose="${index}" data-portal-purpose-field="title" value="${esc(item.title)}"></div><div class="field wide-action"><label>Texto</label><textarea rows="2" data-portal-purpose="${index}" data-portal-purpose-field="body">${esc(item.body)}</textarea></div></fieldset>`).join("")}
-    </div></details>
-    <details class="data-card"><summary><strong>Biblioteca e coleções</strong></summary><div class="filter-grid portal-edit-grid">
-      ${portalField(content,"books.eyebrow","Chamada curta")}${portalField(content,"books.title","Título da biblioteca",{wide:true})}${portalField(content,"books.intro","Apresentação",{textarea:true,wide:true})}
-      ${portalField(content,"books.primary_title","Coleção principal")}${portalField(content,"books.primary_subtitle","Subtítulo principal")}${portalField(content,"books.complementary_title","Coleção complementar")}${portalField(content,"books.complementary_subtitle","Subtítulo complementar")}${portalField(content,"books.details_label","Texto de abrir descrição")}
-    </div></details>
-    <details class="data-card"><summary><strong>Convite para a plataforma e rodapé</strong></summary><div class="filter-grid portal-edit-grid">
-      ${portalField(content,"platform.eyebrow","Chamada curta")}${portalField(content,"platform.title","Título",{wide:true})}${portalField(content,"platform.body","Texto",{textarea:true,wide:true})}${portalField(content,"platform.button","Botão")}
-      ${portalField(content,"footer.disclaimer","Aviso do rodapé",{textarea:true,wide:true})}${portalField(content,"footer.platform","Link da plataforma")}
-    </div></details>
-    <div class="portal-sticky-action"><span>Última alteração: ${dateTime(payload.updated_at)} por ${esc(payload.updated_by||"sistema")}</span><button class="button primary" type="submit">Salvar textos da página</button></div>
-  </form>`;
-}
-
-function portalCoverUrl(book){return book.cover_media_id?`${BASE_PATH}/portal-media/${encodeURIComponent(book.cover_media_id)}`:`${BASE_PATH}${book.fallback_cover_path||"/portal-assets/books/formacao-investidor-fundamentos.webp"}?v=1.23.2-r1`;}
-function portalBookForm(book,index,total){
-  const links=[...(book.sales_links||[])];while(links.length<3)links.push({label:"",url:""});
-  const isNew=!book.id;
-  return `<details class="access-level-card portal-book-card" data-portal-book-card="${esc(book.id||"new")}" ${isNew?"open":""}><summary><span><strong>${esc(book.title||"Adicionar novo livro")}</strong><small>${isNew?"Cadastre a obra, a capa e os links de venda":`${book.collection==="primary"?"Coleção principal":"Obra complementar"} • ${book.is_published?"Publicado":"Oculto"}`}</small></span>${isNew?"":`<img class="portal-book-thumb" src="${esc(portalCoverUrl(book))}" alt="">`}</summary><form class="portal-book-form filter-grid" data-portal-book-form="${esc(book.id||"")}">
-    <div class="field"><label>Título</label><input name="title" required maxlength="255" value="${esc(book.title||"")}"></div><div class="field"><label>Identificador</label><input name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" value="${esc(book.slug||"")}" placeholder="nome-do-livro"></div>
-    <div class="field"><label>Coleção</label><select name="collection"><option value="primary" ${book.collection==="primary"?"selected":""}>Coleção principal</option><option value="complementary" ${book.collection!=="primary"?"selected":""}>Obras complementares</option></select></div><div class="field"><label>Chamada curta</label><input name="kicker" maxlength="180" value="${esc(book.kicker||"")}"></div>
-    <div class="field wide-action"><label>Resumo exibido</label><textarea name="summary" rows="2" maxlength="1500">${esc(book.summary||"")}</textarea></div><div class="field wide-action"><label>Descrição completa</label><textarea name="description" rows="3" maxlength="5000">${esc(book.description||"")}</textarea></div>
-    <div class="field"><label>Descrição acessível da capa</label><input name="alt_text" required maxlength="500" value="${esc(book.alt_text||"")}"></div><div class="field"><label>Nova capa (PNG, JPG ou WebP; até 4 MB)</label><input name="cover_file" type="file" accept="image/png,image/jpeg,image/webp"></div>
-    <div class="field"><label>Destaque no topo</label><select name="hero_position"><option value="">Não destacar</option>${[1,2,3].map(value=>`<option value="${value}" ${Number(book.hero_position)===value?"selected":""}>Posição ${value}</option>`).join("")}</select></div><label class="check portal-book-published"><input name="is_published" type="checkbox" ${book.is_published!==false?"checked":""}> Livro visível na página</label>
-    <fieldset class="portal-sales-fieldset wide-action"><legend>Links de venda — até três</legend>${links.map((link,position)=>`<div class="portal-sales-row"><div class="field"><label>Descrição ${position+1}</label><input name="sales_label_${position}" maxlength="100" value="${esc(link.label||"")}" placeholder="Ex.: Comprar na Amazon"></div><div class="field"><label>Link HTTPS ${position+1}</label><input name="sales_url_${position}" type="url" value="${esc(link.url||"")}" placeholder="https://..."></div></div>`).join("")}</fieldset>
-    <div class="portal-book-actions wide-action">${isNew?"":`<button type="button" class="button ghost" data-portal-book-move="up" data-portal-book-id="${esc(book.id)}" ${index===0?"disabled":""}>Subir</button><button type="button" class="button ghost" data-portal-book-move="down" data-portal-book-id="${esc(book.id)}" ${index===total-1?"disabled":""}>Descer</button><button type="button" class="button ghost danger" data-portal-book-delete="${esc(book.id)}">Excluir</button>`}<button class="button primary" type="submit">${isNew?"Adicionar livro":"Salvar livro"}</button></div>
-  </form></details>`;
-}
-
-async function loadAdminPortal(root,context){
-  const payload=await api("/admin/portal",{requestKey:"admin-portal",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force});
-  if(!adminPanelIsCurrent(root,context))return;
-  state.portalAdmin=payload;
-  const books=payload.books||[];
-  root.innerHTML=`<div class="notice info"><strong>Publicação segura:</strong> as alterações salvas aparecem na página inicial sem substituir a plataforma. Se o banco ficar indisponível, a versão estática atual permanece como reserva.</div>${sectionCard("Textos da página inicial",portalPageEditor(payload),"Edite os campos e salve ao final")}${sectionCard("Livros publicados e futuros",`<div class="portal-book-list">${books.map((book,index)=>portalBookForm(book,index,books.length)).join("")}</div>${portalBookForm({collection:"complementary",is_published:true,sales_links:[]},books.length,books.length+1)}`,`${books.length} livro(s) cadastrado(s); capas aceitas em PNG, JPG e WebP`)}`;
-}
-
-function setPortalPageValue(target,path,value){const parts=path.split(".");let cursor=target;parts.slice(0,-1).forEach(part=>cursor=cursor[part]);cursor[parts.at(-1)]=value;}
-async function savePortalPage(form){
-  const content=JSON.parse(JSON.stringify(state.portalAdmin.content||{}));
-  form.querySelectorAll("[data-portal-page-field]").forEach(input=>setPortalPageValue(content,input.dataset.portalPageField,input.dataset.portalList?input.value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean):input.value));
-  form.querySelectorAll("[data-portal-purpose]").forEach(input=>{content.purpose.items[Number(input.dataset.portalPurpose)][input.dataset.portalPurposeField]=input.value;});
-  const button=form.querySelector('button[type="submit"]');button.disabled=true;
-  try{await api("/admin/portal/page",{method:"PUT",body:JSON.stringify({patch:content,expected_revision:Number(form.dataset.portalRevision)})});toast("Textos da página inicial atualizados.","success");await loadAdmin();}
-  catch(error){toast(error.message,"error");button.disabled=false;}
-}
-
-function readPortalFile(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(new Error("Não foi possível ler a imagem selecionada."));reader.readAsDataURL(file);});}
-async function portalBookPayload(form){
-  const values={title:form.elements.title.value,slug:form.elements.slug.value.trim().toLowerCase(),collection:form.elements.collection.value,kicker:form.elements.kicker.value,summary:form.elements.summary.value,description:form.elements.description.value,alt_text:form.elements.alt_text.value,hero_position:form.elements.hero_position.value||null,is_published:form.elements.is_published.checked};
-  const file=form.elements.cover_file.files?.[0];if(file){if(file.size>4*1024*1024)throw new Error("A capa deve ter no máximo 4 MB.");const media=await api("/admin/portal/media",{method:"POST",body:JSON.stringify({filename:file.name,data_url:await readPortalFile(file)})});values.cover_media_id=media.id;}
-  const sales_links=[];for(let index=0;index<3;index+=1){const label=form.elements[`sales_label_${index}`].value.trim(),url=form.elements[`sales_url_${index}`].value.trim();if(label||url){if(!label||!url)throw new Error(`Preencha a descrição e o link de venda ${index+1}.`);sales_links.push({label,url});}}
-  return {values,sales_links};
-}
-
-async function savePortalBook(form){
-  const button=form.querySelector('button[type="submit"]');button.disabled=true;
-  try{const payload=await portalBookPayload(form),id=form.dataset.portalBookForm;await api(id?`/admin/portal/books/${encodeURIComponent(id)}`:"/admin/portal/books",{method:id?"PUT":"POST",body:JSON.stringify(payload)});toast(id?"Livro atualizado.":"Livro adicionado.","success");await loadAdmin();}
-  catch(error){toast(error.message,"error");button.disabled=false;}
-}
-
-async function deletePortalBook(id){if(!window.confirm("Excluir este livro e seus links da página inicial? A capa será removida apenas se nenhum outro livro a utilizar."))return;try{await api(`/admin/portal/books/${encodeURIComponent(id)}`,{method:"DELETE"});toast("Livro excluído.","success");await loadAdmin();}catch(error){toast(error.message,"error");}}
-async function movePortalBook(id,direction){const books=[...(state.portalAdmin?.books||[])],index=books.findIndex(book=>book.id===id),target=index+(direction==="up"?-1:1);if(index<0||target<0||target>=books.length)return;[books[index],books[target]]=[books[target],books[index]];try{await api("/admin/portal/books/order",{method:"PUT",body:JSON.stringify({ordered_ids:books.map(book=>book.id)})});toast("Ordem dos livros atualizada.","success");await loadAdmin();}catch(error){toast(error.message,"error");}}
-
-async function loadAdmin(force=false) {
-  const panelStarted=performance.now();
-  const root=$("#admin-tab-content"),panelKey=state.tabs.admin;
-  const context={panelKey,navigationSerial:state.navigationSerial,requestSerial:++state.adminRequestSerial,force:Boolean(force)};
-  const samePanel=root.dataset.panelKey===panelKey&&root.childElementCount>0;root.dataset.panelKey=panelKey;
-  let panelSucceeded=false;
-  if(!samePanel)root.innerHTML=loadingCards(6);else root.classList.add("panel-refreshing");
-  try {
-    if(panelKey==="portal")await loadAdminPortal(root,context);
-    else if(panelKey==="levels")await loadAccessLevels(root,context);
-    else if(panelKey==="users")await loadAdminUsers(root,context);
-    else if(panelKey==="analysis-settings")await loadAdminAnalysisSettings(root,context);
-    else if(panelKey==="data")await loadAdminUpdates(root,context);
-    else if(panelKey==="quality")await loadAdminQuality(root,context);
-    else if(panelKey==="jobs")await loadAdminJobs(root,context);
-    else if(panelKey==="operations")await loadAdminOperations(root,context);
-    else {
-      const [health,db,counts]=await Promise.all([api("/health",{requestKey:"admin-health",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}),api("/health/db",{requestKey:"admin-health-db",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force}),api("/debug/db-counts",{requestKey:"admin-db-counts",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force})]);
-      if(!adminPanelIsCurrent(root,context))return;
-      root.innerHTML=`<div class="metric-grid">${metricCard("Aplicação",health.status==="ok"?"Operacional":"Atenção",`Versão ${health.version}`)}${metricCard("Banco de dados",db.status==="ok"?"Conectado":"Indisponível",db.database||"")}${metricCard("Hospedagem","Oracle Cloud",health.environment||"Produção")}${metricCard("Domínio","HTTPS ativo","Conexão segura")}</div>${sectionCard("Registros principais",`<div class="detail-list">${Object.entries(counts).map(([key,value])=>`<div><span>${esc(key.replaceAll("_"," "))}</span><strong>${number(value,0)}</strong></div>`).join("")}</div>`,`Consulta somente leitura`)}`;
-    }
-    panelSucceeded=true;
-  } catch(error) { if(error.name!=="AbortError"&&adminPanelIsCurrent(root,context))root.innerHTML=errorState(error); }
-  finally {if(adminPanelIsCurrent(root,context)){root.classList.remove("panel-refreshing");reportPanelPerformance("admin",panelStarted,{success:panelSucceeded,cacheState:samePanel?(panelSucceeded?"warm":"stale"):"cold"});}}
-}
+async function loadAdmin(...args){return loadFeaturePanel("admin","loadAdmin","#admin-tab-content",args);}
+async function renderAdminAnalysisSettings(...args){return invokeFeature("admin","renderAdminAnalysisSettings",...args);}
+async function saveAdminPreset(...args){return invokeFeature("admin","saveAdminPreset",...args);}
+async function resetAdminPreset(...args){return invokeFeature("admin","resetAdminPreset",...args);}
+async function saveAdminColumns(...args){return invokeFeature("admin","saveAdminColumns",...args);}
+async function resetAdminColumns(...args){return invokeFeature("admin","resetAdminColumns",...args);}
+async function moveAdminColumn(...args){return invokeFeature("admin","moveAdminColumn",...args);}
+async function deletePortalBook(...args){return invokeFeature("admin","deletePortalBook",...args);}
+async function movePortalBook(...args){return invokeFeature("admin","movePortalBook",...args);}
+async function savePortalPage(...args){return invokeFeature("admin","savePortalPage",...args);}
+async function savePortalBook(...args){return invokeFeature("admin","savePortalBook",...args);}
+async function saveAccessLevel(...args){return invokeFeature("admin","saveAccessLevel",...args);}
+async function createAccessLevel(...args){return invokeFeature("admin","createAccessLevel",...args);}
+async function saveUserLevel(...args){return invokeFeature("admin","saveUserLevel",...args);}
+async function bulkAssignAccessLevel(...args){return invokeFeature("admin","bulkAssignAccessLevel",...args);}
+async function clearUserOverrides(...args){return invokeFeature("admin","clearUserOverrides",...args);}
+async function runAlertMonitorNow(...args){return invokeFeature("admin","runAlertMonitorNow",...args);}
+async function retryAdminJob(...args){return invokeFeature("admin","retryAdminJob",...args);}
+async function applyAdminUserFilters(...args){return invokeFeature("admin","applyAdminUserFilters",...args);}
+async function changeAdminUsersPage(...args){return invokeFeature("admin","changeAdminUsersPage",...args);}
+async function syncMarketCatalog(...args){return invokeFeature("admin","syncMarketCatalog",...args);}
+async function saveUserAccess(...args){return invokeFeature("admin","saveUserAccess",...args);}
 
 function dividendEventLabel(value){return ({dividend:"Dividendo",jcp:"Juros sobre capital próprio",income:"Rendimento",capital_return:"Restituição de capital",cash_distribution:"Provento em dinheiro"})[value]||value||"Provento";}
 
@@ -2844,129 +1811,6 @@ async function renderPortfolioDividends(root){
   ]):'<div class="empty-state"><strong>Nenhum provento confirmado no período</strong>A consulta usa somente eventos oficiais dos ativos desta carteira.</div>';
   const update=payload.update||{};
   root.innerHTML=`<div class="metric-grid summary-grid">${metricCard("Eventos",number(rows.length,0),"No período consultado")}${metricCard("Total indicativo",money(estimated),`${known.length} evento(s) com valor e posição`) }${metricCard("Fonte","B3","Empresas Listadas")}${metricCard("Última atualização",update.last_updated_at?dateTime(update.last_updated_at):"Preparando",update.status||"")}</div>${sectionCard("Calendário oficial de proventos",table,payload.gross_amount_note||"Valores brutos e indicativos; confirme na corretora.")}`;
-}
-
-async function saveAccessLevel(form){
-  const permissions={};form.querySelectorAll("[data-level-permission]").forEach(input=>permissions[input.dataset.levelPermission]=input.checked);
-  const limits={};form.querySelectorAll("[data-level-limit]").forEach(input=>limits[input.dataset.levelLimit]=Number(input.value));
-  const payload={name:form.elements.name?.value,description:form.elements.description?.value||null,is_active:Boolean(form.elements.is_active?.checked),permissions,limits};
-  const button=form.querySelector('button[type="submit"]');if(button){button.disabled=true;button.textContent="Salvando…";}
-  try{const result=await api(`/access/levels/${encodeURIComponent(form.dataset.accessLevelForm)}`,{method:"PUT",body:JSON.stringify(payload)});toast(`Nível atualizado para ${result.member_count||0} usuário(s).`,"success");await loadAdmin();}
-  catch(error){toast(error.message,"error");if(button){button.disabled=false;button.textContent="Salvar regras deste nível";}}
-}
-
-async function createAccessLevel(form){
-  const values=Object.fromEntries(new FormData(form));
-  try{await api("/access/levels",{method:"POST",body:JSON.stringify({slug:values.slug,name:values.name,description:values.description||null,is_active:true,permissions:{},limits:{}})});toast("Novo nível criado. Agora configure suas permissões.","success");await loadAdmin();}
-  catch(error){toast(error.message,"error");}
-}
-
-async function saveUserLevel(email){
-  const row=$(`[data-user-row="${CSS.escape(email)}"]`);if(!row)return;
-  const level=row.querySelector("[data-user-level]")?.value,status=row.querySelector("[data-user-status]")?.value;
-  const button=row.querySelector("[data-save-user-level]");button.disabled=true;
-  try{
-    if(level&&level!=="legacy"&&level!==row.dataset.currentLevel)await api(`/access/users/${encodeURIComponent(email)}/level`,{method:"PUT",body:JSON.stringify({level_slug:level,clear_overrides:true})});
-    if(status&&status!==row.dataset.currentStatus)await api(`/access/users/${encodeURIComponent(email)}`,{method:"PUT",body:JSON.stringify({status})});
-    toast("Usuário atualizado.","success");await loadAdmin();
-  }catch(error){toast(error.message,"error");button.disabled=false;}
-}
-
-async function bulkAssignAccessLevel(){
-  const emails=$$("[data-user-select]:checked").map(input=>input.dataset.userSelect),level=$("#bulk-access-level")?.value;
-  if(!emails.length){toast("Selecione ao menos um usuário desta página.","error");return;}
-  if(!window.confirm(`Atribuir o nível selecionado a ${emails.length} usuário(s)? Ajustes individuais anteriores serão removidos.`))return;
-  try{const result=await api("/access/users/level/bulk",{method:"PUT",body:JSON.stringify({emails,level_slug:level,clear_overrides:true})});toast(`${result.updated_count||0} usuário(s) atualizado(s).`,"success");await loadAdmin();}
-  catch(error){toast(error.message,"error");}
-}
-
-async function clearUserOverrides(email){
-  if(!window.confirm("Remover os ajustes individuais e voltar a herdar somente as regras do nível?"))return;
-  try{await api(`/access/users/${encodeURIComponent(email)}/overrides`,{method:"DELETE"});toast("Ajustes individuais removidos.","success");await loadAdmin();}
-  catch(error){toast(error.message,"error");}
-}
-
-async function runAlertMonitorNow(button){
-  button.disabled=true;const root=$("#alert-monitor-result");
-  try{const result=await api("/alerts/monitor/run",{method:"POST"});if(root){root.classList.remove("hidden");root.textContent=`Verificação concluída: ${result.checked||0} alerta(s), ${result.triggered||0} disparado(s), ${result.delivered||0} e-mail(s) entregue(s) e ${result.quote_failures||0} cotação(ões) indisponível(is).`;}toast("Monitor de alertas executado.","success");}
-  catch(error){toast(error.message,"error");}
-  finally{button.disabled=false;}
-}
-
-async function retryAdminJob(button){
-  button.disabled=true;
-  try{await api(`/admin/jobs/${encodeURIComponent(button.dataset.retryAdminJob)}/retry`,{method:"POST"});toast("Trabalho reenfileirado.","success");scheduleNavigationTask(()=>loadAdmin(true),1200);}
-  catch(error){toast(error.message,"error");button.disabled=false;}
-}
-
-function applyAdminUserFilters(form){
-  const values=Object.fromEntries(new FormData(form));state.adminUsersQuery=String(values.q||"").trim();state.adminUsersLevel=values.level||"";state.adminUsersStatus=values.status||"";state.adminUsersOffset=0;loadAdmin();
-}
-
-function changeAdminUsersPage(direction){state.adminUsersOffset=Math.max(0,state.adminUsersOffset+(direction==="next"?100:-100));loadAdmin();}
-
-async function syncMarketCatalog(assetType, includeTechnicals) {
-  const status=$("#market-sync-status");
-  const buttons=$$("[data-market-sync]");
-  buttons.forEach(button=>button.disabled=true);
-  if(status){status.classList.remove("hidden");status.textContent="Enviando a atualização para a fila…";}
-  try {
-    const result=await api("/data/sync-market",{method:"POST",body:JSON.stringify({asset_type:assetType,include_technicals:includeTechnicals})});
-    const jobId=result.job?.id;
-    if(!jobId)throw new Error("A fila não confirmou a solicitação.");
-    toast(result.scheduled?"Atualização iniciada em segundo plano.":"Esta atualização já estava na fila.","success");
-    for(let attempt=0;attempt<300;attempt++){
-      const job=await api(`/data/jobs/${encodeURIComponent(jobId)}`,{bypassCache:true});
-      if(status){
-        const progress=job.progress_total?` ${number(job.progress_current||0,0)} de ${number(job.progress_total,0)}.`:"";
-        status.textContent=`${jobStatusLabel(job.status)}.${progress} ${job.message||""}`.trim();
-      }
-      if(job.status==="succeeded"){
-        const count=job.result?.catalog_count;
-        state.analysisResultCache.clear();
-        toast(nullable(count)?"Catálogo atualizado.":`Catálogo atualizado: ${number(count,0)} ativo(s).`,"success");
-        await loadAdmin(true);
-        return;
-      }
-      if(["failed","cancelled"].includes(job.status))throw new Error(job.last_error_message||job.last_error_code||"A atualização não foi concluída.");
-      await new Promise(resolve=>setTimeout(resolve,3000));
-    }
-    if(status)status.textContent="A atualização continua em segundo plano. Acompanhe pela aba Trabalhos.";
-    toast("A atualização continua em segundo plano.","success");
-    buttons.forEach(button=>button.disabled=false);
-  } catch(error) {
-    if(status){status.textContent=error.message;status.classList.remove("hidden");}
-    toast(error.message,"error");
-    buttons.forEach(button=>button.disabled=false);
-  }
-}
-
-async function saveUserAccess(email) {
-  const row=$(`[data-user-row="${CSS.escape(email)}"]`);
-  if(!row)return;
-  const value=name=>row.querySelector(`[data-user-field="${name}"]`);
-  const canRun=Boolean(value("can_run_backtests")?.checked);
-  const canViewFinances=Boolean(value("can_view_finances")?.checked);
-  const canWriteFinances=Boolean(value("can_write_finances")?.checked);
-  const payload={
-    status:value("status")?.value,
-    can_use_fdi_analysis:Boolean(value("can_use_fdi_analysis")?.checked),
-    can_use_alb_analysis:Boolean(value("can_use_alb_analysis")?.checked),
-    can_use_graham_valuation:Boolean(value("can_use_graham_valuation")?.checked),
-    can_use_dividend_ceiling:Boolean(value("can_use_dividend_ceiling")?.checked),
-    can_use_relative_valuation:Boolean(value("can_use_relative_valuation")?.checked),
-    can_use_economic_valuation:Boolean(value("can_use_economic_valuation")?.checked),
-    can_view_finances:canViewFinances||canWriteFinances,
-    can_write_finances:canWriteFinances,
-    can_run_backtests:canRun,
-    can_view_backtests:canRun,
-    backtest_asset_limit:canRun?Number(value("backtest_asset_limit")?.value||1):0,
-    backtest_daily_limit:canRun?Number(value("backtest_daily_limit")?.value||1):0,
-    backtest_strategy_limit:canRun?Number(value("backtest_strategy_limit")?.value||1):0,
-    backtest_cooldown_seconds:60,
-  };
-  try{await api(`/access/users/${encodeURIComponent(email)}`,{method:"PUT",body:JSON.stringify(payload)});toast("Permissões atualizadas.","success");loadAdmin();}
-  catch(error){toast(error.message,"error");}
 }
 
 function loadCurrentView() {
@@ -3005,7 +1849,11 @@ function chooseSearchResult(item) {
 }
 
 function bindEvents() {
-  $("#primary-nav").addEventListener("click", event=>{ const button=event.target.closest("[data-view]"); if(button) setView(button.dataset.view); });
+  const primaryNav=$("#primary-nav");
+  primaryNav.addEventListener("click", event=>{ const button=event.target.closest("[data-view]"); if(button) setView(button.dataset.view); });
+  const prefetchFromNavigation=event=>{const button=event.target.closest?.("[data-view]"),feature=FEATURE_BY_VIEW[button?.dataset.view];if(feature)prefetchFeature(feature);};
+  primaryNav.addEventListener("pointerover",prefetchFromNavigation,{passive:true});
+  primaryNav.addEventListener("focusin",prefetchFromNavigation);
   $("#collapse-sidebar").addEventListener("click",()=>document.body.classList.toggle("sidebar-collapsed"));
   $("#mobile-menu").addEventListener("click",()=>document.body.classList.toggle("mobile-nav-open"));
   $$(".tabs").forEach(tabs=>tabs.addEventListener("click",event=>{const button=event.target.closest(".tab");if(button&&activateTab(tabs.dataset.tabs,button.dataset.tab)&&tabs.dataset.tabs==="analysis")updateFilterAvailability();}));

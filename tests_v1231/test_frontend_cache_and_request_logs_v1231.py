@@ -1,4 +1,5 @@
 from __future__ import annotations
+from frontend_test_support import browser_source
 
 from pathlib import Path
 import re
@@ -13,7 +14,7 @@ WEB_ROOT = ROOT / "investment_engine" / "web"
 
 
 def test_normal_navigation_only_ensures_stale_or_unavailable_market_data():
-    script = (WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
 
     assert 'force?"/market-dashboard/refresh":"/market-dashboard/ensure"' in script
     assert 'const needsEnsure=requiredGroups.some' in script
@@ -34,10 +35,10 @@ def test_static_references_are_versioned_and_receive_immutable_cache_headers():
     platform = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
     portal = (WEB_ROOT / "portal.html").read_text(encoding="utf-8")
     portal_script = (WEB_ROOT / "portal-assets" / "portal.js").read_text(encoding="utf-8")
-    app_script = (WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    app_script = browser_source(Path(__file__).resolve().parents[1])
 
-    assert "../ui-assets/app.css?v=1.23.7-r1" in platform
-    assert "../ui-assets/app.js?v=1.23.7-r1" in platform
+    assert "../ui-assets/app.css?v=1.23.7-r2" in platform
+    assert "../ui-assets/app.js?v=1.23.7-r2" in platform
     assert "./portal-assets/portal.css?v=1.23.2-r1" in portal
     assert "./portal-assets/portal.js?v=1.23.2-r1" in portal
     portal_asset_references = [
@@ -51,8 +52,8 @@ def test_static_references_are_versioned_and_receive_immutable_cache_headers():
 
     client = TestClient(app, base_url="http://localhost")
     for path in (
-        "/ui-assets/app.css?v=1.23.7-r1",
-        "/ui-assets/app.js?v=1.23.7-r1",
+        "/ui-assets/app.css?v=1.23.7-r2",
+        "/ui-assets/app.js?v=1.23.7-r2",
         "/portal-assets/portal.css?v=1.23.2-r1",
         "/portal-assets/books/formacao-investidor-fundamentos.webp?v=1.23.2-r1",
     ):

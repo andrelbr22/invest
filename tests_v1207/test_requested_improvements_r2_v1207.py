@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -72,7 +73,7 @@ def test_backtest_trend_supports_approved_moving_averages():
 
 
 def test_r2_interface_exposes_requested_controls_and_hides_30_year_curve():
-    script = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     html = (ROOT / "investment_engine/web/index.html").read_text(encoding="utf-8")
     backend = "\n".join([
         (ROOT / "investment_engine/api/app.py").read_text(encoding="utf-8"),

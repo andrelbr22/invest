@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -40,7 +41,7 @@ def test_interest_curve_history_is_daily_and_updates_same_reference():
 
 
 def test_market_ui_supports_curve_overlays_common_base_and_risk_metrics():
-    script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     for text in (
         "interest-curve/history", "Somente atual", "+ 3 anteriores",
         "Início comum", "Histórico próprio", "annualizedVolatility",

@@ -1,4 +1,5 @@
 from pathlib import Path
+from frontend_test_support import browser_source
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -165,7 +166,7 @@ def test_owner_can_create_level_assign_it_and_list_effective_user_access(monkeyp
 
 
 def test_admin_ui_exposes_every_permission_and_every_scheduled_update():
-    script = SCRIPT.read_text(encoding="utf-8")
+    script = browser_source(ROOT)
     for permission in PERMISSION_FIELDS:
         assert permission in script
     for refresh_key in REFRESH_SCHEDULES:
@@ -175,7 +176,7 @@ def test_admin_ui_exposes_every_permission_and_every_scheduled_update():
 
 
 def test_complete_alert_ui_and_exact_monitoring_intervals_are_exposed():
-    script = SCRIPT.read_text(encoding="utf-8")
+    script = browser_source(ROOT)
     assert B3_ALERT_INTERVAL_MINUTES == 5
     assert MARKET_ALERT_INTERVAL_MINUTES == 30
     for marker in (
@@ -191,7 +192,7 @@ def test_complete_alert_ui_and_exact_monitoring_intervals_are_exposed():
 
 
 def test_recommendations_screen_and_first_authenticated_access_refresh_are_wired():
-    script = SCRIPT.read_text(encoding="utf-8")
+    script = browser_source(ROOT)
     initialize = script.split("async function initialize()", 1)[1]
     assert '/insights/news/refresh-daily' in initialize
     assert 'session.access?.can_view_news_insights' in initialize

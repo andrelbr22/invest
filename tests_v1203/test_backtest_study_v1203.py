@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -67,14 +68,14 @@ def test_study_query_deduplicates_in_database_and_omits_heavy_payloads():
 
 
 def test_study_interface_uses_returned_score_and_opens_configurations():
-    script = (Path(__file__).resolve().parents[1] / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     assert "r.study_score" in script
     assert "data-study-strategy" in script
     assert "/configurations" in script
 
 
 def test_study_interface_translates_nested_filters_instead_of_showing_raw_json():
-    script = (Path(__file__).resolve().parents[1] / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     assert 'daily_trend:"Tendência diária"' in script
     assert 'sma_rising:"Média móvel simples em alta"' in script
     assert 'return "Não utilizado neste teste"' in script

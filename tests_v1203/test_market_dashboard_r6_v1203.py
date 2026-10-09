@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 
 
@@ -5,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_comparison_r6_has_calendar_axis_and_custom_period_controls():
-    script = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     styles = (ROOT / "investment_engine/web/static/app.css").read_text(encoding="utf-8")
 
     assert 'comparisonCustom: false' in script
@@ -21,7 +22,7 @@ def test_comparison_r6_has_calendar_axis_and_custom_period_controls():
 
 
 def test_comparison_r6_preserves_quick_periods_and_refresh():
-    script = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
 
     for label in ("6 meses", "1 ano", "2 anos", "3 anos", "5 anos", "10 anos", "15 anos", "20 anos"):
         assert f'"{label}"' in script

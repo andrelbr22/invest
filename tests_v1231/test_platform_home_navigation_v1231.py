@@ -1,4 +1,5 @@
 from __future__ import annotations
+from frontend_test_support import browser_source
 
 from html.parser import HTMLParser
 from pathlib import Path
@@ -54,7 +55,7 @@ def test_relative_home_link_preserves_production_and_staging_environments():
 
 def test_home_link_remains_visible_on_small_screens_and_is_not_a_logout_action():
     styles = (WEB_ROOT / "static" / "app.css").read_text(encoding="utf-8")
-    script = (WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
 
     assert ".topbar-home-link {" in styles
     assert ".topbar-home-link:focus-visible" in styles

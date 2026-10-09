@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 
 
@@ -6,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_self_hosted_web_assets_are_complete():
     index = (ROOT / "investment_engine" / "web" / "index.html").read_text(encoding="utf-8")
-    script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     styles = (ROOT / "investment_engine" / "web" / "static" / "app.css").read_text(encoding="utf-8")
     assert "Painel de Mercado" in index
     assert "Mercado e Análises" in index
@@ -32,7 +33,7 @@ def test_runtime_and_dependency_files_have_no_legacy_frontend_reference():
 
 
 def test_dashboard_uses_tabs_and_isolated_async_requests():
-    script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     assert "loadMarket" in script
     assert "loadHeadlines" in script
     assert "pollMarket" in script

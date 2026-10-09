@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 
 from sqlalchemy import create_engine, select
@@ -153,7 +154,7 @@ def test_dispatch_routes_manual_validation_back_to_staging():
 
 def test_workflow_and_panel_keep_scheduled_production_separate_from_test_retry():
     workflow = (ROOT / ".github/workflows/backtests-semanais.yml").read_text(encoding="utf-8")
-    script = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     assert "github.event_name == 'schedule'" in workflow
     assert "formacaodoinvestidor.com.br/testefdi" in workflow
     assert "data-retry-official-job" in script

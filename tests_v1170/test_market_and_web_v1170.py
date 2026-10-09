@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -28,7 +29,7 @@ def test_ifix_falls_back_to_xfix_and_keeps_all_standard_windows():
 
 def test_asset_dialog_and_analysis_controls_are_complete():
     index = (ROOT / "investment_engine" / "web" / "index.html").read_text(encoding="utf-8")
-    script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     styles = (ROOT / "investment_engine" / "web" / "static" / "app.css").read_text(encoding="utf-8")
     assert 'id="asset-dialog-content" class="asset-dialog-content"' in index
     assert "94dvh" in styles

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
+
+from frontend_test_support import browser_source
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -137,7 +140,7 @@ def test_portal_rejects_stale_revision_unsafe_link_and_fourth_link(monkeypatch):
 def test_portal_interface_contains_dynamic_hydration_and_admin_controls():
     portal = open("investment_engine/web/portal.html", encoding="utf-8").read()
     portal_js = open("investment_engine/web/portal-assets/portal.js", encoding="utf-8").read()
-    app_js = open("investment_engine/web/static/app.js", encoding="utf-8").read()
+    app_js = browser_source(Path(__file__).resolve().parents[1])
     assert "portal-assets/portal.js" in portal
     assert "/public/portal" in portal_js
     assert "figure.hidden = !book" in portal_js

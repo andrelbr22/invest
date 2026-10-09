@@ -1,4 +1,5 @@
 from __future__ import annotations
+from frontend_test_support import browser_source
 
 import importlib
 import re
@@ -97,8 +98,8 @@ def test_platform_redirect_is_relative_and_spa_has_prefix_safe_assets(client):
     assert response.status_code == 200
     assert 'id="app-shell"' in response.text
     assert 'href="../favicon.svg"' in response.text
-    assert 'href="../ui-assets/app.css?v=1.23.7-r1"' in response.text
-    assert 'src="../ui-assets/app.js?v=1.23.7-r1"' in response.text
+    assert 'href="../ui-assets/app.css?v=1.23.7-r2"' in response.text
+    assert 'src="../ui-assets/app.js?v=1.23.7-r2"' in response.text
 
     head = client.head("/plataforma/")
     assert head.status_code == 200
@@ -173,7 +174,7 @@ def test_caddy_and_browser_paths_keep_portal_and_platform_inside_testefdi():
     ).read_text(encoding="utf-8")
     portal = (WEB_ROOT / "portal.html").read_text(encoding="utf-8")
     spa = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
-    browser = (WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    browser = browser_source(Path(__file__).resolve().parents[1])
 
     assert "redir /testefdi /testefdi/ 308" in caddy
     assert "redir /testefdi/plataforma /testefdi/plataforma/ 308" in caddy
@@ -183,8 +184,8 @@ def test_caddy_and_browser_paths_keep_portal_and_platform_inside_testefdi():
     # Relative URLs resolve correctly both at / and after Caddy strips /testefdi/.
     assert 'href="./portal-assets/portal.css?v=1.23.2-r1"' in portal
     assert 'href="./plataforma/"' in portal
-    assert 'href="../ui-assets/app.css?v=1.23.7-r1"' in spa
-    assert 'src="../ui-assets/app.js?v=1.23.7-r1"' in spa
+    assert 'href="../ui-assets/app.css?v=1.23.7-r2"' in spa
+    assert 'src="../ui-assets/app.js?v=1.23.7-r2"' in spa
     assert 'location.pathname === "/testefdi"' in browser
     assert 'const PLATFORM_PATH = `${BASE_PATH}/plataforma/`' in browser
     assert "encodeURIComponent(PLATFORM_PATH)" in browser

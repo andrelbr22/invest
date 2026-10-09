@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -146,7 +147,7 @@ def test_news_manual_refresh_uses_the_same_cooldown():
 
 
 def test_interface_shows_update_metadata_and_worker_isolated_from_web_process():
-    script = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     compose = (ROOT / "docker-compose.oracle-web.yml").read_text(encoding="utf-8")
     api_source = (ROOT / "investment_engine/api/app.py").read_text(encoding="utf-8")
     handler_source = (ROOT / "investment_engine/core/jobs/handlers.py").read_text(encoding="utf-8")

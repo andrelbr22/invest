@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from datetime import date
 from pathlib import Path
 
@@ -72,7 +73,7 @@ def test_finance_rejects_category_or_status_incompatible_with_kind():
 
 def test_finance_navigation_and_forms_are_present():
     html = (ROOT / "investment_engine" / "web" / "index.html").read_text(encoding="utf-8")
-    script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     for text in (
         'data-view="finances"', "Minhas Finanças", 'data-tabs="finances"',
         "Visão mensal", "Planilha mensal", "finance-transaction-form",

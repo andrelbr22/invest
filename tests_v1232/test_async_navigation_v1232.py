@@ -1,4 +1,5 @@
 from __future__ import annotations
+from frontend_test_support import browser_source
 
 from datetime import datetime, timezone
 from importlib import import_module
@@ -98,7 +99,7 @@ def test_worker_owns_all_formerly_synchronous_network_work():
 
 
 def test_admin_frontend_tracks_async_market_sync_instead_of_waiting_on_provider():
-    script = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     assert "/data/sync-market" in script
     assert "/data/jobs/" in script
     assert "job.status===\"succeeded\"" in script

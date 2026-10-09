@@ -15,7 +15,7 @@ def read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
-def test_release_identity_schema_and_assets_are_v1237_r1():
+def test_release_identity_schema_and_assets_are_v1237_r2():
     assert __version__ == "1.23.7"
     assert read("README.md").startswith("# Formação do Investidor • V1.23.7")
     assert 'version = "1.23.7"' in read("pyproject.toml")
@@ -25,14 +25,17 @@ def test_release_identity_schema_and_assets_are_v1237_r1():
         ".github/workflows/tests.yml"
     )
     platform = read("investment_engine/web/index.html")
-    assert "app.css?v=1.23.7-r1" in platform
-    assert "web-vitals.js?v=1.23.7-r1" in platform
-    assert "app.js?v=1.23.7-r1" in platform
+    assert "app.css?v=1.23.7-r2" in platform
+    assert "web-vitals.js?v=1.23.7-r2" in platform
+    assert "app.js?v=1.23.7-r2" in platform
     for relative in (
         "V1_23_7.md",
         "PATCH_V1237_R1.md",
         "INSTRUCOES_ORACLE_V1237_R1.md",
         "RELATORIO_VALIDACAO_V1237_R1.md",
+        "PATCH_V1237_R2.md",
+        "INSTRUCOES_ORACLE_V1237_R2.md",
+        "RELATORIO_VALIDACAO_V1237_R2.md",
     ):
         assert (ROOT / relative).is_file(), relative
 
@@ -79,7 +82,7 @@ def test_analysis_table_has_sort_density_sticky_ticker_and_clear_states():
 
 def test_admin_is_grouped_and_real_browser_benchmark_is_operator_ready():
     platform = read("investment_engine/web/index.html")
-    app = read("investment_engine/web/static/app.js")
+    app = read("investment_engine/web/static/feature-admin.js")
     benchmark = read("scripts/benchmark_browser_journeys.py")
     assert "admin-workspace" in platform
     for label in ("Usuários e acessos", "Conteúdo", "Dados", "Operação"):

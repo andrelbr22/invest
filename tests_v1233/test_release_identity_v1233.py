@@ -23,7 +23,7 @@ def test_release_identity_docs_ci_and_schema_are_v1234():
     assert '"tests_v1237"' in project
     assert workflow.count("tests_v1232 tests_v1233 tests_v1234 tests_v1235") == 2
     assert '0032_v1237_browser_perf' in workflow
-    assert "V1.23.7 R1" in publisher
+    assert "V1.23.7 R2" in publisher
     assert readme.startswith("# Formação do Investidor • V1.23.7")
     assert "Otimização estrutural V1.23.2" in readme
 

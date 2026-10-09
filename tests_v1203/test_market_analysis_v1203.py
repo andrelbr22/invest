@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 from importlib import import_module
 
@@ -91,7 +92,7 @@ def test_presets_endpoint_and_new_analysis_experience_are_packaged():
     paths = {route.path for route in app.routes}
     assert "/screen/presets" in paths
     html = (ROOT / "investment_engine/web/index.html").read_text(encoding="utf-8")
-    script = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     assert "Guia dos indicadores e notas" in html
     assert "Gravar análise personalizada" in html
     assert "Salvar alterações da análise personalizada" in script

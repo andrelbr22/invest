@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from datetime import date
 from pathlib import Path
 
@@ -66,7 +67,7 @@ def test_custom_investment_archive_is_recoverable_in_database():
 
 def test_portfolio_ui_has_consolidated_allocation_and_manual_investment_form():
     html = (ROOT / "investment_engine" / "web" / "index.html").read_text(encoding="utf-8")
-    script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     catalog = (ROOT / "investment_engine" / "core" / "portfolio" / "custom_investments.py").read_text(encoding="utf-8")
     assert 'data-tab="allocation"' in html
     for text in (

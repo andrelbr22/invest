@@ -1,4 +1,5 @@
 from pathlib import Path
+from frontend_test_support import browser_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -7,7 +8,7 @@ APP_CSS = ROOT / "investment_engine" / "web" / "static" / "app.css"
 
 
 def test_analysis_renders_primary_rows_before_secondary_backtest_enrichment():
-    javascript = APP_JS.read_text(encoding="utf-8")
+    javascript = browser_source(ROOT)
 
     primary_render = "state.analysisRows = primaryRows;"
     deferred_enrichment = "enrichAnalysisRowsInBackground(rows"
@@ -22,7 +23,7 @@ def test_analysis_renders_primary_rows_before_secondary_backtest_enrichment():
 
 
 def test_navigation_aborts_obsolete_panel_requests_and_guards_late_results():
-    javascript = APP_JS.read_text(encoding="utf-8")
+    javascript = browser_source(ROOT)
 
     assert "function beginNavigation(previousView,nextView)" in javascript
     assert "controller.abort()" in javascript
@@ -40,7 +41,7 @@ def test_navigation_aborts_obsolete_panel_requests_and_guards_late_results():
 
 
 def test_catalog_prefetch_and_inflight_get_dedup_do_not_block_first_panel():
-    javascript = APP_JS.read_text(encoding="utf-8")
+    javascript = browser_source(ROOT)
 
     assert "function prefetchAnalysisCatalogs()" in javascript
     assert "scheduleIdleTask(next,1000)" in javascript
@@ -52,7 +53,7 @@ def test_catalog_prefetch_and_inflight_get_dedup_do_not_block_first_panel():
 
 
 def test_same_panel_stays_visible_during_refresh_and_secondary_work_is_identified():
-    javascript = APP_JS.read_text(encoding="utf-8")
+    javascript = browser_source(ROOT)
     stylesheet = APP_CSS.read_text(encoding="utf-8")
 
     assert 'root.classList.add("panel-refreshing")' in javascript
@@ -62,7 +63,7 @@ def test_same_panel_stays_visible_during_refresh_and_secondary_work_is_identifie
 
 
 def test_search_and_news_timers_cannot_restore_obsolete_interface_state():
-    javascript = APP_JS.read_text(encoding="utf-8")
+    javascript = browser_source(ROOT)
 
     assert 'state.requestControllers.get("search")?.abort()' in javascript
     assert 'String($("#global-search")?.value||"").trim()!==normalized' in javascript
@@ -71,7 +72,7 @@ def test_search_and_news_timers_cannot_restore_obsolete_interface_state():
 
 
 def test_aborted_market_navigation_does_not_show_a_false_error():
-    javascript = APP_JS.read_text(encoding="utf-8")
+    javascript = browser_source(ROOT)
     start = javascript.index("async function loadMarket(force = false)")
     end = javascript.index("\nfunction pollMarket", start)
     load_market = javascript[start:end]

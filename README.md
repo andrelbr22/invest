@@ -1,5 +1,19 @@
 # Formação do Investidor • V1.23.7
 
+## R2 — módulos carregados sob demanda
+
+A V1.23.7 R2 preserva integralmente a navegação instantânea da R1 e reduz em
+aproximadamente 47% o JavaScript obrigatório da primeira abertura. Carteira,
+Backtests, Finanças e Administração agora são módulos independentes, baixados
+somente quando o usuário abre a área correspondente. A aproximação do mouse ou
+o foco pelo teclado antecipa discretamente o módulo, sem bloquear a tela.
+
+O carregador é resiliente: solicitações simultâneas são unificadas, uma falha
+de rede permite nova tentativa e o painel mostra um estado claro em vez de
+ficar vazio. Nenhuma fórmula, fonte, permissão, histórico ou rota foi removida.
+Não há migração nova. Consulte `PATCH_V1237_R2.md`,
+`INSTRUCOES_ORACLE_V1237_R2.md` e `RELATORIO_VALIDACAO_V1237_R2.md`.
+
 ## R1 — navegação instantânea e experiência aprimorada
 
 A V1.23.7 R1 preserva filtros, cálculos, permissões, históricos e rotinas da

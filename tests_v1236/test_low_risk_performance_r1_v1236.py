@@ -1,4 +1,5 @@
 from __future__ import annotations
+from frontend_test_support import browser_source
 
 import importlib
 from datetime import date, datetime, timezone
@@ -139,7 +140,7 @@ def test_news_latest_queries_are_bounded_to_one_database_row():
 
 
 def test_backtest_enrichment_patches_only_secondary_cells_with_safe_fallback():
-    source = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    source = browser_source(Path(__file__).resolve().parents[1])
 
     assert 'data-column-id="${esc(c.id)}"' in source
     assert "function patchAnalysisBacktestCells(rows)" in source
@@ -149,7 +150,7 @@ def test_backtest_enrichment_patches_only_secondary_cells_with_safe_fallback():
 
 
 def test_real_browser_metrics_cover_the_remaining_heavy_panels():
-    source = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    source = browser_source(Path(__file__).resolve().parents[1])
 
     for panel in ("backtests", "finances", "admin"):
         assert f'reportPanelPerformance("{panel}",panelStarted' in source

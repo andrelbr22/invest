@@ -1,4 +1,5 @@
 from pathlib import Path
+from frontend_test_support import browser_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -6,7 +7,7 @@ APP_JS = ROOT / "investment_engine" / "web" / "static" / "app.js"
 
 
 def source() -> str:
-    return APP_JS.read_text(encoding="utf-8")
+    return browser_source(ROOT)
 
 
 def function_body(javascript: str, start: str, end: str) -> str:

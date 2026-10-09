@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 
 
@@ -5,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_portfolio_allocation_uses_two_accessible_svg_rings_without_an_extra_request():
-    source = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    source = browser_source(Path(__file__).resolve().parents[1])
 
     assert "function hierarchicalAllocationDonut" in source
     assert "allocation-type-slice" in source
@@ -21,7 +22,7 @@ def test_portfolio_allocation_uses_two_accessible_svg_rings_without_an_extra_req
 
 
 def test_portfolio_change_clears_the_selected_allocation_type():
-    source = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    source = browser_source(Path(__file__).resolve().parents[1])
 
     assert "state.portfolioAllocationType=null;state.portfolioAllocationHierarchy=null;renderPortfolioTab()" in source
     assert 'event.key==="Enter"||event.key===" "' in source

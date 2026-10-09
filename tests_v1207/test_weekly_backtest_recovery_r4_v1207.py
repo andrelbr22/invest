@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import SimpleNamespace
@@ -96,7 +97,7 @@ def test_workflows_validate_current_tests_postgres_and_supported_actions():
 
 
 def test_panel_explains_the_correct_recovery_action_and_destination():
-    script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
 
     assert "Reprocessar ativos pendentes ou com falha" in script
     assert 'result.dispatch?.environment==="production"' in script

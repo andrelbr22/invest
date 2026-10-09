@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -90,7 +91,7 @@ def test_non_company_valuation_fails_closed_without_class_specific_inputs():
 
 
 def test_browser_makes_scenarios_help_and_fast_class_queries_discoverable():
-    source = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    source = browser_source(Path(__file__).resolve().parents[1])
     assert 'id="economic-assumptions" class="filter-subgroup" open' in source
     assert "Cenários do valor econômico: Conservador, Base e Otimista" in source
     assert "100 × (valor de referência ÷ preço atual − 1)" in source

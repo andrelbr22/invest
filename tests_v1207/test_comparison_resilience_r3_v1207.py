@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 
 from investment_engine.core.jobs.handlers import _json_safe
@@ -16,7 +17,7 @@ def test_non_finite_provider_values_are_safe_for_postgresql_json():
 
 
 def test_comparison_refresh_keeps_snapshot_and_polls_without_blanking_panel():
-    script = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     backend = (ROOT / "investment_engine/api/app.py").read_text(encoding="utf-8")
 
     assert 'if(comparisonRefresh){loadComparison(true);}' in script

@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -111,7 +112,7 @@ def test_queue_exposes_safe_progress_and_requester_filter():
 
 
 def test_web_ui_contains_async_combination_and_export_controls():
-    script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     for expected in (
         "Combinar estratégias", "Todas confirmam (E)", "Maioria confirma",
         "watchBacktestJob", "Exportar operações em CSV", "Você pode continuar usando o site",

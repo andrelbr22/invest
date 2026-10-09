@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 
 
@@ -6,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_owner_only_admin_tab_exposes_filters_and_columns():
     html = (ROOT / "investment_engine/web/index.html").read_text(encoding="utf-8")
-    source = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    source = browser_source(Path(__file__).resolve().parents[1])
 
     assert 'class="tab owner-only hidden" data-tab="analysis-settings"' in html
     assert "async function loadAdminAnalysisSettings" in source
@@ -17,7 +18,7 @@ def test_owner_only_admin_tab_exposes_filters_and_columns():
 
 
 def test_admin_can_save_enable_and_reset_presets_without_overwriting_factory():
-    source = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    source = browser_source(Path(__file__).resolve().parents[1])
 
     assert "Padrão original preservado" in source
     assert "Esta referência é imutável" in source
@@ -29,7 +30,7 @@ def test_admin_can_save_enable_and_reset_presets_without_overwriting_factory():
 
 
 def test_admin_column_order_and_user_default_reset_are_available():
-    source = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    source = browser_source(Path(__file__).resolve().parents[1])
     css = (ROOT / "investment_engine/web/static/app.css").read_text(encoding="utf-8")
 
     assert "function orderedAnalysisColumns" in source
@@ -41,7 +42,7 @@ def test_admin_column_order_and_user_default_reset_are_available():
 
 
 def test_active_owner_preset_uses_validated_advanced_screen_endpoint():
-    source = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    source = browser_source(Path(__file__).resolve().parents[1])
 
     assert 'presetItem?.active_variant==="owner"' in source
     assert 'api("/screen/advanced"' in source

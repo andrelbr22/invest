@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -48,7 +49,7 @@ def test_comparison_has_the_approved_order_without_duplicates(monkeypatch):
 
 
 def test_market_dashboard_r4_packages_the_approved_layout_and_defaults():
-    script = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     styles = (ROOT / "investment_engine/web/static/app.css").read_text(encoding="utf-8")
     html = (ROOT / "investment_engine/web/index.html").read_text(encoding="utf-8")
 

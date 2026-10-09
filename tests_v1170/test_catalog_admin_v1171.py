@@ -40,7 +40,11 @@ def test_catalog_sync_can_skip_heavier_technical_enrichment():
 
 def test_owner_interface_exposes_catalog_counts_and_actions():
     index = (ROOT / "investment_engine" / "web" / "index.html").read_text(encoding="utf-8")
-    script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    static = ROOT / "investment_engine" / "web" / "static"
+    script = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (static / "app.js", static / "feature-admin.js")
+    )
     assert 'data-tab="data">Dados de mercado' in index
     assert 'api("/data/catalog-summary",{requestKey:"admin-catalog-summary",cacheTtlMs:ADMIN_NAVIGATION_CACHE_TTL_MS,bypassCache:context.force})' in script
     assert 'data-refresh-groups="catalog">Atualizar catálogo' in script

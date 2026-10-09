@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -157,7 +158,7 @@ def test_legacy_combined_backtest_column_expands_without_losing_saved_order():
 
 
 def test_interface_exposes_three_columns_and_owner_launch_control():
-    script = (ROOT / "investment_engine/web/static/app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     assert 'id:"backtest_1",label:"1º backtest"' in script
     assert 'id:"backtest_2",label:"2º backtest"' in script
     assert 'id:"backtest_3",label:"3º backtest"' in script

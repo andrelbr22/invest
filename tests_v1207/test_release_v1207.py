@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 
 from investment_engine import __version__
@@ -23,7 +24,7 @@ def test_release_metadata_and_operational_guides_are_v1207():
 
 
 def test_new_portfolio_interactions_are_accessible_and_ticker_safe():
-    script = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    script = browser_source(Path(__file__).resolve().parents[1])
     api = (ROOT / "investment_engine" / "api" / "app.py").read_text(encoding="utf-8")
     for marker in (
         "portfolio-position-form",

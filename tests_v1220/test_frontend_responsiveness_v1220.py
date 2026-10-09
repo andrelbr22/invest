@@ -1,4 +1,5 @@
 from pathlib import Path
+from frontend_test_support import browser_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -6,7 +7,7 @@ SCRIPT = ROOT / "investment_engine" / "web" / "static" / "app.js"
 
 
 def test_analysis_renders_rows_before_loading_backtest_leaders():
-    source = SCRIPT.read_text(encoding="utf-8")
+    source = browser_source(ROOT)
 
     assert "const ANALYSIS_CACHE_TTL_MS = 300000;" in source
     cache_position = source.index(
@@ -30,7 +31,7 @@ def test_analysis_renders_rows_before_loading_backtest_leaders():
 
 
 def test_background_refreshes_do_not_flush_cache_and_ensure_only_stale_data():
-    source = SCRIPT.read_text(encoding="utf-8")
+    source = browser_source(ROOT)
 
     assert 'const invalidateCache = requestOptions.invalidateCache !== false;' in source
     assert 'method !== "GET" && invalidateCache' in source
@@ -46,7 +47,7 @@ def test_background_refreshes_do_not_flush_cache_and_ensure_only_stale_data():
 
 
 def test_simultaneous_cached_gets_are_coalesced():
-    source = SCRIPT.read_text(encoding="utf-8")
+    source = browser_source(ROOT)
 
     assert "readRequests: new Map()" in source
     assert "state.readRequests.has(coalesceKey)" in source
@@ -54,7 +55,7 @@ def test_simultaneous_cached_gets_are_coalesced():
 
 
 def test_stale_analysis_rows_survive_a_refresh_failure():
-    source = SCRIPT.read_text(encoding="utf-8")
+    source = browser_source(ROOT)
 
     assert "if(cached?.rows?.length){state.analysisRows=cached.rows;renderAnalysisRows(cached.rows)" in source
     assert "Exibindo a última consulta concluída." in source

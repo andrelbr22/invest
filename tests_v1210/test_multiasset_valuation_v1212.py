@@ -1,3 +1,5 @@
+from frontend_test_support import browser_source
+from pathlib import Path
 from datetime import date
 from types import SimpleNamespace
 from uuid import uuid4
@@ -164,7 +166,7 @@ def test_advanced_screen_exposes_real_etf_values_instead_of_global_nd():
 
 
 def test_browser_enables_only_class_appropriate_multiasset_methods():
-    source = (__import__("pathlib").Path(__file__).resolve().parents[1] / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    source = browser_source(Path(__file__).resolve().parents[1])
     assert 'data-valuation-types="stock,fii,etf,bdr"' in source
     assert 'data-valuation-types="stock,etf,bdr,future"' in source
     assert 'request.asset_type!=="stock"' in source

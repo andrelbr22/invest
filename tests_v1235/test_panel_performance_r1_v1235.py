@@ -1,3 +1,4 @@
+from frontend_test_support import browser_source
 from pathlib import Path
 import inspect
 
@@ -61,7 +62,7 @@ def test_browser_reports_real_panel_time_without_database_write():
 
 
 def test_browser_parallelizes_catalog_and_preserves_stale_data():
-    javascript = (ROOT / "investment_engine" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    javascript = browser_source(Path(__file__).resolve().parents[1])
     # Both requests start together, but R2 no longer blocks the first useful
     # render on the optional custom-filter response.
     preset_start = "const presetPromise=needPresets?api("
