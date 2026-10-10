@@ -1,6 +1,6 @@
 "use strict";
 
-// Carregado sob demanda pela V1.23.7 R2. O módulo preserva as mesmas
+// Carregado sob demanda e preservado pela V1.23.8 R1. O módulo mantém as mesmas
 // funções e regras usadas antes no arquivo principal.
 (()=>{
 function accessRuleEditor(level,disabled=false){
@@ -167,7 +167,8 @@ const adminFundamentalFields={
 };
 
 function adminAnalysisLabel(group,key){
-  const rows=group==="score"?filterDefinitions.scores:filterDefinitions.fundamental;
+  const definitions=window.FDIFeatures.analysis?.filterDefinitions||{scores:[],fundamental:[]};
+  const rows=group==="score"?definitions.scores:definitions.fundamental;
   return rows.find(([id])=>id===key)?.[1]||key.replaceAll("_"," ");
 }
 
@@ -359,7 +360,7 @@ async function loadAdmin(force=false) {
     if(panelKey==="portal")await loadAdminPortal(root,context);
     else if(panelKey==="levels")await loadAccessLevels(root,context);
     else if(panelKey==="users")await loadAdminUsers(root,context);
-    else if(panelKey==="analysis-settings")await loadAdminAnalysisSettings(root,context);
+    else if(panelKey==="analysis-settings"){await loadFeature("analysis");await loadAdminAnalysisSettings(root,context);}
     else if(panelKey==="data")await loadAdminUpdates(root,context);
     else if(panelKey==="quality")await loadAdminQuality(root,context);
     else if(panelKey==="jobs")await loadAdminJobs(root,context);
@@ -369,7 +370,7 @@ async function loadAdmin(force=false) {
       if(!adminPanelIsCurrent(root,context))return;
       root.innerHTML=`<div class="metric-grid">${metricCard("Aplicação",health.status==="ok"?"Operacional":"Atenção",`Versão ${health.version}`)}${metricCard("Banco de dados",db.status==="ok"?"Conectado":"Indisponível",db.database||"")}${metricCard("Hospedagem","Oracle Cloud",health.environment||"Produção")}${metricCard("Domínio","HTTPS ativo","Conexão segura")}</div>${sectionCard("Registros principais",`<div class="detail-list">${Object.entries(counts).map(([key,value])=>`<div><span>${esc(key.replaceAll("_"," "))}</span><strong>${number(value,0)}</strong></div>`).join("")}</div>`,`Consulta somente leitura`)}`;
     }
-    panelSucceeded=true;
+    panelSucceeded=true;markPanelFresh("admin",panelKey);
   } catch(error) { if(error.name!=="AbortError"&&adminPanelIsCurrent(root,context))root.innerHTML=errorState(error); }
   finally {if(adminPanelIsCurrent(root,context)){root.classList.remove("panel-refreshing");reportPanelPerformance("admin",panelStarted,{success:panelSucceeded,cacheState:samePanel?(panelSucceeded?"warm":"stale"):"cold"});}}
 }

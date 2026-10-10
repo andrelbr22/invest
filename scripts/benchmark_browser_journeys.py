@@ -1,7 +1,7 @@
-"""Measure time-to-usable for the official staging journeys in a real browser.
+"""Measure official staging journeys from click to usable content in Chromium.
 
-This operator-only tool is intentionally outside the production image.  Export a
-logged-in Playwright storage state once and reuse it while it remains valid.
+The report complements the API benchmark with download, JavaScript, layout and
+paint time. It is an operator-only tool and never changes application data.
 """
 
 from __future__ import annotations
@@ -9,10 +9,32 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 from time import perf_counter
+
+
+REQUIRED_JOURNEYS = (
+    "platform_entry",
+    "analysis_first_open",
+    "asset_detail",
+    "portfolio",
+    "finances",
+    "backtests",
+    "admin",
+    "analysis_return",
+    "dashboard_return",
+)
+WARM_JOURNEYS = {"analysis_return", "dashboard_return"}
+
+
+def percentile(values: list[float], percentile_value: float) -> float:
+    ordered = sorted(values)
+    index = max(0, math.ceil(len(ordered) * percentile_value) - 1)
+    return ordered[index]
 
 
 async def wait_usable(page, root: str) -> None:
@@ -43,21 +65,30 @@ async def run(args) -> dict:
             "Instale requirements-browser.txt e execute 'playwright install chromium'."
         ) from exc
 
-    state_path = Path(args.storage_state).resolve() if args.storage_state else None
-    if state_path and not state_path.is_file():
+    state_path = Path(args.storage_state).resolve()
+    if not state_path.is_file():
         raise SystemExit(f"Sessão do navegador não encontrada: {state_path}")
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=not args.show_browser)
-        context = await browser.new_context(
-            storage_state=str(state_path) if state_path else None,
-            viewport={"width": 1440, "height": 960},
-        )
-        page = await context.new_page()
+        context = None
         results: dict[str, list[float]] = {}
 
         for _ in range(args.samples):
-            await page.goto("about:blank")
+            if context:
+                await context.close()
+            context = await browser.new_context(
+                storage_state=str(state_path), viewport={"width": 1440, "height": 960}
+            )
+            page = await context.new_page()
+
+            async def click_journey(name: str, selector: str, root: str) -> None:
+                if not await page.locator(selector).count():
+                    return
+                results.setdefault(name, []).append(
+                    await measure(lambda: page.click(selector), page, root)
+                )
+
             entry_started = perf_counter()
             await page.goto(args.base_url, wait_until="domcontentloaded", timeout=45_000)
             if await page.locator("#login-view:not(.hidden)").count():
@@ -65,81 +96,96 @@ async def run(args) -> dict:
                     "A sessão não está autenticada. Gere novamente o arquivo --storage-state."
                 )
             await wait_usable(page, "#view-dashboard.active #dashboard-tab-content")
-            results.setdefault("platform_entry", []).append(round((perf_counter()-entry_started)*1000,2))
-            results.setdefault("analysis_first_open", []).append(
-                await measure(
-                    lambda: page.click('.nav-item[data-view="analysis"]'),
-                    page,
-                    "#view-analysis.active #analysis-table",
-                )
+            results.setdefault("platform_entry", []).append(
+                round((perf_counter() - entry_started) * 1000, 2)
             )
-            results.setdefault("asset_detail", []).append(
-                await measure(
-                    lambda: page.click('#analysis-table tr[data-ticker]:first-child'),
-                    page,
-                    "#asset-dialog[open] #asset-dialog-content",
-                )
+            await click_journey(
+                "analysis_first_open", '.nav-item[data-view="analysis"]',
+                "#view-analysis.active #analysis-table",
             )
-            await page.click("#close-asset-dialog")
-            results.setdefault("portfolio", []).append(
-                await measure(
-                    lambda: page.click('.nav-item[data-view="portfolio"]'),
-                    page,
-                    "#view-portfolio.active #portfolio-tab-content",
-                )
+            await click_journey(
+                "asset_detail", "#analysis-table tr[data-ticker]:first-child",
+                "#asset-dialog[open] #asset-dialog-content",
             )
-            results.setdefault("backtests", []).append(
-                await measure(
-                    lambda: page.click('.nav-item[data-view="backtests"]'),
-                    page,
-                    "#view-backtests.active #backtests-tab-content",
-                )
+            if await page.locator("#asset-dialog[open]").count():
+                await page.click("#close-asset-dialog")
+            await click_journey(
+                "portfolio", '.nav-item[data-view="portfolio"]',
+                "#view-portfolio.active #portfolio-tab-content",
             )
-            results.setdefault("analysis_return", []).append(
-                await measure(
-                    lambda: page.click('.nav-item[data-view="analysis"]'),
-                    page,
-                    "#view-analysis.active #analysis-table",
-                )
+            await click_journey(
+                "finances", '.nav-item[data-view="finances"]',
+                "#view-finances.active #finances-tab-content",
+            )
+            await click_journey(
+                "backtests", '.nav-item[data-view="backtests"]',
+                "#view-backtests.active #backtests-tab-content",
+            )
+            await click_journey(
+                "admin", '.nav-item[data-view="admin"]',
+                "#view-admin.active #admin-tab-content",
+            )
+            await click_journey(
+                "analysis_return", '.nav-item[data-view="analysis"]',
+                "#view-analysis.active #analysis-table",
+            )
+            await click_journey(
+                "dashboard_return", '.nav-item[data-view="dashboard"]',
+                "#view-dashboard.active #dashboard-tab-content",
             )
 
+        if context:
+            await context.close()
         await browser.close()
 
-    summary = {
-        name: {
+    missing = [name for name in REQUIRED_JOURNEYS if len(results.get(name, [])) < args.samples]
+    summary = {}
+    for name, values in results.items():
+        target = args.warm_target_ms if name in WARM_JOURNEYS else args.cold_target_ms
+        p95 = round(percentile(values, 0.95), 2)
+        summary[name] = {
             "samples": values,
+            "sample_count": len(values),
             "p50_ms": round(median(values), 2),
+            "p95_ms": p95,
             "max_ms": round(max(values), 2),
-            "target_ms": args.target_ms,
-            "within_target": median(values) <= args.target_ms,
+            "target_ms": target,
+            "within_target": p95 <= target,
         }
-        for name, values in results.items()
-    }
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "release_commit": args.commit or os.getenv("FDI_RELEASE_COMMIT") or "unknown",
         "base_url": args.base_url,
         "browser": "chromium",
+        "required_journeys": list(REQUIRED_JOURNEYS),
+        "missing_journeys": missing,
         "summary": summary,
-        "passed": all(item["within_target"] for item in summary.values()),
+        "passed": not missing and all(item["within_target"] for item in summary.values()),
     }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Homologa a experiência real no navegador.")
     parser.add_argument(
-        "--base-url",
-        default="https://formacaodoinvestidor.com.br/testefdi/plataforma/",
+        "--base-url", default="https://formacaodoinvestidor.com.br/testefdi/plataforma/"
     )
-    parser.add_argument("--storage-state", help="Arquivo Playwright de uma sessão de teste autenticada.")
-    parser.add_argument("--samples", type=int, default=3)
-    parser.add_argument("--target-ms", type=float, default=4_000)
+    parser.add_argument(
+        "--storage-state", required=True,
+        help="Arquivo Playwright com uma sessão autenticada do proprietário.",
+    )
+    parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument("--cold-target-ms", type=float, default=4_000)
+    parser.add_argument("--warm-target-ms", type=float, default=1_000)
+    parser.add_argument("--commit", help="Commit homologado no staging.")
     parser.add_argument("--output", default="browser-performance-report.json")
     parser.add_argument("--show-browser", action="store_true")
     args = parser.parse_args()
-    if not 1 <= args.samples <= 20:
-        parser.error("--samples deve ficar entre 1 e 20")
+    if not 3 <= args.samples <= 20:
+        parser.error("--samples deve ficar entre 3 e 20")
     report = asyncio.run(run(args))
-    Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(args.output).write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     raise SystemExit(0 if report["passed"] else 1)
 

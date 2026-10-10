@@ -83,5 +83,5 @@ def test_r2b_adds_concurrent_descending_indexes_and_updates_release_identity():
     assert "reference_date DESC" in migration
     assert "as_of DESC" in migration
     assert "timestamp DESC" in migration
-    assert "V1.23.7 R2" in publisher
+    assert "V1.23.8 R1" in publisher
     assert '0032_v1237_browser_perf' in workflow

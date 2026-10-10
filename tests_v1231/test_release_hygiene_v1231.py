@@ -61,9 +61,9 @@ def test_release_identity_is_v1234():
     version = (ROOT / "investment_engine" / "__init__.py").read_text(encoding="utf-8")
     project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     publisher = (ROOT / "PUBLICAR_GITHUB.ps1").read_text(encoding="utf-8")
-    assert '__version__ = "1.23.7"' in version
-    assert 'version = "1.23.7"' in project
-    assert "V1.23.7 R2" in publisher
+    assert '__version__ = "1.23.8"' in version
+    assert 'version = "1.23.8"' in project
+    assert "V1.23.8 R1" in publisher
 
 
 def test_promotion_runs_performance_gate_before_any_production_mutation():

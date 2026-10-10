@@ -11,11 +11,11 @@ def read(relative: str) -> str:
 
 
 def test_release_identity_documents_and_latest_lookup_migration():
-    assert __version__ == "1.23.7"
+    assert __version__ == "1.23.8"
     assert sorted((ROOT / "alembic" / "versions").glob("[0-9]*.py"))[-1].name == (
         "0032_v1237_browser_perf.py"
     )
-    assert read("README.md").startswith("# Formação do Investidor • V1.23.7")
+    assert read("README.md").startswith("# Formação do Investidor • V1.23.8")
     assert "tests_v1236" in read("pyproject.toml")
     assert "tests_v1236" in read(".github/workflows/tests.yml")
 
@@ -44,10 +44,10 @@ def test_release_publication_and_browser_assets_point_to_r2():
     publisher = read("PUBLICAR_GITHUB.ps1")
     platform = read("investment_engine/web/index.html")
 
-    assert "Carrega os paineis sob demanda na V1.23.7 R2 em teste" in publisher
-    assert "valide a V1.23.7 R2" in publisher
-    assert "../ui-assets/app.css?v=1.23.7-r2" in platform
-    assert "../ui-assets/app.js?v=1.23.7-r2" in platform
+    assert "Acelera a navegacao na V1.23.8 R1 em teste" in publisher
+    assert "valide a V1.23.8 R1" in publisher
+    assert "../ui-assets/app.css?v=1.23.8-r1" in platform
+    assert "../ui-assets/app.js?v=1.23.8-r1" in platform
 
 
 def test_operator_document_keeps_promotion_manual_and_separates_shells():

@@ -1,6 +1,6 @@
 "use strict";
 
-// Carregado sob demanda pela V1.23.7 R2. O módulo preserva as mesmas
+// Carregado sob demanda e preservado pela V1.23.8 R1. O módulo mantém as mesmas
 // funções e regras usadas antes no arquivo principal.
 (()=>{
 function readableConfigurationKey(key) {
@@ -255,7 +255,7 @@ async function loadBacktests() {
       </form><div id="backtest-result" style="margin-top:16px"></div>`+((recentJobs||[]).length?`<div style="margin-top:18px">${sectionCard("Execuções recentes",marketTable(recentJobs,[{label:"Solicitado",render:r=>dateTime(r.created_at)},{label:"Progresso",render:r=>`${number(r.progress_current||0,0)} / ${number(r.progress_total||0,0)}`},{label:"Status",render:r=>`<span class="pill">${esc(r.status)}</span>`}]))}</div>`:""),`Cada envio conta como uma análise diária. Limite: ${access.backtest_daily_limit||0} por dia; até ${access.backtest_strategy_limit||0} estratégia(s); intervalo mínimo de ${access.backtest_cooldown_seconds||60} segundos. A tela permanece livre durante o processamento.`);
       renderBacktestStrategyParameters($("#backtest-form"));
     }
-    panelSucceeded=true;
+    panelSucceeded=true;markPanelFresh("backtests",tab);
   } catch(error) { if(error.name!=="AbortError"&&isCurrent())root.innerHTML=errorState(error,"backtests"); }
   finally {if(isCurrent()){root.classList.remove("panel-refreshing");reportPanelPerformance("backtests",panelStarted,{success:panelSucceeded,cacheState:samePanel?(panelSucceeded?"warm":"stale"):"cold"});}}
 }

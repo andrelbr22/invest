@@ -3759,11 +3759,18 @@ def _alert_rule_permissions(access: dict) -> dict:
 
 @app.get("/alerts/catalog")
 def alert_catalog(
+    q: str = Query(default="", max_length=80),
+    limit: int = Query(default=20, ge=1, le=50),
     access=Depends(require_permission("can_use_price_alerts")),
     db: Session = Depends(get_db),
 ):
+    # The platform used to transfer the complete B3 catalog on every first
+    # visit to Alerts.  Autocomplete only needs a small, indexed search page.
+    # Empty queries intentionally return no B3 rows; international market
+    # shortcuts and permission metadata remain available immediately.
+    candidates = AssetRepository(db).search_assets(q, limit=min(200, limit * 4)) if q.strip() else []
     b3 = []
-    for asset in AssetRepository(db).list_assets(limit=5000):
+    for asset in candidates:
         if not is_alertable_b3_asset(asset.ticker, asset.asset_type):
             continue
         b3.append({
@@ -3771,6 +3778,8 @@ def alert_catalog(
             "asset_type": asset.asset_type, "market_scope": "b3",
             "interval_minutes": 5,
         })
+        if len(b3) >= limit:
+            break
     return {
         "b3": b3,
         "market": market_alert_catalog(),

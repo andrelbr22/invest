@@ -1,4 +1,28 @@
-# Formação do Investidor • V1.23.7
+# Formação do Investidor • V1.23.8
+
+## R1 — navegação rápida, previsível e mensurável
+
+A V1.23.8 R1 preserva todos os recursos homologados da V1.23.7 R2 e reduz o
+trabalho repetido entre painéis. Um painel já exibido reaparece imediatamente e
+só é revalidado quando sua janela própria de frescor vence. Pedidos GET idênticos
+são compartilhados, os caches do navegador possuem limites explícitos e os
+tempos de cache de permissões, presets e respostas comuns foram ajustados sem
+retirar a invalidação após alterações.
+
+Mercado e Análises passa a ser o quinto módulo carregado sob demanda, reduzindo
+o JavaScript obrigatório na entrada. O catálogo de alertas deixa de transferir
+milhares de ativos e pesquisa no banco somente os termos digitados. A homologação
+em navegador mede p50 e p95 de nove jornadas, incluindo retornos a painéis já
+visitados, e pode bloquear a promoção quando a evidência autenticada estiver
+configurada na VM.
+
+Não há nova migração: a revisão continua em `0032_v1237_browser_perf`. Consulte
+`V1_23_8.md`, `PATCH_V1238_R1.md`, `INSTRUCOES_ORACLE_V1238_R1.md`,
+`RELATORIO_VALIDACAO_V1238_R1.md` e `PLANO_V1238_R2.md`.
+
+O compromisso da R2 está formalizado: ela só será iniciada depois de a R1 estar
+operacional e medida, e tratará a segunda VM do worker, telemetria do PostgreSQL
+e otimizações estruturais guiadas pelos dados reais, sem duplicar o banco.
 
 ## R2 — módulos carregados sob demanda
 

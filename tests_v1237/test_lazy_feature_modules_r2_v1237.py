@@ -13,12 +13,13 @@ def read(relative: str) -> str:
 def test_initial_javascript_is_smaller_and_heavy_areas_are_separate():
     app_js = STATIC / "app.js"
     modules = {
+        "analysis": STATIC / "feature-analysis.js",
         "portfolio": STATIC / "feature-portfolio.js",
         "backtests": STATIC / "feature-backtests.js",
         "finances": STATIC / "feature-finances.js",
         "admin": STATIC / "feature-admin.js",
     }
-    assert app_js.stat().st_size < 190_000
+    assert app_js.stat().st_size < 130_000
     for name, path in modules.items():
         assert path.is_file(), name
         assert path.stat().st_size > 5_000, name
@@ -28,7 +29,8 @@ def test_initial_javascript_is_smaller_and_heavy_areas_are_separate():
 
 def test_feature_loader_is_lazy_coalesced_retryable_and_route_aware():
     source = read("investment_engine/web/static/app.js")
-    assert 'const FEATURE_ASSET_VERSION="1.23.7-r2"' in source
+    assert 'const FEATURE_ASSET_VERSION="1.23.8-r1"' in source
+    assert '${BASE_PATH}/ui-assets/feature-analysis.js' in source
     assert '${BASE_PATH}/ui-assets/feature-portfolio.js' in source
     assert '${BASE_PATH}/ui-assets/feature-backtests.js' in source
     assert '${BASE_PATH}/ui-assets/feature-finances.js' in source
@@ -47,6 +49,7 @@ def test_heavy_templates_are_not_part_of_the_initial_bundle():
     assert "Orçamento atualizado" not in initial
     assert "Combinação das tendências" not in initial
     assert "Alocação da carteira: tipos" not in initial
+    assert "Indicadores fundamentalistas" not in initial
 
     assert "Fila de trabalhos em segundo plano" in read(
         "investment_engine/web/static/feature-admin.js"
@@ -60,6 +63,9 @@ def test_heavy_templates_are_not_part_of_the_initial_bundle():
     assert "Alocação da carteira: tipos" in read(
         "investment_engine/web/static/feature-portfolio.js"
     )
+    assert "Indicadores fundamentalistas" in read(
+        "investment_engine/web/static/feature-analysis.js"
+    )
 
 
 def test_lazy_assets_are_served_by_the_same_versioned_static_route():
@@ -67,6 +73,7 @@ def test_lazy_assets_are_served_by_the_same_versioned_static_route():
     assert 'app.mount("/ui-assets"' in api_source
     assert '"public, max-age=31536000, immutable"' in api_source
     for asset in (
+        "feature-analysis.js",
         "feature-portfolio.js",
         "feature-backtests.js",
         "feature-finances.js",

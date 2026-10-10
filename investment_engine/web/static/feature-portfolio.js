@@ -1,6 +1,6 @@
 "use strict";
 
-// Carregado sob demanda pela V1.23.7 R2. O módulo preserva as mesmas
+// Carregado sob demanda e preservado pela V1.23.8 R1. O módulo mantém as mesmas
 // funções e regras usadas antes no arquivo principal.
 (()=>{
 async function loadPortfolios() {
@@ -15,14 +15,14 @@ async function loadPortfolios() {
     if (!state.portfolios.length) {
       state.portfolioId=null;$("#portfolio-selector-wrap").innerHTML="";
       root.dataset.panelKey=`none:${state.tabs.portfolio}`;
-      if(state.tabs.portfolio==="alerts"){await renderAlerts(root);return;}
-      if(state.tabs.portfolio==="news"){await renderNewsWorkspace(root);return;}
-      root.innerHTML='<div class="data-card empty-state"><strong>Você ainda não criou uma carteira</strong>A criação estará disponível aqui para contas com permissão de edição.</div>'; return;
+      if(state.tabs.portfolio==="alerts"){await renderAlerts(root);markPanelFresh("portfolio",state.tabs.portfolio);return;}
+      if(state.tabs.portfolio==="news"){await renderNewsWorkspace(root);markPanelFresh("portfolio",state.tabs.portfolio);return;}
+      root.innerHTML='<div class="data-card empty-state"><strong>Você ainda não criou uma carteira</strong>A criação estará disponível aqui para contas com permissão de edição.</div>';markPanelFresh("portfolio",state.tabs.portfolio);return;
     }
     if (!state.portfolioId || !state.portfolios.some(p=>p.id===state.portfolioId)) state.portfolioId=state.portfolios[0].id;
     $("#portfolio-selector-wrap").innerHTML=`<select id="portfolio-selector" class="button secondary">${state.portfolios.map(p=>`<option value="${esc(p.id)}" ${p.id===state.portfolioId?"selected":""}>${esc(p.name)}</option>`).join("")}</select>`;
     await renderPortfolioTab();
-    if(requestSerial===state.portfolioListRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio"))reportPanelPerformance("portfolio",panelStarted,{cacheState:hadCached?"warm":"cold"});
+    if(requestSerial===state.portfolioListRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio")){markPanelFresh("portfolio",state.tabs.portfolio);reportPanelPerformance("portfolio",panelStarted,{cacheState:hadCached?"warm":"cold"});}
   } catch(error) { if(error.name!=="AbortError"&&requestSerial===state.portfolioListRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio")){root.innerHTML=errorState(error,"portfolio");reportPanelPerformance("portfolio",panelStarted,{success:false,cacheState:hadCached?"stale":"cold"});} }
   finally {if(requestSerial===state.portfolioListRequestSerial&&navigationIsCurrent(navigationSerial,"portfolio"))root.classList.remove("panel-refreshing");}
 }
@@ -208,6 +208,7 @@ async function renderPortfolioTab({forceNews=false}={}) {
     } else {
       await renderAlerts(root);
     }
+    if(portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial))markPanelFresh("portfolio",tab);
   } catch(error) { if(error.name!=="AbortError"&&portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial))root.innerHTML=errorState(error); }
   finally {if(portfolioPanelIsCurrent(root,panelKey,requestSerial,navigationSerial))root.classList.remove("panel-refreshing");}
 }
@@ -217,7 +218,7 @@ async function renderAlerts(root) {
   const access=state.session.access;
   if (!access.can_use_price_alerts) { root.innerHTML='<div class="data-card empty-state"><strong>Alertas não liberados para esta conta</strong>O administrador pode conceder um limite de 1, 3, 5 ou 10 ativos.</div>'; return; }
   const [catalog,data,history]=await Promise.all([
-    api("/alerts/catalog",{requestKey:"portfolio-alerts-catalog",cacheTtlMs:300000}),
+    api("/alerts/catalog?limit=1",{requestKey:"portfolio-alerts-catalog",cacheTtlMs:600000}),
     api("/alerts",{requestKey:"portfolio-alerts-list",cacheTtlMs:30000}),
     api("/alerts/history?limit=100",{requestKey:"portfolio-alerts-history",cacheTtlMs:30000}),
   ]);
@@ -273,13 +274,28 @@ function alertCatalogItems(){
   const scope=$("#alert-market-scope")?.value||"b3";
   return state.alertCatalog?.[scope]||[];
 }
-function renderAlertSuggestions(query=""){
+function drawAlertSuggestions(query=""){
   const root=$("#alert-symbol-suggestions");if(!root)return;
   const term=String(query||"").trim().toLocaleUpperCase("pt-BR");
   if(!term){root.classList.add("hidden");root.innerHTML="";return;}
   const items=alertCatalogItems().filter(item=>`${item.key} ${item.label}`.toLocaleUpperCase("pt-BR").includes(term)).slice(0,12);
   root.innerHTML=items.length?items.map(item=>`<button type="button" data-alert-suggestion="${esc(item.key)}"><strong>${esc(item.key)}</strong><span>${esc(item.label||item.key)}</span><small>${esc(item.asset_type||item.group||"")}</small></button>`).join(""):'<div class="empty-state compact">Nenhum ativo correspondente.</div>';
   root.classList.remove("hidden");
+}
+function renderAlertSuggestions(query=""){
+  clearTimeout(state.alertSuggestionTimer);
+  const term=String(query||"").trim();
+  if(!term){drawAlertSuggestions("");return;}
+  if((document.querySelector("#alert-market-scope")?.value||"b3")==="market"){drawAlertSuggestions(term);return;}
+  const root=$("#alert-symbol-suggestions");
+  if(root){root.innerHTML='<div class="empty-state compact">Buscando ativos…</div>';root.classList.remove("hidden");}
+  state.alertSuggestionTimer=setTimeout(async()=>{
+    try{
+      const payload=await api(`/alerts/catalog?q=${encodeURIComponent(term)}&limit=12`,{requestKey:"alert-suggestions",cacheTtlMs:600000});
+      if(String($("#alert-symbol")?.value||"").trim()!==term)return;
+      state.alertCatalog={...(state.alertCatalog||{}),...payload,b3:payload.b3||[]};drawAlertSuggestions(term);
+    }catch(error){if(error.name!=="AbortError"&&root)root.innerHTML='<div class="empty-state compact">Não foi possível consultar o catálogo agora.</div>';}
+  },180);
 }
 async function savePriceAlert(form){
   const values=Object.fromEntries(new FormData(form));

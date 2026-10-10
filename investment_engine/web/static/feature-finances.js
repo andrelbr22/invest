@@ -1,6 +1,6 @@
 "use strict";
 
-// Carregado sob demanda pela V1.23.7 R2. O módulo preserva as mesmas
+// Carregado sob demanda e preservado pela V1.23.8 R1. O módulo mantém as mesmas
 // funções e regras usadas antes no arquivo principal.
 (()=>{
 function financeCategoryBars(rows,total) {
@@ -58,7 +58,7 @@ async function loadFinances() {
       const fields=(catalog.categories?.expense||[]).map(category=>`<div class="field"><label>${esc(category)}</label><input type="number" min="0" step="0.01" name="${esc(category)}" value="${current.get(category)||""}" placeholder="Sem limite"></div>`).join("");
       root.innerHTML=`${sectionCard("Acompanhamento",(data.budgets||[]).length?financeBudgetTable(data.budgets):'<div class="empty-state compact">Nenhum limite definido.</div>',"O consumo inclui despesas previstas e pagas")}${access.can_write_finances?`<form id="finance-budget-form" class="data-card filter-grid" style="margin-top:16px">${fields}<button class="button primary wide-action" type="submit">Salvar orçamento de ${esc(state.financeMonth)}</button></form>`:""}`;
     }
-    panelSucceeded=true;
+    panelSucceeded=true;markPanelFresh("finances",tab);
   }catch(error){if(error.name!=="AbortError"&&isCurrent())root.innerHTML=errorState(error,"finances");}
   finally {if(isCurrent()){root.classList.remove("panel-refreshing");reportPanelPerformance("finances",panelStarted,{success:panelSucceeded,cacheState:samePanel?(panelSucceeded?"warm":"stale"):"cold"});}}
 }

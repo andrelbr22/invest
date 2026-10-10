@@ -15,19 +15,19 @@ def read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
-def test_release_identity_schema_and_assets_are_v1237_r2():
-    assert __version__ == "1.23.7"
-    assert read("README.md").startswith("# Formação do Investidor • V1.23.7")
-    assert 'version = "1.23.7"' in read("pyproject.toml")
+def test_release_identity_schema_and_assets_are_v1238_r1():
+    assert __version__ == "1.23.8"
+    assert read("README.md").startswith("# Formação do Investidor • V1.23.8")
+    assert 'version = "1.23.8"' in read("pyproject.toml")
     assert '"tests_v1237"' in read("pyproject.toml")
     assert "tests_v1237" in read(".github/workflows/tests.yml")
     assert 'assert revision == "0032_v1237_browser_perf"' in read(
         ".github/workflows/tests.yml"
     )
     platform = read("investment_engine/web/index.html")
-    assert "app.css?v=1.23.7-r2" in platform
-    assert "web-vitals.js?v=1.23.7-r2" in platform
-    assert "app.js?v=1.23.7-r2" in platform
+    assert "app.css?v=1.23.8-r1" in platform
+    assert "web-vitals.js?v=1.23.8-r1" in platform
+    assert "app.js?v=1.23.8-r1" in platform
     for relative in (
         "V1_23_7.md",
         "PATCH_V1237_R1.md",
@@ -48,7 +48,8 @@ def test_panel_surfaces_urls_and_state_are_preserved_then_revalidated():
     assert "viewScroll: new Map()" in source
     assert "analysisFormState: new Map()" in source
     assert "PANEL_REVALIDATE_DELAY_MS" in source
-    assert "if(restored)scheduleNavigationTask(()=>loadCurrentView()" in source
+    assert "else if(panelNeedsRevalidation(view))scheduleNavigationTask(()=>loadCurrentView()" in source
+    assert "else if(panelNeedsRevalidation(group,tab))scheduleNavigationTask(()=>loadCurrentView()" in source
     assert 'params.set("view",state.view)' in source
     assert 'params.set("type",analysisTabTypes[state.tabs.analysis]' in source
     assert 'window.addEventListener("popstate"' in source
@@ -67,7 +68,7 @@ def test_cache_invalidation_is_selective_and_keeps_unrelated_panels_warm():
 
 
 def test_analysis_table_has_sort_density_sticky_ticker_and_clear_states():
-    javascript = read("investment_engine/web/static/app.js")
+    javascript = read("investment_engine/web/static/feature-analysis.js")
     css = read("investment_engine/web/static/app.css")
     assert "function sortedAnalysisRows(" in javascript
     assert "data-analysis-sort" in javascript
@@ -93,10 +94,14 @@ def test_admin_is_grouped_and_real_browser_benchmark_is_operator_ready():
         "analysis_first_open",
         "asset_detail",
         "portfolio",
+        "finances",
         "backtests",
+        "admin",
         "analysis_return",
+        "dashboard_return",
     ):
         assert journey in benchmark
+    assert "p95_ms" in benchmark
     assert "playwright" in read("requirements-browser.txt")
 
 

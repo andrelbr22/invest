@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 FRONTEND_MODULES = (
+    "feature-analysis.js",
     "feature-portfolio.js",
     "feature-backtests.js",
     "feature-finances.js",
@@ -11,7 +12,7 @@ FRONTEND_MODULES = (
 
 
 def browser_source(root: Path) -> str:
-    """Return the complete browser source after the V1.23.7 R2 split."""
+    """Return the complete browser source after the V1.23.8 R1 split."""
     root = Path(root)
     web_root = root if root.name == "web" else root / "investment_engine" / "web"
     static_root = web_root / "static"
