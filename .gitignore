@@ -16,6 +16,9 @@ deployment/second-instance/worker.env
 deployment/runtime/*.env
 deployment/runtime/*.state
 deployment/runtime/*.enabled
+deployment/runtime/*.required
+deployment/runtime/*.json
+deployment/runtime/*.txt
 deployment/secrets/app_secrets.staging.toml
 chaves_oracle/
 *.key

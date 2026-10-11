@@ -1,5 +1,23 @@
 # Formação do Investidor • V1.23.8
 
+## R2 — worker isolado, diagnóstico do banco e homologação obrigatória
+
+A R2 preserva integralmente a R1B e entrega a operação segura do worker em uma
+segunda VM, sempre conectado ao único PostgreSQL gravável da VM principal pela
+rede privada. O corte, o retorno manual e o ensaio do retorno automático usam
+travas, commit exato, heartbeat e leases para impedir dois schedulers ou dois
+monitores de alertas.
+
+Antes de qualquer ajuste no PostgreSQL, um relatório somente leitura registra
+consultas, conexões, pool, cache, I/O, tabelas e índices. O mesmo diagnóstico
+aparece em Administração > Operação, sem criar índices nem alterar parâmetros.
+Depois que a sessão segura do navegador é configurada, um marcador persistente
+torna o benchmark real obrigatório em todas as promoções seguintes.
+
+Não há nova migração nem mudança de contrato das APIs. A revisão permanece em
+`0032_v1237_browser_perf`. Consulte `PATCH_V1238_R2.md`,
+`INSTRUCOES_ORACLE_V1238_R2.md` e `RELATORIO_VALIDACAO_V1238_R2.md`.
+
 ## R1B — inicialização restaurada no carregamento modular
 
 A R1B corrige o vínculo antecipado de três botões de Análises. O botão de

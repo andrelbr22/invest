@@ -22,7 +22,7 @@ def test_release_identity_assets_docs_and_schema_are_v1238_r1():
     assert "tests_v1238" in read(".github/workflows/tests.yml")
     platform = read("investment_engine/web/index.html")
     for asset in ("app.css", "web-vitals.js", "app.js"):
-        assert f"{asset}?v=1.23.8-r1b" in platform
+        assert f"{asset}?v=1.23.8-r2" in platform
     for relative in (
         "V1_23_8.md",
         "PATCH_V1238_R1.md",
@@ -35,12 +35,15 @@ def test_release_identity_assets_docs_and_schema_are_v1238_r1():
         "RELATORIO_VALIDACAO_V1238_R1B.md",
         "INSTRUCOES_ORACLE_V1238_R1B.md",
         "PLANO_V1238_R2.md",
+        "PATCH_V1238_R2.md",
+        "RELATORIO_VALIDACAO_V1238_R2.md",
+        "INSTRUCOES_ORACLE_V1238_R2.md",
     ):
         assert (ROOT / relative).is_file(), relative
     assert not list((ROOT / "alembic" / "versions").glob("0033*"))
     publisher = read("PUBLICAR_GITHUB.ps1")
-    assert "Corrige a inicializacao da V1.23.8 R1B em teste" in publisher
-    assert "valide a V1.23.8 R1B" in publisher
+    assert "Implementa a infraestrutura segura da V1.23.8 R2 em teste" in publisher
+    assert "valide a V1.23.8 R2" in publisher
 
 
 def test_lazy_analysis_controls_do_not_break_application_startup():
@@ -86,7 +89,7 @@ def test_analysis_is_a_lazy_module_and_initial_bundle_is_small():
     assert "Indicadores fundamentalistas" in analysis.read_text(encoding="utf-8")
     source = initial.read_text(encoding="utf-8")
     assert 'analysis:`${BASE_PATH}/ui-assets/feature-analysis.js' in source
-    assert 'const FEATURE_ASSET_VERSION="1.23.8-r1b"' in source
+    assert 'const FEATURE_ASSET_VERSION="1.23.8-r2"' in source
     assert 'FEATURE_BY_VIEW={analysis:"analysis"' in source
 
 

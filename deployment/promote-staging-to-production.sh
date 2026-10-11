@@ -14,6 +14,7 @@ PRODUCTION_COMMIT_FILE="${PROJECT_DIR}/.git/investment-production-commit"
 PRODUCTION_WORKER_COMMIT_FILE="${PROJECT_DIR}/.git/investment-production-worker-commit"
 PUBLIC_READY_URL="https://formacaodoinvestidor.com.br/ready"
 BROWSER_PERFORMANCE_REPORT="${FDI_BROWSER_PERFORMANCE_REPORT:-${PROJECT_DIR}/deployment/runtime/browser-performance-report.json}"
+BROWSER_PERFORMANCE_GATE="${PROJECT_DIR}/deployment/runtime/browser-performance.required"
 
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
@@ -275,17 +276,28 @@ if ! docker compose -f "${COMPOSE_FILE}" exec -T staging \
 fi
 
 # A homologação em navegador exige uma sessão autenticada do proprietário e,
-# por isso, é produzida fora do contêiner. Quando a evidência existe, ela deve
-# pertencer ao mesmo commit, conter cinco amostras de cada jornada e ter menos
-# de 24 horas. A instalação pode torná-la obrigatória após configurar o robô
-# autenticado, sem enfraquecer o bloqueio do benchmark de API já obrigatório.
+# por isso, é produzida fora do contêiner. O marcador seguro torna o bloqueio
+# permanente depois da configuração inicial, sem depender de uma variável de
+# ambiente que poderia ser esquecida em uma execução posterior.
+BROWSER_REPORT_REQUIRED="${FDI_REQUIRE_BROWSER_PERFORMANCE_REPORT:-false}"
+if [[ -e "${BROWSER_PERFORMANCE_GATE}" ]]; then
+  worker_require_regular_owned_file "${BROWSER_PERFORMANCE_GATE}" 600
+  grep -Fxq 'enabled' "${BROWSER_PERFORMANCE_GATE}" || {
+    echo "Promoção interrompida: o marcador do benchmark real é inválido."
+    exit 1
+  }
+  BROWSER_REPORT_REQUIRED=true
+fi
 if [[ -f "${BROWSER_PERFORMANCE_REPORT}" ]]; then
+  if [[ "${BROWSER_REPORT_REQUIRED}" == "true" ]]; then
+    worker_require_regular_owned_file "${BROWSER_PERFORMANCE_REPORT}" 600
+  fi
   if ! python -m scripts.verify_browser_performance_report \
     "${BROWSER_PERFORMANCE_REPORT}" --expected-commit "${TARGET_COMMIT}"; then
     echo "Promoção interrompida: a experiência real no navegador não foi homologada."
     exit 1
   fi
-elif [[ "${FDI_REQUIRE_BROWSER_PERFORMANCE_REPORT:-false}" == "true" ]]; then
+elif [[ "${BROWSER_REPORT_REQUIRED}" == "true" ]]; then
   echo "Promoção interrompida: falta o relatório obrigatório do navegador real."
   exit 1
 else

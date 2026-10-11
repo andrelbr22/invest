@@ -98,6 +98,7 @@ from ..core.client_performance import (
     persist_client_performance,
     recent_client_performance,
 )
+from ..core.database_performance import collect_database_performance
 from ..core.portfolio.service import (
     build_consolidated_allocation_hierarchy,
     build_portfolio_snapshot,
@@ -1540,6 +1541,12 @@ def admin_operations(
         sync_incidents=True,
     )
     payload["browser_performance"] = recent_client_performance(db, hours=24)
+    # Read-only PostgreSQL and connection-pool counters make tuning decisions
+    # auditable.  Collection is restricted to the owner and never resets the
+    # server statistics or changes an index/configuration.
+    payload["database_performance"] = collect_database_performance(
+        db, include_statements=False
+    )
     db.commit()
     return payload
 

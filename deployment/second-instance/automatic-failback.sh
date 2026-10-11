@@ -48,8 +48,16 @@ os.replace(temporary, path)
 PY
 }
 
-# Opt-in explícito: instalar o timer não habilita uma troca automática.
-if [[ "${FDI_AUTO_FAILBACK_ENABLED:-false}" != "true" ]]; then
+# Opt-in explícito: instalar o timer não habilita uma troca automática. O modo
+# de ensaio R2 só é aceito com a frase exata e é usado pelo roteiro controlado
+# que já comprovou o corte remoto; não fica persistido no arquivo runtime.
+AUTO_FAILBACK_ENABLED="${FDI_AUTO_FAILBACK_ENABLED:-false}"
+AUTO_FAILBACK_DRILL="false"
+if [[ "${FDI_AUTO_FAILBACK_DRILL_APPROVED:-}" == "V1.23.8-R2" ]]; then
+  AUTO_FAILBACK_ENABLED="true"
+  AUTO_FAILBACK_DRILL="true"
+fi
+if [[ "${AUTO_FAILBACK_ENABLED}" != "true" ]]; then
   clear_failure_state
   echo "Failback automático desativado; nenhuma alteração foi feita."
   exit 0
@@ -58,6 +66,7 @@ fi
 COMMIT="$(cat "${PROJECT_DIR}/.git/investment-production-commit" 2>/dev/null || true)"
 [[ "${COMMIT}" =~ ^[0-9a-f]{40}$ ]] || { echo "Commit de produção inválido."; exit 1; }
 THRESHOLD="${FDI_AUTO_FAILBACK_FAILURE_THRESHOLD:-3}"
+[[ "${AUTO_FAILBACK_DRILL}" == "true" ]] && THRESHOLD=3
 [[ "${THRESHOLD}" =~ ^([3-9]|[1-9][0-9]+)$ ]] || { echo "O limiar automático deve ser no mínimo 3."; exit 1; }
 
 if docker compose -f "${COMPOSE_FILE}" exec -T app \

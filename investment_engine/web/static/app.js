@@ -103,7 +103,7 @@ const state = {
 };
 
 
-const FEATURE_ASSET_VERSION="1.23.8-r1b";
+const FEATURE_ASSET_VERSION="1.23.8-r2";
 const FEATURE_SCRIPT_PATHS={
   analysis:`${BASE_PATH}/ui-assets/feature-analysis.js?v=${FEATURE_ASSET_VERSION}`,
   portfolio:`${BASE_PATH}/ui-assets/feature-portfolio.js?v=${FEATURE_ASSET_VERSION}`,
