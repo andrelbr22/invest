@@ -25,7 +25,7 @@ def test_current_release_preserves_v1232_docs_assets_and_adds_v1233_suite():
     assert workflow.count("tests_v1232 tests_v1233 tests_v1234 tests_v1235") == 2
     assert '0032_v1237_browser_perf' in workflow
     assert "V1.23.8 R1" in publisher
-    assert "?v=1.23.8-r1" in platform
+    assert "?v=1.23.8-r1b" in platform
     assert "?v=1.23.2-r1" in portal
     for relative in (
         "V1_23_2.md",

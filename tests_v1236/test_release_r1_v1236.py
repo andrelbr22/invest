@@ -44,10 +44,10 @@ def test_release_publication_and_browser_assets_point_to_r2():
     publisher = read("PUBLICAR_GITHUB.ps1")
     platform = read("investment_engine/web/index.html")
 
-    assert "Corrige a regressao dos testes da V1.23.8 R1A em teste" in publisher
-    assert "valide a V1.23.8 R1A" in publisher
-    assert "../ui-assets/app.css?v=1.23.8-r1" in platform
-    assert "../ui-assets/app.js?v=1.23.8-r1" in platform
+    assert "Corrige a inicializacao da V1.23.8 R1B em teste" in publisher
+    assert "valide a V1.23.8 R1B" in publisher
+    assert "../ui-assets/app.css?v=1.23.8-r1b" in platform
+    assert "../ui-assets/app.js?v=1.23.8-r1b" in platform
 
 
 def test_operator_document_keeps_promotion_manual_and_separates_shells():

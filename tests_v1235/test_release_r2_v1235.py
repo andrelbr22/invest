@@ -19,14 +19,14 @@ def test_r2_release_identity_schema_assets_and_operator_documents():
     publisher = read("PUBLICAR_GITHUB.ps1")
     workflow = read(".github/workflows/tests.yml")
     html = read("investment_engine/web/index.html")
-    assert "Corrige a regressao dos testes da V1.23.8 R1A em teste" in publisher
-    assert "valide a V1.23.8 R1A" in publisher
+    assert "Corrige a inicializacao da V1.23.8 R1B em teste" in publisher
+    assert "valide a V1.23.8 R1B" in publisher
     assert "SEGURANCA DA PRIMEIRA MIGRACAO" not in publisher
     assert "stagingConfirmation" not in publisher
     assert "0032_v1237_browser_perf" in workflow
     assert "tests_v1235" in workflow
-    assert "app.css?v=1.23.8-r1" in html
-    assert "app.js?v=1.23.8-r1" in html
+    assert "app.css?v=1.23.8-r1b" in html
+    assert "app.js?v=1.23.8-r1b" in html
 
     for relative in (
         "PATCH_V1235_R2B.md",

@@ -24,8 +24,8 @@ def test_release_identity_ci_assets_and_documents_are_v1234():
     assert "0032_v1237_browser_perf" in workflow
     assert "V1.23.8 R1" in publisher
     assert readme.startswith("# Formação do Investidor • V1.23.8")
-    assert "../ui-assets/app.css?v=1.23.8-r1" in platform
-    assert "../ui-assets/app.js?v=1.23.8-r1" in platform
+    assert "../ui-assets/app.css?v=1.23.8-r1b" in platform
+    assert "../ui-assets/app.js?v=1.23.8-r1b" in platform
 
     for relative in (
         "V1_23_4.md",

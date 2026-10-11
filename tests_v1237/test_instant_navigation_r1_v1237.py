@@ -25,9 +25,9 @@ def test_release_identity_schema_and_assets_are_v1238_r1():
         ".github/workflows/tests.yml"
     )
     platform = read("investment_engine/web/index.html")
-    assert "app.css?v=1.23.8-r1" in platform
-    assert "web-vitals.js?v=1.23.8-r1" in platform
-    assert "app.js?v=1.23.8-r1" in platform
+    assert "app.css?v=1.23.8-r1b" in platform
+    assert "web-vitals.js?v=1.23.8-r1b" in platform
+    assert "app.js?v=1.23.8-r1b" in platform
     for relative in (
         "V1_23_7.md",
         "PATCH_V1237_R1.md",

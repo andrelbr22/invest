@@ -1,5 +1,15 @@
 # Formação do Investidor • V1.23.8
 
+## R1B — inicialização restaurada no carregamento modular
+
+A R1B corrige o vínculo antecipado de três botões de Análises. O botão de
+filtros avançados só existe depois que o módulo sob demanda é carregado; tentar
+conectá-lo durante a abertura interrompia toda a interface e deixava visível
+somente a faixa do ambiente de teste. Os três comandos agora usam delegação de
+eventos, funcionando antes e depois da criação dinâmica do conteúdo. O token
+dos arquivos estáticos foi atualizado para impedir que o navegador reutilize o
+JavaScript defeituoso.
+
 ## R1A — correção da validação da navegação rápida
 
 A revisão R1A mantém integralmente a implementação da R1 e corrige duas

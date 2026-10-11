@@ -29,7 +29,7 @@ def test_initial_javascript_is_smaller_and_heavy_areas_are_separate():
 
 def test_feature_loader_is_lazy_coalesced_retryable_and_route_aware():
     source = read("investment_engine/web/static/app.js")
-    assert 'const FEATURE_ASSET_VERSION="1.23.8-r1"' in source
+    assert 'const FEATURE_ASSET_VERSION="1.23.8-r1b"' in source
     assert '${BASE_PATH}/ui-assets/feature-analysis.js' in source
     assert '${BASE_PATH}/ui-assets/feature-portfolio.js' in source
     assert '${BASE_PATH}/ui-assets/feature-backtests.js' in source

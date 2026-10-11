@@ -103,7 +103,7 @@ const state = {
 };
 
 
-const FEATURE_ASSET_VERSION="1.23.8-r1";
+const FEATURE_ASSET_VERSION="1.23.8-r1b";
 const FEATURE_SCRIPT_PATHS={
   analysis:`${BASE_PATH}/ui-assets/feature-analysis.js?v=${FEATURE_ASSET_VERSION}`,
   portfolio:`${BASE_PATH}/ui-assets/feature-portfolio.js?v=${FEATURE_ASSET_VERSION}`,
@@ -1271,6 +1271,9 @@ function bindEvents() {
   $("#global-search").addEventListener("input",event=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>runSearch(event.target.value),220);});
   document.addEventListener("keydown",event=>{if(event.key==="/"&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName)){event.preventDefault();$("#global-search").focus();}});
   document.addEventListener("click",event=>{
+    const applyAdvanced=event.target.closest("#apply-advanced-filters");if(applyAdvanced){applyAdvancedFilters();return;}
+    const saveCustom=event.target.closest("#save-custom-filter");if(saveCustom){saveCustomFilter();return;}
+    const deleteCustomFilterButton=event.target.closest("#delete-custom-filter");if(deleteCustomFilterButton){deleteCustomFilter();return;}
     const refreshGroupsButton=event.target.closest("[data-refresh-groups]");if(refreshGroupsButton){if(refreshGroupsButton.hasAttribute("data-confirm-all-updates")&&!window.confirm(`Enfileirar agora as ${adminRefreshGroups.length} rotinas de atualização? Os dados atuais continuarão disponíveis durante o processamento.`))return;refreshMarketGroups(refreshGroupsButton.dataset.refreshGroups);return;}
     const portfolioNewsButton=event.target.closest("[data-portfolio-news-refresh]");if(portfolioNewsButton){refreshPortfolioNews(portfolioNewsButton.dataset.portfolioNewsRefresh);return;}
     const newsMode=event.target.closest("[data-portfolio-news-mode]");if(newsMode){const mode=newsMode.dataset.portfolioNewsMode;if(state.portfolioNewsMode!==mode){state.portfolioNewsMode=mode;renderPortfolioTab();}return;}
@@ -1330,9 +1333,6 @@ function bindEvents() {
   $("#close-asset-dialog").addEventListener("click",closeAssetDialog);
   $("#asset-dialog").addEventListener("click",event=>{if(event.target===$("#asset-dialog"))closeAssetDialog();});
   $("#asset-dialog").addEventListener("close",()=>{state.assetRequestSerial+=1;state.requestControllers.get("asset-detail")?.abort();state.requestControllers.delete("asset-detail");if(state.currentAssetTicker){state.currentAssetTicker=null;syncNavigationUrl("replace");}});
-  $("#apply-advanced-filters").addEventListener("click",applyAdvancedFilters);
-  $("#save-custom-filter").addEventListener("click",saveCustomFilter);
-  $("#delete-custom-filter").addEventListener("click",deleteCustomFilter);
   document.addEventListener("change",event=>{
     if(event.target.id==="admin-analysis-type"){state.adminAnalysisType=event.target.value;renderAdminAnalysisSettings($("#admin-tab-content"));return;}
     if(event.target.id==="alert-market-scope"){const input=$("#alert-symbol");if(input)input.value="";renderAlertSuggestions("");}
