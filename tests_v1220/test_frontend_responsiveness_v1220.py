@@ -11,7 +11,8 @@ def test_analysis_renders_rows_before_loading_backtest_leaders():
 
     assert "const ANALYSIS_CACHE_TTL_MS = 300000;" in source
     cache_position = source.index(
-        "state.analysisResultCache.set(cacheKey,{savedAt:Date.now(),rows:primaryRows});"
+        "setBoundedCache(state.analysisResultCache,cacheKey,"
+        "{savedAt:Date.now(),rows:primaryRows},ANALYSIS_RESULT_CACHE_LIMIT);"
     )
     render_position = source.index("renderAnalysisRows(primaryRows)", cache_position)
     enrichment_position = source.index(

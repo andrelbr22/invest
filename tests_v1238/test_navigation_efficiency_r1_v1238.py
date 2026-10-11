@@ -28,10 +28,16 @@ def test_release_identity_assets_docs_and_schema_are_v1238_r1():
         "PATCH_V1238_R1.md",
         "INSTRUCOES_ORACLE_V1238_R1.md",
         "RELATORIO_VALIDACAO_V1238_R1.md",
+        "PATCH_V1238_R1A.md",
+        "RELATORIO_VALIDACAO_V1238_R1A.md",
+        "INSTRUCOES_ORACLE_V1238_R1A.md",
         "PLANO_V1238_R2.md",
     ):
         assert (ROOT / relative).is_file(), relative
     assert not list((ROOT / "alembic" / "versions").glob("0033*"))
+    publisher = read("PUBLICAR_GITHUB.ps1")
+    assert "Corrige a regressao dos testes da V1.23.8 R1A em teste" in publisher
+    assert "valide a V1.23.8 R1A" in publisher
 
 
 def test_panels_are_freshness_aware_and_do_not_revalidate_every_return():

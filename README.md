@@ -1,5 +1,17 @@
 # Formação do Investidor • V1.23.8
 
+## R1A — correção da validação da navegação rápida
+
+A revisão R1A mantém integralmente a implementação da R1 e corrige duas
+verificações antigas que ainda procuravam literalmente as chamadas anteriores
+de cache. A proteção continua verificando que as linhas aparecem antes do
+enriquecimento dos backtests e que requisições GET simultâneas são
+compartilhadas, inclusive quando possuem chave lógica. Não há alteração de
+dados, fórmulas, permissões, API, interface ou banco.
+
+Consulte `PATCH_V1238_R1A.md`, `RELATORIO_VALIDACAO_V1238_R1A.md` e
+`INSTRUCOES_ORACLE_V1238_R1A.md`.
+
 ## R1 — navegação rápida, previsível e mensurável
 
 A V1.23.8 R1 preserva todos os recursos homologados da V1.23.7 R2 e reduz o

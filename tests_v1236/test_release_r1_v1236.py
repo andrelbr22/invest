@@ -44,8 +44,8 @@ def test_release_publication_and_browser_assets_point_to_r2():
     publisher = read("PUBLICAR_GITHUB.ps1")
     platform = read("investment_engine/web/index.html")
 
-    assert "Acelera a navegacao na V1.23.8 R1 em teste" in publisher
-    assert "valide a V1.23.8 R1" in publisher
+    assert "Corrige a regressao dos testes da V1.23.8 R1A em teste" in publisher
+    assert "valide a V1.23.8 R1A" in publisher
     assert "../ui-assets/app.css?v=1.23.8-r1" in platform
     assert "../ui-assets/app.js?v=1.23.8-r1" in platform
 

@@ -45,7 +45,9 @@ def test_catalog_prefetch_and_inflight_get_dedup_do_not_block_first_panel():
 
     assert "function prefetchAnalysisCatalogs()" in javascript
     assert "scheduleIdleTask(next,1000)" in javascript
-    assert 'const coalesceKey = method === "GET" && !bypassCache && !key ? path : null;' in javascript
+    assert 'const coalesceKey = method === "GET" && !bypassCache' in javascript
+    assert 'key?`key:${key}`:"path"' in javascript
+    assert "state.readRequests.has(coalesceKey)" in javascript
     assert "else if(needCustom)customPromise.then(applyCustom)" in javascript
     # Shared prefetches intentionally have no panel request key, so changing
     # tabs does not discard useful catalog work for the next visit.
