@@ -42,8 +42,8 @@ def test_release_identity_assets_docs_and_schema_are_v1238_r1():
         assert (ROOT / relative).is_file(), relative
     assert not list((ROOT / "alembic" / "versions").glob("0033*"))
     publisher = read("PUBLICAR_GITHUB.ps1")
-    assert "Implementa a infraestrutura segura da V1.23.8 R2 em teste" in publisher
-    assert "valide a V1.23.8 R2" in publisher
+    assert "Corrige a validacao de compatibilidade da V1.23.8 R2A em teste" in publisher
+    assert "valide a V1.23.8 R2A" in publisher
 
 
 def test_lazy_analysis_controls_do_not_break_application_startup():

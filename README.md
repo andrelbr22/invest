@@ -1,5 +1,17 @@
 # Formação do Investidor • V1.23.8
 
+## R2A — compatibilidade da validação histórica
+
+A R2A mantém integralmente o código e os controles operacionais da R2. Ela
+corrige somente as verificações históricas que ainda exigiam literalmente o
+rótulo R1 e atualiza o teste do failback para reconhecer a variável intermediária
+usada pelo ensaio controlado. O failback permanece desativado por padrão, exige
+adesão explícita e só atua após pelo menos três falhas consecutivas.
+
+Não há mudança em dados, fórmulas, permissões, interface, API, banco ou
+topologia. Consulte `PATCH_V1238_R2A.md`, `INSTRUCOES_ORACLE_V1238_R2A.md` e
+`RELATORIO_VALIDACAO_V1238_R2A.md`.
+
 ## R2 — worker isolado, diagnóstico do banco e homologação obrigatória
 
 A R2 preserva integralmente a R1B e entrega a operação segura do worker em uma

@@ -23,8 +23,8 @@ def read(relative: str) -> str:
 def test_r2_release_identity_and_static_assets_are_current():
     publisher = read("PUBLICAR_GITHUB.ps1")
     platform = read("investment_engine/web/index.html")
-    assert "Implementa a infraestrutura segura da V1.23.8 R2 em teste" in publisher
-    assert "valide a V1.23.8 R2" in publisher
+    assert "Corrige a validacao de compatibilidade da V1.23.8 R2A em teste" in publisher
+    assert "valide a V1.23.8 R2A" in publisher
     assert 'const FEATURE_ASSET_VERSION="1.23.8-r2"' in read(
         "investment_engine/web/static/app.js"
     )

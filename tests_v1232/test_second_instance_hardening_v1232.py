@@ -79,7 +79,10 @@ def test_automatic_failback_is_opt_in_conservative_and_never_auto_returns_remote
 
     assert "FDI_AUTO_FAILBACK_ENABLED=false" in location
     assert "FDI_AUTO_FAILBACK_FAILURE_THRESHOLD=3" in location
-    assert '"${FDI_AUTO_FAILBACK_ENABLED:-false}" != "true"' in guard
+    assert 'AUTO_FAILBACK_ENABLED="${FDI_AUTO_FAILBACK_ENABLED:-false}"' in guard
+    assert '"${AUTO_FAILBACK_ENABLED}" != "true"' in guard
+    assert 'FDI_AUTO_FAILBACK_DRILL_APPROVED:-}' in guard
+    assert 'V1.23.8-R2' in guard
     assert "flock -n 9" in guard
     assert "MISSES < THRESHOLD" in guard
     assert "verify-worker-coordination.py" in guard
